@@ -1,0 +1,288 @@
+// prisma/schema.prisma
+// Hamplard — Database schema
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum UserRole {
+  STUDENT
+  INSTRUCTOR
+  ADMIN
+}
+
+enum CourseStatus {
+  DRAFT         // instructor editing, not yet submitted
+  PENDING       // submitted for admin review
+  ACTIVE        // approved and enrollable
+  PAUSED        // temporarily unavailable
+  ARCHIVED      // permanently removed
+}
+
+enum EnrollmentStatus {
+  ACTIVE        // enrolled and learning
+  COMPLETED     // finished all lessons
+  REFUNDED      // refunded (edge case)
+}
+
+enum LessonType {
+  VIDEO
+  TEXT
+  QUIZ
+  ASSIGNMENT
+}
+
+enum AssignmentStatus {
+  PENDING       // student not submitted yet
+  SUBMITTED     // student submitted, awaiting review
+  APPROVED      // instructor approved
+  REJECTED      // instructor rejected, student must resubmit
+}
+
+enum NotificationType {
+  COURSE_APPROVED
+  COURSE_REJECTED
+  ENROLLMENT_CONFIRMED
+  LESSON_UNLOCKED
+  ASSIGNMENT_SUBMITTED
+  ASSIGNMENT_APPROVED
+  ASSIGNMENT_REJECTED
+  COURSE_COMPLETED
+  CERTIFICATE_ISSUED
+  NEW_ENROLLMENT        // for instructors
+  PAYMENT_RECEIVED      // for instructors
+}
+
+// ============================================================
+// MODELS
+// ============================================================
+
+model User {
+  id             String    @id @default(uuid())
+  stellarAddress String    @unique
+  email          String?   @unique
+  name           String?
+  bio            String?
+  avatarUrl      String?
+  role           UserRole  @default(STUDENT)
+  isVerified     Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  coursesCreated Course[]      @relation("InstructorCourses")
+  enrollments    Enrollment[]
+  assignments    AssignmentSubmission[]
+  notifications  Notification[]
+  certificates   Certificate[]
+
+  @@map("users")
+}
+
+model Course {
+  id                  String       @id  // matches on-chain course_id
+  instructorAddress   String
+  title               String
+  description         String?
+  category            String       // e.g. "Tailoring", "Makeup", "Baking"
+  level               String       @default("Beginner") // Beginner | Intermediate | Advanced
+  language            String       @default("English")
+  thumbnailUrl        String?
+  previewVideoUrl     String?
+  price               Decimal      // in USDC (human-readable, e.g. 50.00)
+  platformFeePercent  Int          @default(20)
+  status              CourseStatus @default(DRAFT)
+  totalLessons        Int          @default(0)
+  totalDuration       Int          @default(0) // minutes
+  totalEnrollments    Int          @default(0)
+  totalRevenue        Decimal      @default(0)
+  txHash              String?      // on-chain registration tx
+  approvedAt          DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  // Relations
+  instructor    User          @relation("InstructorCourses", fields: [instructorAddress], references: [stellarAddress])
+  modules       CourseModule[]
+  enrollments   Enrollment[]
+  certificates  Certificate[]
+  events        ChainEvent[]
+
+  @@map("courses")
+}
+
+model CourseModule {
+  id          String   @id @default(uuid())
+  courseId    String
+  title       String
+  position    Int      // ordering within the course
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  course   Course   @relation(fields: [courseId], references: [id])
+  lessons  Lesson[]
+
+  @@map("course_modules")
+}
+
+model Lesson {
+  id           String      @id @default(uuid())
+  moduleId     String
+  title        String
+  description  String?
+  type         LessonType  @default(VIDEO)
+  videoUrl     String?     // URL to video file (S3 / local)
+  videoDuration Int?       // seconds
+  content      String?     // for TEXT type lessons
+  resourceUrl  String?     // downloadable resource
+  position     Int         // ordering within the module
+  isFree       Boolean     @default(false) // preview lesson
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Relations
+  module      CourseModule @relation(fields: [moduleId], references: [id])
+  progress    LessonProgress[]
+  assignment  Assignment?
+
+  @@map("lessons")
+}
+
+model Assignment {
+  id           String   @id @default(uuid())
+  lessonId     String   @unique
+  title        String
+  description  String
+  instructions String?
+  createdAt    DateTime @default(now())
+
+  // Relations
+  lesson      Lesson    @relation(fields: [lessonId], references: [id])
+  submissions AssignmentSubmission[]
+
+  @@map("assignments")
+}
+
+model AssignmentSubmission {
+  id           String           @id @default(uuid())
+  assignmentId String
+  studentId    String
+  submissionUrl String?         // uploaded file or link
+  notes        String?
+  status       AssignmentStatus @default(PENDING)
+  feedback     String?          // instructor feedback
+  submittedAt  DateTime         @default(now())
+  reviewedAt   DateTime?
+
+  // Relations
+  assignment Assignment @relation(fields: [assignmentId], references: [id])
+  student    User       @relation(fields: [studentId], references: [id])
+
+  @@unique([assignmentId, studentId])
+  @@map("assignment_submissions")
+}
+
+model Enrollment {
+  id              String           @id @default(uuid())
+  studentId       String
+  courseId        String
+  amountPaid      Decimal          // USDC paid
+  txHash          String?          // on-chain enrollment tx
+  status          EnrollmentStatus @default(ACTIVE)
+  progressPercent Int              @default(0)  // 0-100
+  completedAt     DateTime?
+  enrolledAt      DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  // Relations
+  student       User            @relation(fields: [studentId], references: [id])
+  course        Course          @relation(fields: [courseId], references: [id])
+  lessonProgress LessonProgress[]
+
+  @@unique([studentId, courseId])
+  @@map("enrollments")
+}
+
+model LessonProgress {
+  id           String   @id @default(uuid())
+  enrollmentId String
+  lessonId     String
+  completed    Boolean  @default(false)
+  watchedSecs  Int      @default(0) // seconds watched
+  completedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+  lesson     Lesson     @relation(fields: [lessonId], references: [id])
+
+  @@unique([enrollmentId, lessonId])
+  @@map("lesson_progress")
+}
+
+model Certificate {
+  id              String   @id  // matches on-chain certificate_id
+  studentId       String
+  courseId        String
+  courseTitle     String   // stored for quick display
+  instructorAddress String
+  txHash          String?  // on-chain certificate issuance tx
+  isRevoked       Boolean  @default(false)
+  issuedAt        DateTime @default(now())
+
+  // Relations
+  student User   @relation(fields: [studentId], references: [id])
+  course  Course @relation(fields: [courseId], references: [id])
+
+  @@map("certificates")
+}
+
+model ChainEvent {
+  id         String   @id @default(uuid())
+  courseId   String?
+  eventName  String
+  ledger     Int
+  txHash     String
+  payload    Json
+  processed  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  // Relations
+  course Course? @relation(fields: [courseId], references: [id])
+
+  @@index([courseId])
+  @@index([eventName])
+  @@index([processed])
+  @@map("chain_events")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  data      Json?
+  read      Boolean          @default(false)
+  emailSent Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([read])
+  @@map("notifications")
+}
