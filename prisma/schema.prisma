@@ -42,6 +42,13 @@ enum LessonType {
   ASSIGNMENT
 }
 
+enum QuestionType {
+  MULTIPLE_CHOICE
+  SINGLE_CHOICE
+  TRUE_FALSE
+  SHORT_ANSWER
+}
+
 enum AssignmentStatus {
   PENDING       // student not submitted yet
   SUBMITTED     // student submitted, awaiting review
@@ -155,8 +162,29 @@ model Lesson {
   module      CourseModule @relation(fields: [moduleId], references: [id])
   progress    LessonProgress[]
   assignment  Assignment?
+  quizQuestions QuizQuestion[]
 
   @@map("lessons")
+}
+
+model QuizQuestion {
+  id            String       @id @default(uuid())
+  lessonId      String
+  question      String
+  type          QuestionType @default(SINGLE_CHOICE)
+  options       Json?        // Array of options, e.g. ["Option A", "Option B"]
+  correctAnswer Json         // Array of correct indices, e.g. [0], or text answer ["True"]
+  explanation   String?
+  points        Int          @default(1)
+  position      Int          // ordering within the lesson
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Relations
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId])
+  @@map("quiz_questions")
 }
 
 model Assignment {

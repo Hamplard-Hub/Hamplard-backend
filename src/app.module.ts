@@ -17,7 +17,7 @@ import { CertificatesModule } from './modules/certificates/certificates.module';
 import { EventsModule }       from './modules/events/events.module';
 import { NotificationsModule }from './modules/notifications/notifications.module';
 import { HealthModule }       from './modules/health/health.module';
-import { UploadsModule }      from './modules/uploads/uploads.module';
+import { QuizzesModule }      from './modules/quizzes/quizzes.module';
 
 @Module({
   imports: [
@@ -49,7 +49,7 @@ import { UploadsModule }      from './modules/uploads/uploads.module';
     EventsModule,
     NotificationsModule,
     HealthModule,
-    UploadsModule,
+    QuizzesModule,
   ],
 })
 export class AppModule {}
