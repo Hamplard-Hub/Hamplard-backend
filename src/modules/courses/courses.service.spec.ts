@@ -3,6 +3,7 @@ import { CoursesService } from './courses.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
+import { SearchService } from '../search/search.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CourseStatus } from '@prisma/client';
 
@@ -24,6 +25,16 @@ const mockPrisma = {
 
 const mockNotifications = {
   notifyUser: jest.fn().mockResolvedValue({}),
+};
+
+const mockSearchService = {
+  indexCourse: jest.fn().mockResolvedValue(undefined),
+  removeCourse: jest.fn().mockResolvedValue(undefined),
+  bulkIndexCourses: jest.fn().mockResolvedValue(undefined),
+  getIndexFreshness: jest.fn().mockResolvedValue(0),
+  search: jest.fn().mockResolvedValue({
+    hits: [], estimatedTotalHits: 0, page: 1, limit: 20, totalPages: 0, query: '', processingTimeMs: 0,
+  }),
 };
 
 const MOCK_COURSE = {
@@ -50,6 +61,7 @@ describe('CoursesService', () => {
         CoursesService,
         { provide: PrismaService,       useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications },
+        { provide: SearchService, useValue: mockSearchService },
         FeeCalculatorService,
       ],
     }).compile();
