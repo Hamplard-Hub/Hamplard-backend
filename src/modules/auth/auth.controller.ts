@@ -18,6 +18,13 @@ class LoginDto {
   @IsOptional() @IsString() referralCode?: string;
 }
 
+class RefreshTokenDto {
+  @ApiProperty({ description: 'Current refresh token to exchange for a new pair' })
+  @IsString()
+  @IsNotEmpty()
+  refreshToken: string;
+}
+
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
@@ -31,8 +38,15 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Submit signed nonce and receive JWT' })
+  @ApiOperation({ summary: 'Submit signed nonce and receive JWT access and refresh tokens' })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Exchange a refresh token for a new access and refresh token pair' })
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refresh(dto.refreshToken);
   }
 }

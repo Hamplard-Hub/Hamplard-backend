@@ -1,8 +1,8 @@
 // auth.service.ts
 import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ReferralsService } from '../referrals/referrals.service';
+import { RefreshTokenService, TokenPair } from './refresh-token.service';
 
 @Injectable()
 export class AuthService {
@@ -11,8 +11,8 @@ export class AuthService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwt: JwtService,
     private readonly referrals: ReferralsService,
+    private readonly refreshTokens: RefreshTokenService,
   ) {}
 
   generateNonce(stellarAddress: string): string {
@@ -27,7 +27,7 @@ export class AuthService {
     signature: string;
     role?: 'STUDENT' | 'INSTRUCTOR';
     referralCode?: string;
-  }): Promise<{ accessToken: string; user: any }> {
+  }): Promise<TokenPair & { user: any }> {
     const { stellarAddress, signedNonce, signature, role, referralCode } = payload;
 
     const stored = this.nonces.get(stellarAddress);
@@ -67,13 +67,13 @@ export class AuthService {
       }
     }
 
-    const accessToken = this.jwt.sign({
-      sub:            user.id,
-      stellarAddress: user.stellarAddress,
-      role:           user.role,
-    });
+    const tokens = await this.refreshTokens.issueTokenPair(user);
 
     this.logger.log(`User authenticated: ${stellarAddress} (${user.role})`);
-    return { accessToken, user };
+    return { ...tokens, user };
+  }
+
+  async refresh(refreshToken: string): Promise<TokenPair> {
+    return this.refreshTokens.rotate(refreshToken);
   }
 }

@@ -11,6 +11,7 @@ import { GoogleAuthService } from './google-auth.service';
 import { GoogleStrategy } from './google.strategy';
 import { GoogleAuthGuard } from './google-auth.guard';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { RefreshTokenService } from './refresh-token.service';
 
 @Module({
   imports: [
@@ -26,7 +27,14 @@ import { ReferralsModule } from '../referrals/referrals.module';
     ReferralsModule,
   ],
   controllers: [AuthController, GoogleAuthController],
-  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard],
-  exports: [AuthService],
+  providers: [
+    AuthService,
+    RefreshTokenService,
+    JwtStrategy,
+    GoogleAuthService,
+    GoogleStrategy,
+    GoogleAuthGuard,
+  ],
+  exports: [AuthService, RefreshTokenService],
 })
 export class AuthModule {}

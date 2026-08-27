@@ -4,10 +4,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import { OAuth2Client, TokenPayload } from 'google-auth-library';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RefreshTokenService } from './refresh-token.service';
 
 export interface GoogleIdentity {
   googleId: string;
@@ -25,7 +25,7 @@ export class GoogleAuthService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwt: JwtService,
+    private readonly refreshTokens: RefreshTokenService,
     config: ConfigService,
   ) {
     this.clientId = config.get<string>('GOOGLE_CLIENT_ID');
@@ -112,14 +112,9 @@ export class GoogleAuthService {
             },
           });
 
-      const accessToken = this.jwt.sign({
-        sub: user.id,
-        stellarAddress: user.stellarAddress,
-        googleId: user.googleId,
-        role: user.role,
-      });
+      const tokens = await this.refreshTokens.issueTokenPair(user);
 
-      return { accessToken, user };
+      return { ...tokens, user };
     } catch (error) {
       if (error?.code === 'P2002') {
         throw new ConflictException('Google account is already linked to another user');
