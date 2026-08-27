@@ -1359,3 +1359,50 @@ model CourseDraft {
   @@map("course_drafts")
 }
 
+
+// ============================================================
+// FEATURE FLAGS
+// ============================================================
+
+model FeatureFlag {
+  id               String   @id @default(uuid())
+  key              String   @unique        // e.g. "new_payment_flow", "stellar_v2_calls"
+  description      String?
+  enabled          Boolean  @default(false)
+  rolloutPercent   Int      @default(100)  // 0-100 — percentage of users that see the flag
+  allowedRoles     String[] @default([])   // restrict to specific roles (empty = all roles)
+  allowedUserIds   String[] @default([])   // explicit user allow-list (empty = no extra restriction)
+  metadata         Json?                   // arbitrary extra config for the flag
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("feature_flags")
+}
+
+// ============================================================
+// CRON JOB MONITORING
+// ============================================================
+
+enum CronJobStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model CronJobRun {
+  id          String       @id @default(uuid())
+  jobName     String                             // e.g. "purge-audit-logs", "payout-scheduler"
+  status      CronJobStatus @default(RUNNING)
+  startedAt   DateTime     @default(now())
+  finishedAt  DateTime?
+  durationMs  Int?                               // wall-clock time in milliseconds
+  message     String?                            // human-readable outcome summary
+  error       String?                            // error message / stack if FAILED
+  metadata    Json?                              // job-specific output (rows affected, etc.)
+
+  @@index([jobName])
+  @@index([startedAt])
+  @@index([status])
+  @@map("cron_job_runs")
+}
