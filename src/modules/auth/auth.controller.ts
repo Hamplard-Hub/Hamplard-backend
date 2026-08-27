@@ -10,6 +10,12 @@ class LoginDto {
   @ApiProperty() @IsString() @IsNotEmpty() signature: string;
   @ApiProperty({ required: false, enum: ['STUDENT', 'INSTRUCTOR'] })
   @IsOptional() @IsIn(['STUDENT', 'INSTRUCTOR']) role?: 'STUDENT' | 'INSTRUCTOR';
+  @ApiProperty({
+    required: false,
+    example: 'HAMP-A1B2C3',
+    description: 'Optional referral code applied on first-time registration',
+  })
+  @IsOptional() @IsString() referralCode?: string;
 }
 
 @ApiTags('auth')

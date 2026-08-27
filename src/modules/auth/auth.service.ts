@@ -2,6 +2,7 @@
 import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { ReferralsService } from '../referrals/referrals.service';
 
 @Injectable()
 export class AuthService {
@@ -11,6 +12,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
+    private readonly referrals: ReferralsService,
   ) {}
 
   generateNonce(stellarAddress: string): string {
@@ -24,8 +26,9 @@ export class AuthService {
     signedNonce: string;
     signature: string;
     role?: 'STUDENT' | 'INSTRUCTOR';
+    referralCode?: string;
   }): Promise<{ accessToken: string; user: any }> {
-    const { stellarAddress, signedNonce, signature, role } = payload;
+    const { stellarAddress, signedNonce, signature, role, referralCode } = payload;
 
     const stored = this.nonces.get(stellarAddress);
     if (!stored || Date.now() > stored.expiresAt) {
@@ -38,6 +41,9 @@ export class AuthService {
     if (!isValid) throw new UnauthorizedException('Invalid signature');
     this.nonces.delete(stellarAddress);
 
+    const existing = await this.prisma.user.findUnique({ where: { stellarAddress } });
+    const isNewUser = !existing;
+
     // Upsert user — preserve existing role if already set
     const user = await this.prisma.user.upsert({
       where: { stellarAddress },
@@ -47,6 +53,19 @@ export class AuthService {
       },
       update: { updatedAt: new Date() },
     });
+
+    // Validate + track referral only for brand-new registrations
+    if (isNewUser && referralCode) {
+      try {
+        await this.referrals.validateCode(referralCode, user.id);
+        await this.referrals.trackSignup(user.id, referralCode);
+      } catch (error) {
+        this.logger.warn(
+          `Referral code "${referralCode}" rejected for ${stellarAddress}: ${error.message}`,
+        );
+        // Soft-fail: registration succeeds even if referral is invalid
+      }
+    }
 
     const accessToken = this.jwt.sign({
       sub:            user.id,

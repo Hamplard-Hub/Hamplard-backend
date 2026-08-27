@@ -64,6 +64,7 @@ async function bootstrap() {
     .addTag('disputes',     'Course and payment dispute management')
     .addTag('kyc',          'Instructor identity verification')
     .addTag('payouts',      'Instructor payout schedules and processing')
+    .addTag('tags',         'Searchable tag management for courses')
     .build();
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);

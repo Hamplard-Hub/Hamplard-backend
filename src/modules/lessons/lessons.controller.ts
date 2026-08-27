@@ -1,7 +1,7 @@
 import {
   Controller, Get, Post, Patch, Body, Param, UseGuards, HttpCode, HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiProperty } from '@nestjs/swagger';
 import { LessonsService } from './lessons.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -43,6 +43,7 @@ export class LessonsController {
       type?: string;
       videoUrl?: string;
       videoDuration?: number;
+      thumbnailUrl?: string;
       content?: string;
       resourceUrl?: string;
       position: number;
@@ -50,6 +51,18 @@ export class LessonsController {
     },
   ) {
     return this.lessonsService.createLesson(body.moduleId, body);
+  }
+
+  @Patch(':id/thumbnail')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Set or update the thumbnail URL for a lesson' })
+  updateThumbnail(
+    @Param('id') lessonId: string,
+    @Body() body: { thumbnailUrl: string },
+  ) {
+    return this.lessonsService.updateThumbnailUrl(lessonId, body.thumbnailUrl);
   }
 
   @Post(':id/complete')

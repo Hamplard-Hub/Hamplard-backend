@@ -28,6 +28,12 @@ import { AdminModule }        from './modules/admin/admin.module';
 import { ModerationModule }   from './modules/moderation/moderation.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
 import { SearchModule } from './modules/search/search.module';
+import { ReferralsModule }    from './modules/referrals/referrals.module';
+import { AuditLogModule }     from './modules/audit-log/audit-log.module';
+import { AnalyticsModule }    from './modules/analytics/analytics.module';
+import { BackupsModule }      from './modules/backups/backups.module';
+import { UploadsModule }      from './modules/uploads/uploads.module';
+import { TagsModule }         from './modules/tags/tags.module';
 
 @Module({
   imports: [
@@ -70,6 +76,12 @@ import { SearchModule } from './modules/search/search.module';
     ModerationModule,
     GamificationModule,
     SearchModule,
+    ReferralsModule,
+    AuditLogModule,
+    AnalyticsModule,
+    BackupsModule,
+    UploadsModule,
+    TagsModule,
   ],
 })
 export class AppModule {}

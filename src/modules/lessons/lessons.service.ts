@@ -22,6 +22,7 @@ export class LessonsService {
     type?: string;
     videoUrl?: string;
     videoDuration?: number;
+    thumbnailUrl?: string;
     content?: string;
     resourceUrl?: string;
     position: number;
@@ -35,6 +36,7 @@ export class LessonsService {
         type:          data.type as any ?? 'VIDEO',
         videoUrl:      data.videoUrl,
         videoDuration: data.videoDuration,
+        thumbnailUrl:  data.thumbnailUrl,
         content:       data.content,
         resourceUrl:   data.resourceUrl,
         position:      data.position,
@@ -63,6 +65,20 @@ export class LessonsService {
     });
     if (!lesson) throw new NotFoundException('Lesson not found');
     return lesson;
+  }
+
+  /**
+   * Stores or updates the thumbnail URL on a lesson record.
+   * Called after video thumbnail extraction completes.
+   */
+  async updateThumbnailUrl(lessonId: string, thumbnailUrl: string) {
+    const lesson = await this.prisma.lesson.findUnique({ where: { id: lessonId } });
+    if (!lesson) throw new NotFoundException('Lesson not found');
+
+    return this.prisma.lesson.update({
+      where: { id: lessonId },
+      data: { thumbnailUrl },
+    });
   }
 
   // ----------------------------------------------------------

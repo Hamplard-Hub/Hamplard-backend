@@ -1,0 +1,12 @@
+-- AlterTable
+ALTER TABLE "users" ADD COLUMN "isBanned" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN "bannedAt" TIMESTAMP(3),
+ADD COLUMN "banReason" TEXT,
+ADD COLUMN "isSuspended" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN "suspendedAt" TIMESTAMP(3),
+ADD COLUMN "suspendedUntil" TIMESTAMP(3),
+ADD COLUMN "suspensionReason" TEXT;
+
+-- AlterEnum
+ALTER TYPE "AuditAction" ADD VALUE 'USER_SUSPENDED';
+ALTER TYPE "AuditAction" ADD VALUE 'USER_UNSUSPENDED';

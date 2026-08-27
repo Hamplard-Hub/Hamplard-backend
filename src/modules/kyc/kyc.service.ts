@@ -41,27 +41,33 @@ export class KycService {
       throw new BadRequestException('Your KYC is already approved');
     }
 
-    // Save primary document
-    const documentUrl = await this.uploads.saveKycDocument(documentFile, instructorId);
+    // Save primary document (persist stable origin path; expose CDN URLs in response)
+    const primary = await this.uploads.saveKycDocument(documentFile, instructorId);
 
     // Save secondary document if provided (e.g. selfie)
-    let additionalUrl: string | undefined;
+    let additional: Awaited<ReturnType<UploadsService['saveKycDocument']>> | undefined;
     if (additionalFile) {
-      additionalUrl = await this.uploads.saveKycDocument(additionalFile, instructorId);
+      additional = await this.uploads.saveKycDocument(additionalFile, instructorId);
     }
 
     const submission = await this.prisma.kycSubmission.create({
       data: {
         instructorId,
         documentType: dto.documentType,
-        documentUrl,
-        additionalUrl: additionalUrl ?? null,
+        documentUrl: primary.originUrl,
+        additionalUrl: additional?.originUrl ?? null,
         status: KycStatus.PENDING,
       },
     });
 
     this.logger.log(`KYC submission created: ${submission.id} for instructor ${instructorId}`);
-    return submission;
+    return {
+      ...submission,
+      documentUrl: primary.cdnUrl,
+      documentDelivery: primary,
+      additionalUrl: additional?.cdnUrl ?? null,
+      additionalDelivery: additional ?? null,
+    };
   }
 
   // ----------------------------------------------------------

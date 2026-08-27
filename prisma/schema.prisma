@@ -85,6 +85,8 @@ enum NotificationType {
   REFUND_APPROVED
   REFUND_REJECTED
   REFUND_PROCESSED
+  REFERRAL_REWARD_ISSUED
+  COURSE_INTEREST_REMINDER
 }
 
 enum RefundStatus {
@@ -179,19 +181,82 @@ enum ReportStatus {
   DISMISSED      // reviewed, no action needed
 }
 
+enum FraudRiskLevel {
+  LOW       // score 0-39   — no action
+  MEDIUM    // score 40-69  — no action (internal logging only)
+  HIGH      // score 70-89  — enrollment flagged, proceeds normally
+  CRITICAL  // score 90-100 — enrollment blocked (automatic hold)
+}
+
+enum FraudFlagStatus {
+  OPEN      // flagged, awaiting admin review
+  HELD      // enrollment blocked by automatic hold
+  CLEARED   // admin reviewed — no fraud found
+  CONFIRMED // admin confirmed fraud — enrollment voided
+}
+
+enum ReferralStatus {
+  SIGNED_UP      // referred user registered with a valid code
+  CONVERTED      // referred user completed first enrollment
+}
+
+enum ReferralRewardStatus {
+  PENDING        // awaiting conversion before issuance
+  ISSUED         // discount available for use
+  REDEEMED       // applied to an enrollment
+  EXPIRED
+  CANCELLED
+}
+
+enum ReferralRewardKind {
+  REFERRER       // reward for the student who shared the code
+  REFEREE        // welcome discount for the new user
+}
+
+enum SmsStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+}
+
+enum SmsTemplateKey {
+  ACCOUNT_VERIFICATION
+  ENROLLMENT_CONFIRMED
+  PAYMENT_RECEIVED
+  PASSWORD_RESET
+  GENERIC_ALERT
+}
+
+enum PointsActivityType {
+  DAILY_LOGIN
+  LESSON_COMPLETED
+  ASSIGNMENT_SUBMITTED
+  EXAM_PASSED
+  COURSE_COMPLETED
+}
+
 // ============================================================
 // MODELS
 // ============================================================
 
 model User {
   id             String    @id @default(uuid())
-  stellarAddress String    @unique
+  stellarAddress String?   @unique
+  googleId       String?   @unique
   email          String?   @unique
   name           String?
   bio            String?
   avatarUrl      String?
   role           UserRole  @default(STUDENT)
   isVerified     Boolean   @default(false)
+  isBanned       Boolean   @default(false)
+  bannedAt       DateTime?
+  banReason      String?
+  isSuspended    Boolean   @default(false)
+  suspendedAt    DateTime?
+  suspendedUntil DateTime?
+  suspensionReason String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -207,6 +272,8 @@ model User {
   reportsHandled      AbuseReport[]         @relation("ReportsHandled")
   reviews             CourseReview[]
   discussionComments  DiscussionComment[]
+  fraudFlags          EnrollmentFraudFlag[] @relation("StudentFraudFlags")
+  fraudReviewed       EnrollmentFraudFlag[] @relation("FraudReviewedBy")
   refundRequests      Refund[]
   bundlesCreated      Bundle[]              @relation("InstructorBundles")
   bundleEnrollments   BundleEnrollment[]
@@ -218,6 +285,22 @@ model User {
   kycSubmissions      KycSubmission[]       @relation("KycSubmissions")
   kycReviews          KycSubmission[]       @relation("KycReviews")
   payoutSchedule      PayoutSchedule?       @relation("PayoutSchedule")
+  referralCode        ReferralCode?
+  referralsMade       Referral[]            @relation("ReferralsMade")
+  referralReceived    Referral?             @relation("ReferredBy")
+  referralRewards     ReferralReward[]      @relation("ReferralRewards")
+  deviceTokens        NotificationDeviceToken[]
+  notificationPreferences NotificationPreference[]
+  digestPreference    NotificationDigestPreference?
+  auditLogs           AdminAuditLog[]       @relation("AuditLogActor")
+  courseRestoreJobs   CourseRestoreJob[]    @relation("CourseRestoreRequester")
+  smsMessages         SmsMessage[]
+  wishlistItems       WishlistItem[]
+  points              UserPoints?
+  pointsAwards        PointsAward[]
+  questionsAsked      Question[]            @relation("QuestionsAsked")
+  answersGiven        Answer[]              @relation("AnswersGiven")
+  courseDrafts        CourseDraft[]         @relation("InstructorCourseDrafts")
 
   @@map("users")
 }
@@ -258,8 +341,24 @@ model Course {
   bundleCourses BundleCourse[]
   invoices      Invoice[]
   coupons       Coupon[]
+  wishlistItems WishlistItem[]
+  tags          CourseTag[]
 
   @@map("courses")
+}
+
+
+model CourseSearchTerm {
+  id             String   @id @default(uuid())
+  term           String   @unique
+  searchCount    Int      @default(0)
+  lastSearchedAt DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([searchCount])
+  @@index([lastSearchedAt])
+  @@map("course_search_terms")
 }
 
 model CourseModule {
@@ -285,6 +384,7 @@ model Lesson {
   type         LessonType  @default(VIDEO)
   videoUrl     String?     // URL to video file (S3 / local)
   videoDuration Int?       // seconds
+  thumbnailUrl String?     // URL to auto-generated or manually set thumbnail
   content      String?     // for TEXT type lessons
   resourceUrl  String?     // downloadable resource
   position     Int         // ordering within the module
@@ -297,6 +397,7 @@ model Lesson {
   progress    LessonProgress[]
   assignment  Assignment?
   quizQuestions QuizQuestion[]
+  questions   Question[]
 
   @@map("lessons")
 }
@@ -368,14 +469,32 @@ model Enrollment {
   updatedAt       DateTime         @updatedAt
 
   // Relations
-  student       User            @relation(fields: [studentId], references: [id])
-  course        Course          @relation(fields: [courseId], references: [id])
+  student        User                 @relation(fields: [studentId], references: [id])
+  course         Course               @relation(fields: [courseId], references: [id])
   lessonProgress LessonProgress[]
-  refunds       Refund[]
-  invoice       Invoice?
+  refunds        Refund[]
+  invoice        Invoice?
+  fraudFlag      EnrollmentFraudFlag?
 
   @@unique([studentId, courseId])
   @@map("enrollments")
+}
+
+model WishlistItem {
+  id             String    @id @default(uuid())
+  studentId      String
+  courseId       String
+  lastReminderAt DateTime?
+  reminderCount  Int       @default(0)
+  createdAt      DateTime  @default(now())
+
+  // Relations
+  student User   @relation(fields: [studentId], references: [id])
+  course  Course @relation(fields: [courseId], references: [id])
+
+  @@unique([studentId, courseId])
+  @@index([studentId])
+  @@map("wishlist_items")
 }
 
 model LessonProgress {
@@ -449,6 +568,75 @@ model Notification {
   @@index([userId])
   @@index([read])
   @@map("notifications")
+}
+
+model NotificationDeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String?  @default("mobile")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([isActive])
+  @@map("notification_device_tokens")
+}
+
+model NotificationPreference {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  email     Boolean          @default(true)
+  push      Boolean          @default(true)
+  inApp     Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, type])
+  @@index([userId])
+  @@map("notification_preferences")
+}
+
+model NotificationDigestPreference {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  emailEnabled  Boolean  @default(true)
+  lastDigestAt  DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("notification_digest_preferences")
+}
+
+model SmsMessage {
+  id                String          @id @default(uuid())
+  userId            String?
+  phoneNumber       String          // normalized E.164
+  countryCode       String
+  templateKey       SmsTemplateKey?
+  message           String
+  status            SmsStatus       @default(PENDING)
+  providerMessageId String?         @unique
+  failureReason     String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("sms_messages")
 }
 
 model Exam {
@@ -689,6 +877,73 @@ model CourseReview {
   @@map("course_reviews")
 }
 
+model UserPoints {
+  id               String    @id @default(uuid())
+  userId           String    @unique
+  totalPoints      Int       @default(0)
+  currentStreak    Int       @default(0)
+  longestStreak    Int       @default(0)
+  lastActivityDate DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("user_points")
+}
+
+model PointsAward {
+  id           String             @id @default(uuid())
+  userId       String
+  activityType PointsActivityType
+  points       Int
+  awardedDate  DateTime           // midnight-normalized date the award applies to
+  createdAt    DateTime           @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, activityType, awardedDate])
+  @@index([userId])
+  @@map("points_awards")
+}
+
+model Question {
+  id        String   @id @default(uuid())
+  lessonId  String
+  authorId  String
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  lesson  Lesson   @relation(fields: [lessonId], references: [id])
+  author  User     @relation("QuestionsAsked", fields: [authorId], references: [id])
+  answers Answer[]
+
+  @@index([lessonId])
+  @@map("questions")
+}
+
+model Answer {
+  id           String   @id @default(uuid())
+  questionId   String
+  authorId     String
+  content      String
+  isBestAnswer Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  question Question @relation(fields: [questionId], references: [id])
+  author   User     @relation("AnswersGiven", fields: [authorId], references: [id])
+
+  @@index([questionId])
+  @@map("answers")
+}
+
 model DiscussionComment {
   id              String               @id @default(uuid())
   discussionId    String
@@ -707,6 +962,31 @@ model DiscussionComment {
   @@index([discussionId])
   @@index([authorId])
   @@map("discussion_comments")
+}
+
+model EnrollmentFraudFlag {
+  id           String          @id @default(uuid())
+  enrollmentId String          @unique
+  studentId    String
+  riskScore    Int             // computed 0–100
+  riskLevel    FraudRiskLevel
+  reasons      Json            // string[] of triggered rule names
+  status       FraudFlagStatus @default(OPEN)
+  reviewedById String?
+  reviewNotes  String?
+  reviewedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  // Relations
+  enrollment Enrollment  @relation(fields: [enrollmentId], references: [id])
+  student    User        @relation("StudentFraudFlags", fields: [studentId], references: [id])
+  reviewedBy User?       @relation("FraudReviewedBy", fields: [reviewedById], references: [id])
+
+  @@index([studentId])
+  @@index([status])
+  @@index([riskLevel])
+  @@map("enrollment_fraud_flags")
 }
 
 model Refund {
@@ -801,3 +1081,281 @@ model Invoice {
 
   @@map("invoices")
 }
+
+// ============================================================
+// REFERRALS
+// ============================================================
+
+model ReferralCode {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  code             String   @unique
+  isActive         Boolean  @default(true)
+  totalSignups     Int      @default(0)
+  totalConversions Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  user      User       @relation(fields: [userId], references: [id])
+  referrals Referral[]
+
+  @@map("referral_codes")
+}
+
+model Referral {
+  id             String         @id @default(uuid())
+  referralCodeId String
+  referrerId     String
+  referredUserId String         @unique
+  status         ReferralStatus @default(SIGNED_UP)
+  signedUpAt     DateTime       @default(now())
+  convertedAt    DateTime?
+  enrollmentId   String?        @unique
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // Relations
+  referralCode ReferralCode     @relation(fields: [referralCodeId], references: [id])
+  referrer     User             @relation("ReferralsMade", fields: [referrerId], references: [id])
+  referredUser User             @relation("ReferredBy", fields: [referredUserId], references: [id])
+  rewards      ReferralReward[]
+
+  @@index([referrerId])
+  @@index([status])
+  @@map("referrals")
+}
+
+model ReferralReward {
+  id            String               @id @default(uuid())
+  referralId    String
+  beneficiaryId String
+  kind          ReferralRewardKind
+  discountType  DiscountType         @default(PERCENTAGE)
+  discountValue Decimal
+  status        ReferralRewardStatus @default(PENDING)
+  enrollmentId  String?
+  issuedAt      DateTime?
+  redeemedAt    DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  // Relations
+  referral    Referral @relation(fields: [referralId], references: [id])
+  beneficiary User     @relation("ReferralRewards", fields: [beneficiaryId], references: [id])
+
+  @@index([beneficiaryId, status])
+  @@index([referralId])
+  @@map("referral_rewards")
+}
+
+// ============================================================
+// TAGS
+// ============================================================
+
+model Tag {
+  id         String   @id @default(uuid())
+  name       String   @unique  // normalized lowercase slug, e.g. "web-design"
+  label      String            // display label, e.g. "Web Design"
+  usageCount Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relations
+  courses CourseTag[]
+
+  @@index([usageCount])
+  @@index([name])
+  @@map("tags")
+}
+
+model CourseTag {
+  id       String @id @default(uuid())
+  courseId String
+  tagId    String
+
+  // Relations
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, tagId])
+  @@index([courseId])
+  @@index([tagId])
+  @@map("course_tags")
+}
+
+// ============================================================
+// ADMIN AUDIT LOG
+// ============================================================
+
+enum AuditAction {
+  // User management
+  USER_BANNED
+  USER_UNBANNED
+  USER_SUSPENDED
+  USER_UNSUSPENDED
+  USER_ROLE_CHANGED
+
+  // Course lifecycle
+  COURSE_APPROVED
+  COURSE_REJECTED
+  COURSE_PAUSED
+  COURSE_ARCHIVED
+
+  // KYC
+  KYC_APPROVED
+  KYC_REJECTED
+
+  // Disputes
+  DISPUTE_RESOLVED
+  DISPUTE_REJECTED
+  DISPUTE_CLOSED
+
+  // Refunds
+  REFUND_APPROVED
+  REFUND_REJECTED
+  REFUND_PROCESSED
+
+  // Payouts
+  PAYOUT_PROCESSED
+  PAYOUT_SCHEDULED
+
+  // Coupons
+  COUPON_CREATED
+  COUPON_DEACTIVATED
+
+  // Abuse reports
+  REPORT_RESOLVED
+  REPORT_DISMISSED
+
+  // Admin impersonation
+  IMPERSONATION_STARTED
+  IMPERSONATION_ENDED
+
+  // Tags
+  TAG_CREATED
+  TAG_UPDATED
+  TAG_DELETED
+  TAG_MERGED
+
+  // Generic admin note
+  ADMIN_MANUAL_NOTE
+}
+
+enum AuditTargetType {
+  USER
+  COURSE
+  KYC_SUBMISSION
+  DISPUTE
+  REFUND
+  PAYOUT
+  COUPON
+  ABUSE_REPORT
+  TAG
+}
+
+model AdminAuditLog {
+  id         String          @id @default(uuid())
+  actorId    String          // The admin who performed the action
+  action     AuditAction
+  targetType AuditTargetType
+  targetId   String          // ID of the entity acted upon
+  metadata   Json?           // Extra context: old/new values, notes, etc.
+  ipAddress  String?         // Request IP for compliance tracing
+  createdAt  DateTime        @default(now()) // Intentionally no updatedAt — entries are immutable
+
+  // Relations
+  actor User @relation("AuditLogActor", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("admin_audit_logs")
+}
+
+// ============================================================
+// ANALYTICS EVENTS
+// ============================================================
+
+model AnalyticsEvent {
+  id         String   @id @default(uuid())
+  eventType  String
+  userId     String?
+  sessionId  String?
+  path       String?
+  properties Json?
+  userAgent  String?
+  ipAddress  String?
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([eventType])
+  @@index([userId])
+  @@index([occurredAt])
+  @@index([eventType, occurredAt])
+  @@map("analytics_events")
+}
+
+// COURSE DATA RESTORE
+// ============================================================
+
+enum CourseRestoreStatus {
+  PENDING
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model CourseRestoreJob {
+  id              String              @id @default(uuid())
+  requestedBy     String
+  status          CourseRestoreStatus @default(PENDING)
+  progressPercent Int                 @default(0)
+  totalSteps      Int                 @default(0)
+  completedSteps  Int                 @default(0)
+  scheduledFor    DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  backupPayload   Json
+  validationErrors Json?
+  summary         Json?
+  errorMessage    String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  requester User @relation("CourseRestoreRequester", fields: [requestedBy], references: [id])
+
+  @@index([status])
+  @@index([scheduledFor])
+  @@index([requestedBy])
+  @@map("course_restore_jobs")
+}
+
+// ============================================================
+// COURSE AUTOSAVE DRAFTS
+// ============================================================
+
+model CourseDraft {
+  id                String   @id @default(uuid())
+  courseId          String?
+  instructorId      String
+  instructorAddress String
+  title             String?
+  data              Json
+  version           Int      @default(1)
+  lastSavedAt       DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  instructor User @relation("InstructorCourseDrafts", fields: [instructorId], references: [id], onDelete: Cascade)
+
+  @@index([instructorId])
+  @@index([courseId])
+  @@index([lastSavedAt])
+  @@map("course_drafts")
+}
+

@@ -1,5 +1,6 @@
-import { Controller, Get, Patch, Param, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { NotificationType } from '@prisma/client';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -32,5 +33,37 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Mark all notifications as read' })
   markAllRead(@CurrentUser('id') userId: string) {
     return this.notificationsService.markAllRead(userId);
+  }
+
+  @Post('devices/register')
+  @ApiOperation({ summary: 'Register a mobile device token for push notifications' })
+  registerDeviceToken(
+    @CurrentUser('id') userId: string,
+    @Body('token') token: string,
+    @Body('platform') platform?: string,
+  ) {
+    return this.notificationsService.registerDeviceToken(userId, token, platform);
+  }
+
+  @Get('preferences')
+  @ApiOperation({ summary: 'Get the current notification channel preferences' })
+  getPreferences(@CurrentUser('id') userId: string) {
+    return this.notificationsService.getCurrentPreferenceSettings(userId);
+  }
+
+  @Patch('preferences/:type')
+  @ApiOperation({ summary: 'Update notification preferences for a specific notification type' })
+  updatePreference(
+    @CurrentUser('id') userId: string,
+    @Param('type') type: NotificationType,
+    @Body() preferences: { email?: boolean; push?: boolean; inApp?: boolean },
+  ) {
+    return this.notificationsService.updatePreference(userId, type, preferences);
+  }
+
+  @Patch('digest-preference')
+  @ApiOperation({ summary: 'Enable or disable the daily digest email' })
+  updateDigestPreference(@CurrentUser('id') userId: string, @Body('emailEnabled') emailEnabled: boolean) {
+    return this.notificationsService.updateDigestPreference(userId, emailEnabled);
   }
 }
