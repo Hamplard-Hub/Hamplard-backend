@@ -5,6 +5,7 @@ import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { CaptchaService } from './captcha.service';
 import { JwtStrategy } from './jwt.strategy';
 import { GoogleAuthController } from './google-auth.controller';
 import { GoogleAuthService } from './google-auth.service';
@@ -26,7 +27,7 @@ import { ReferralsModule } from '../referrals/referrals.module';
     ReferralsModule,
   ],
   controllers: [AuthController, GoogleAuthController],
-  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard],
+  providers: [AuthService, CaptchaService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard],
   exports: [AuthService],
 })
 export class AuthModule {}
