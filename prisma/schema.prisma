@@ -249,8 +249,9 @@ model User {
   bio            String?
   avatarUrl      String?
   role           UserRole  @default(STUDENT)
-  isVerified     Boolean   @default(false)
-  isBanned       Boolean   @default(false)
+  isVerified       Boolean   @default(false)
+  emailVerifiedAt  DateTime?
+  isBanned         Boolean   @default(false)
   bannedAt       DateTime?
   banReason      String?
   isSuspended    Boolean   @default(false)
@@ -301,6 +302,7 @@ model User {
   questionsAsked      Question[]            @relation("QuestionsAsked")
   answersGiven        Answer[]              @relation("AnswersGiven")
   courseDrafts        CourseDraft[]         @relation("InstructorCourseDrafts")
+  dataExports         DataExportJob[]
 
   @@map("users")
 }
@@ -1357,5 +1359,33 @@ model CourseDraft {
   @@index([courseId])
   @@index([lastSavedAt])
   @@map("course_drafts")
+}
+
+// ============================================================
+// GDPR DATA EXPORT
+// ============================================================
+
+enum DataExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model DataExportJob {
+  id            String           @id @default(uuid())
+  userId        String
+  status        DataExportStatus @default(PENDING)
+  filePath      String?
+  fileSize      Int?
+  errorMessage  String?
+  createdAt     DateTime         @default(now())
+  completedAt   DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("data_export_jobs")
 }
 

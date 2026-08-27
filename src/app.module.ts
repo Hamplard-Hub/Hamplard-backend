@@ -33,6 +33,7 @@ import { AnalyticsModule }    from './modules/analytics/analytics.module';
 import { BackupsModule }      from './modules/backups/backups.module';
 import { UploadsModule }      from './modules/uploads/uploads.module';
 import { TagsModule }         from './modules/tags/tags.module';
+import { PrivacyModule }      from './modules/privacy/privacy.module';
 
 @Module({
   imports: [
@@ -80,6 +81,7 @@ import { TagsModule }         from './modules/tags/tags.module';
     BackupsModule,
     UploadsModule,
     TagsModule,
+    PrivacyModule,
   ],
 })
 export class AppModule {}

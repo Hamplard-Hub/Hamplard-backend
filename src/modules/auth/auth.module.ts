@@ -10,7 +10,11 @@ import { GoogleAuthController } from './google-auth.controller';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleStrategy } from './google.strategy';
 import { GoogleAuthGuard } from './google-auth.guard';
+import { EmailVerificationController } from './email-verification.controller';
+import { EmailVerificationService } from './email-verification.service';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { PrismaModule } from '../../common/prisma/prisma.module';
 
 @Module({
   imports: [
@@ -24,9 +28,22 @@ import { ReferralsModule } from '../referrals/referrals.module';
       }),
     }),
     ReferralsModule,
+    NotificationsModule,
+    PrismaModule,
   ],
-  controllers: [AuthController, GoogleAuthController],
-  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard],
+  controllers: [
+    AuthController,
+    GoogleAuthController,
+    EmailVerificationController,
+  ],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    GoogleAuthService,
+    GoogleStrategy,
+    GoogleAuthGuard,
+    EmailVerificationService,
+  ],
   exports: [AuthService],
 })
 export class AuthModule {}
