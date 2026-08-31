@@ -23,6 +23,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       stellarAddress: payload.stellarAddress,
       googleId:       payload.googleId,
       role:           payload.role,
+      jti:            payload.jti,
     };
   }
 }

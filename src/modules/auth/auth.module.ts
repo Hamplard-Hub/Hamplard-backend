@@ -10,8 +10,12 @@ import { GoogleAuthController } from './google-auth.controller';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleStrategy } from './google.strategy';
 import { GoogleAuthGuard } from './google-auth.guard';
+import { OtpController } from './otp.controller';
+import { OtpService } from './otp.service';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { RefreshTokenService } from './refresh-token.service';
+import { SessionsController } from './sessions.controller';
+import { SessionsService } from './sessions.service';
 
 @Module({
   imports: [
@@ -26,7 +30,7 @@ import { RefreshTokenService } from './refresh-token.service';
     }),
     ReferralsModule,
   ],
-  controllers: [AuthController, GoogleAuthController],
+  controllers: [AuthController, GoogleAuthController, OtpController, SessionsController],
   providers: [
     AuthService,
     RefreshTokenService,
@@ -34,7 +38,9 @@ import { RefreshTokenService } from './refresh-token.service';
     GoogleAuthService,
     GoogleStrategy,
     GoogleAuthGuard,
+    OtpService,
+    SessionsService,
   ],
-  exports: [AuthService, RefreshTokenService],
+  exports: [AuthService, RefreshTokenService, OtpService, SessionsService],
 })
 export class AuthModule {}

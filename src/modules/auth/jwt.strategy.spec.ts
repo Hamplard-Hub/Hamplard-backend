@@ -13,12 +13,14 @@ describe('JwtStrategy', () => {
         stellarAddress: 'GABC',
         googleId: 'google-123',
         role: 'STUDENT',
+        jti: 'access-jti',
       }),
     ).resolves.toEqual({
       id: 'user-1',
       stellarAddress: 'GABC',
       googleId: 'google-123',
       role: 'STUDENT',
+      jti: 'access-jti',
     });
   });
 

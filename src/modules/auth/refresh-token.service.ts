@@ -66,11 +66,13 @@ export class RefreshTokenService {
   ): Promise<TokenPair> {
     const family = familyId ?? randomUUID();
     const tokenId = randomUUID();
+    const accessJti = randomUUID();
     const accessToken = this.jwt.sign({
       sub: user.id,
       stellarAddress: user.stellarAddress,
       googleId: user.googleId,
       role: user.role,
+      jti: accessJti,
     });
     const refreshToken = this.jwt.sign(
       {

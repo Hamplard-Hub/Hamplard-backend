@@ -56,4 +56,22 @@ export class EnrollmentsController {
   ) {
     return this.enrollmentsService.isEnrolled(studentId, courseId);
   }
+
+  /**
+   * GET /api/v1/enrollments/:courseId/check-prerequisites
+   * Structured per-prerequisite feedback — satisfied vs missing.
+   */
+  @Get(':courseId/check-prerequisites')
+  @ApiOperation({
+    summary: 'Check whether prerequisites for a course are met by the current user',
+    description:
+      'Returns eligible=true/false plus the missing prerequisite courses, so the ' +
+      'frontend can explain an enrollment rejection before submitting a tx.',
+  })
+  checkPrerequisites(
+    @CurrentUser('id') studentId: string,
+    @Param('courseId') courseId: string,
+  ) {
+    return this.enrollmentsService.checkPrerequisites(studentId, courseId);
+  }
 }
