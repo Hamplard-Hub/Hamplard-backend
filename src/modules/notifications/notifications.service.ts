@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import * as nodemailer from 'nodemailer';
@@ -76,18 +76,62 @@ export class NotificationsService {
     return { data: notifications, meta: { total, page, limit } };
   }
 
-  async markRead(id: string, userId: string) {
-    return this.prisma.notification.updateMany({
-      where: { id, userId },
-      data: { read: true },
+  async getUnreadCount(userId: string) {
+    const count = await this.prisma.notification.count({
+      where: { userId, read: false },
     });
+    return { count, unreadCount: count };
+  }
+
+  async markRead(id: string, userId: string) {
+    const notification = await this.prisma.notification.findUnique({
+      where: { id },
+    });
+
+    if (!notification) {
+      throw new NotFoundException('Notification not found');
+    }
+
+    if (notification.userId !== userId) {
+      throw new ForbiddenException('You do not have access to this notification');
+    }
+
+    let updatedNotification = notification;
+    if (!notification.read) {
+      updatedNotification = await this.prisma.notification.update({
+        where: { id },
+        data: { read: true },
+      });
+    }
+
+    const unreadCount = await this.prisma.notification.count({
+      where: { userId, read: false },
+    });
+
+    return {
+      success: true,
+      notification: updatedNotification,
+      count: unreadCount,
+      unreadCount,
+    };
   }
 
   async markAllRead(userId: string) {
-    return this.prisma.notification.updateMany({
+    const result = await this.prisma.notification.updateMany({
       where: { userId, read: false },
       data: { read: true },
     });
+
+    const unreadCount = await this.prisma.notification.count({
+      where: { userId, read: false },
+    });
+
+    return {
+      success: true,
+      markedCount: result.count,
+      count: unreadCount,
+      unreadCount,
+    };
   }
 
   async registerDeviceToken(userId: string, token: string, platform = 'mobile') {

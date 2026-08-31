@@ -50,7 +50,10 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Submit signed nonce and receive JWT' })
-  login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  login(@Body() dto: LoginDto, @Req() req: Request) {
+    return this.authService.login(dto, {
+      userAgent: req.headers['user-agent'],
+      ipAddress: req.ip,
+    });
   }
 }

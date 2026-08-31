@@ -9,7 +9,11 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    // rawBody: true makes the unparsed request body available as req.rawBody
+    // (Buffer), which WebhookSignatureMiddleware needs for HMAC-SHA256 signing.
+    rawBody: true,
+  });
 
   const config = app.get(ConfigService);
   const port       = config.get<number>('PORT', 3000);
@@ -55,6 +59,7 @@ async function bootstrap() {
     .addTag('bundles',      'Course bundles')
     .addTag('assignments',  'Practical assignment submission and review')
     .addTag('certificates', 'Certificate issuance and verification')
+    .addTag('certificate-templates', 'Admin certificate branding, layout, and signature templates')
     .addTag('events',       'On-chain Stellar event feed')
     .addTag('notifications','User notifications')
     .addTag('reports',      'Abuse reports on courses, comments, and profiles')

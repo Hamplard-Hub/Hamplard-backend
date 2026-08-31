@@ -1,12 +1,15 @@
 import {
   Injectable, NotFoundException, ForbiddenException, Logger,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ExamsService } from '../exams/exams.service';
 import { NotificationType } from '@prisma/client';
+import { CertificateRenderData } from './certificate-template.types';
 import { v4 as uuidv4 } from 'uuid';
+import { CertificatePdfService } from '../certificates/certificate-pdf.service';
 
 @Injectable()
 export class CertificatesService {
@@ -17,6 +20,7 @@ export class CertificatesService {
     private readonly stellar: StellarService,
     private readonly notifications: NotificationsService,
     private readonly examsService: ExamsService,
+    private readonly pdfService: CertificatePdfService,
   ) {}
 
   /**
@@ -27,9 +31,10 @@ export class CertificatesService {
    *  2. Verify student passed the required certification exam (if one exists)
    *  3. Verify no certificate already exists
    *  4. Store the certificate record in the DB
-   *  5. The frontend/admin wallet then calls issue_certificate() on-chain
+   *  5. Generate and store the PDF certificate
+   *  6. The frontend/admin wallet then calls issue_certificate() on-chain
    *     and sends back the txHash to update the DB record
-   *  6. Notify the student
+   *  7. Notify the student
    */
   async issue(adminId: string, studentId: string, courseId: string): Promise<any> {
     // Verify enrollment exists and is completed
@@ -70,17 +75,29 @@ export class CertificatesService {
       include: { student: true, course: true },
     });
 
-    // Notify student
-    await this.notifications.notifyUser(
-      studentId,
-      NotificationType.CERTIFICATE_ISSUED,
-      '🎓 Certificate issued!',
-      `Congratulations! Your certificate for "${enrollment.course.title}" has been issued. You can now share it with employers and clients.`,
-      { certificateId, courseId },
+    // Generate PDF certificate using the course's category for template lookup
+    const renderData: CertificateRenderData = {
+      studentName:       enrollment.student.name,
+      courseTitle:       enrollment.course.title,
+      certificateId,
+      issuedAt:          certificate.issuedAt,
+      category:          enrollment.course.category,
+    };
+
+    const pdfBuffer = await this.pdfService.renderForCategory(
+      enrollment.course.category,
+      renderData,
     );
 
-    this.logger.log(`Certificate issued: ${certificateId} for student ${studentId}`);
-    return certificate;
+    // Store PDF file reference (in production this would be uploaded to S3/cloud storage)
+    const pdfUrl = `certificates/${certificateId}.pdf`;
+    const updatedCert = await this.prisma.certificate.update({
+      where: { id: certificateId },
+      data: { pdfUrl },
+    });
+
+    this.logger.log(`Certificate issued: ${certificateId} for student ${studentId}, PDF: ${pdfUrl}`);
+    return updatedCert;
   }
 
   /** Update the txHash after the admin calls issue_certificate() on-chain */
