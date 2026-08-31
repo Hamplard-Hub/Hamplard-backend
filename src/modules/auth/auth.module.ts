@@ -10,6 +10,8 @@ import { GoogleAuthController } from './google-auth.controller';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleStrategy } from './google.strategy';
 import { GoogleAuthGuard } from './google-auth.guard';
+import { OtpController } from './otp.controller';
+import { OtpService } from './otp.service';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { SessionsController } from './sessions.controller';
 import { SessionsService } from './sessions.service';
@@ -27,6 +29,9 @@ import { SessionsService } from './sessions.service';
     }),
     ReferralsModule,
   ],
+  controllers: [AuthController, GoogleAuthController, OtpController],
+  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard, OtpService],
+  exports: [AuthService, OtpService],
   controllers: [AuthController, GoogleAuthController, SessionsController],
   providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard, SessionsService],
   exports: [AuthService, SessionsService],

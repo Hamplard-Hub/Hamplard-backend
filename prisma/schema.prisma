@@ -250,6 +250,10 @@ model User {
   avatarUrl      String?
   role           UserRole  @default(STUDENT)
   isVerified     Boolean   @default(false)
+  phoneNumber    String?
+  phoneCountryCode String?
+  isPhoneVerified Boolean  @default(false)
+  phoneVerifiedAt DateTime?
   isBanned       Boolean   @default(false)
   bannedAt       DateTime?
   banReason      String?
@@ -302,11 +306,33 @@ model User {
   answersGiven        Answer[]              @relation("AnswersGiven")
   courseDrafts        CourseDraft[]         @relation("InstructorCourseDrafts")
   learningPathsCreated LearningPath[]       @relation("LearningPathCreator")
+  phoneOtps            PhoneOtp[]           @relation("UserPhoneOtps")
   sessions            Session[]             @relation("UserSessions")
 
   @@map("users")
 }
 
+model PhoneOtp {
+  id           String    @id @default(uuid())
+  userId       String
+  phoneNumber  String
+  countryCode  String
+  otp          String
+  attemptCount Int       @default(0)
+  expiresAt    DateTime
+  verifiedAt   DateTime?
+  isUsed       Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  user User @relation("UserPhoneOtps", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([phoneNumber])
+  @@index([expiresAt])
+  @@index([isUsed])
+  @@map("phone_otp")
 // Tracks an issued JWT so it can be listed and revoked per device (issue #69).
 model Session {
   id           String    @id @default(uuid())
