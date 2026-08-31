@@ -1,6 +1,6 @@
-// enrollments.service.ts
 import {
   Injectable, NotFoundException, ConflictException, Logger, HttpException,
+  ForbiddenException, Inject, forwardRef,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -8,6 +8,7 @@ import { InvoicesService } from '../invoices/invoices.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { NotificationType } from '@prisma/client';
 import { FraudDetectionService } from './fraud-detection.service';
+import { DripScheduleService } from '../lessons/drip-schedule.service';
 
 @Injectable()
 export class EnrollmentsService {
@@ -19,6 +20,8 @@ export class EnrollmentsService {
     private readonly invoices: InvoicesService,
     private readonly fraudDetection: FraudDetectionService,
     private readonly referrals: ReferralsService,
+    @Inject(forwardRef(() => DripScheduleService))
+    private readonly dripSchedule: DripScheduleService,
   ) {}
 
   /**
@@ -33,7 +36,24 @@ export class EnrollmentsService {
     if (existing) throw new ConflictException('Already enrolled in this course');
 
     // ------------------------------------------------------------------
-    // PRE-CHECK: Run fraud scoring before writing the enrollment to DB.
+    // PRE-CHECK #1: Enforce course prerequisites (issue #24). The student
+    // must have a COMPLETED enrollment for every configured prerequisite
+    // before any on-chain enrollment is registered.
+    // ------------------------------------------------------------------
+    const prereqCheck = await this.checkPrerequisites(studentId, courseId);
+    if (!prereqCheck.eligible) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Prerequisites Not Met',
+        message:
+          'You must complete the prerequisite courses below before enrolling ' +
+          'in this course.',
+        missingPrerequisites: prereqCheck.missing,
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // PRE-CHECK #2: Run fraud scoring before writing the enrollment to DB.
     // If the score is CRITICAL the enrollment is blocked entirely (HOLD).
     // We pass null for enrollmentId here because the row doesn't exist yet;
     // the flag for HOLD actions is persisted in the post-check below once
@@ -137,6 +157,13 @@ export class EnrollmentsService {
       this.logger.warn(`Referral conversion tracking failed for ${studentId}: ${error.message}`);
     }
 
+    // Initialize drip content unlock schedule for enrollment
+    try {
+      await this.dripSchedule.calculateAndSyncUnlockSchedule(enrollment.id);
+    } catch (error) {
+      this.logger.error(`Drip schedule initialization failed for enrollment ${enrollment.id}`, error.message);
+    }
+
     this.logger.log(`Enrollment created: ${studentId} → ${courseId}`);
     return enrollment;
   }
@@ -183,6 +210,57 @@ export class EnrollmentsService {
       where: { studentId, courseId },
     });
     return count > 0;
+  }
+
+  // ----------------------------------------------------------
+  // PREREQUISITE VALIDATION (issue #24)
+  // ----------------------------------------------------------
+
+  /**
+   * Validates whether a student has completed every prerequisite of a
+   * course. Used both to gate enrollment creation and by the
+   * GET /enrollments/:courseId/check-prerequisites feedback endpoint.
+   */
+  async checkPrerequisites(studentId: string, courseId: string) {
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      select: { id: true, title: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
+
+    const prerequisites = await this.prisma.coursePrerequisite.findMany({
+      where: { courseId },
+      include: {
+        prerequisite: { select: { id: true, title: true } },
+      },
+    });
+
+    if (!prerequisites.length) {
+      return { courseId, eligible: true, missing: [], satisfied: [] };
+    }
+
+    const completed = await this.prisma.enrollment.findMany({
+      where: {
+        studentId,
+        status: 'COMPLETED',
+        courseId: { in: prerequisites.map((p) => p.prerequisiteId) },
+      },
+      select: { courseId: true },
+    });
+    const completedIds = new Set(completed.map((e) => e.courseId));
+
+    const rows = prerequisites.map((p) => ({
+      courseId: p.prerequisite.id,
+      title: p.prerequisite.title,
+      met: completedIds.has(p.prerequisite.id),
+    }));
+
+    return {
+      courseId,
+      eligible: rows.every((r) => r.met),
+      missing: rows.filter((r) => !r.met),
+      satisfied: rows.filter((r) => r.met),
+    };
   }
 
   /**

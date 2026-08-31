@@ -15,6 +15,11 @@ import { EmailVerificationService } from './email-verification.service';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PrismaModule } from '../../common/prisma/prisma.module';
+import { OtpController } from './otp.controller';
+import { OtpService } from './otp.service';
+import { ReferralsModule } from '../referrals/referrals.module';
+import { SessionsController } from './sessions.controller';
+import { SessionsService } from './sessions.service';
 
 @Module({
   imports: [
@@ -45,5 +50,11 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
     EmailVerificationService,
   ],
   exports: [AuthService],
+  controllers: [AuthController, GoogleAuthController, OtpController],
+  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard, OtpService],
+  exports: [AuthService, OtpService],
+  controllers: [AuthController, GoogleAuthController, SessionsController],
+  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard, SessionsService],
+  exports: [AuthService, SessionsService],
 })
 export class AuthModule {}

@@ -5,9 +5,11 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
+import { CacheService } from '../../common/cache/cache.service';
 import { CourseStatus, NotificationType } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
+import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
 
 @Injectable()
 export class CoursesService {
@@ -17,7 +19,16 @@ export class CoursesService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly feeCalculator: FeeCalculatorService,
+    private readonly cache: CacheService,
   ) {}
+
+  /** Issue #92 — invalidate cached course listings/categories on content updates. */
+  private async invalidateCourseCaches(): Promise<void> {
+    await Promise.all([
+      this.cache.invalidateNamespace('courses:list'),
+      this.cache.invalidateNamespace('courses:categories'),
+    ]);
+  }
 
   // ----------------------------------------------------------
   // CREATE
@@ -50,6 +61,7 @@ export class CoursesService {
     });
 
     this.logger.log(`Course created (draft): ${course.id} by ${instructorAddress}`);
+    await this.invalidateCourseCaches();
     return course;
   }
 
@@ -108,6 +120,7 @@ export class CoursesService {
     }
 
     this.logger.log(`Course approved: ${courseId}`);
+    await this.invalidateCourseCaches();
     return updated;
   }
 
@@ -135,6 +148,7 @@ export class CoursesService {
       );
     }
 
+    await this.invalidateCourseCaches();
     return updated;
   }
 
@@ -215,7 +229,9 @@ export class CoursesService {
     if (course.status === CourseStatus.ARCHIVED) {
       throw new ForbiddenException('Cannot update an archived course');
     }
-    return this.prisma.course.update({ where: { id: courseId }, data: dto });
+    const updated = await this.prisma.course.update({ where: { id: courseId }, data: dto });
+    await this.invalidateCourseCaches();
+    return updated;
   }
 
   // ----------------------------------------------------------
@@ -250,5 +266,162 @@ export class CoursesService {
         totalRevenue:     { increment: delta.revenue ?? 0 },
       },
     });
+  }
+
+  // ----------------------------------------------------------
+  // COURSE PREREQUISITES (issue #24)
+  // ----------------------------------------------------------
+
+  /**
+   * Lists the prerequisites configured for a course — public read used by
+   * the catalog and by the enrollment pre-check feedback endpoint.
+   */
+  async getPrerequisites(courseId: string) {
+    await this.findOne(courseId);
+    const rows = await this.prisma.coursePrerequisite.findMany({
+      where: { courseId },
+      orderBy: { prerequisiteId: 'asc' },
+      include: {
+        prerequisite: {
+          select: {
+            id: true, title: true, category: true, level: true,
+            thumbnailUrl: true, status: true, totalLessons: true,
+          },
+        },
+      },
+    });
+    return rows.map((r) => r.prerequisite);
+  }
+
+  /**
+   * Replaces the full prerequisite list of a course (PUT semantics).
+   * Guards against self-reference, unknown IDs and cycles so that multiple
+   * chains can coexist while the overall graph stays acyclic.
+   */
+  async setPrerequisites(courseId: string, dto: SetPrerequisitesDto) {
+    await this.findOne(courseId);
+
+    const uniqueIds = [...new Set(dto.prerequisiteIds)];
+    if (uniqueIds.includes(courseId)) {
+      throw new ConflictException('A course cannot be its own prerequisite');
+    }
+
+    if (uniqueIds.length) {
+      const courses = await this.prisma.course.findMany({
+        where: { id: { in: uniqueIds } },
+        select: { id: true, title: true },
+      });
+      const missing = uniqueIds.filter((id) => !courses.some((c) => c.id === id));
+      if (missing.length) {
+        throw new NotFoundException(`Unknown prerequisite course ID(s): ${missing.join(', ')}`);
+      }
+    }
+
+    // Simulate the FULL edge set after the replacement.
+    const existing = await this.prisma.coursePrerequisite.findMany({
+      select: { courseId: true, prerequisiteId: true },
+    });
+    const finalEdges = [
+      ...existing.filter((e) => e.courseId !== courseId),
+      ...uniqueIds.map((prerequisiteId) => ({ courseId, prerequisiteId })),
+    ];
+
+    const cycle = this.findCycle(finalEdges);
+    if (cycle) {
+      throw new ConflictException(
+        `Setting these prerequisites would create a circular chain: ${cycle.join(' → ')}`,
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.coursePrerequisite.deleteMany({ where: { courseId } });
+      if (uniqueIds.length) {
+        await tx.coursePrerequisite.createMany({
+          data: uniqueIds.map((prerequisiteId) => ({ courseId, prerequisiteId })),
+        });
+      }
+    });
+
+    this.logger.log(
+      `Prerequisites for course ${courseId} replaced: [${uniqueIds.join(', ') || 'none'}]`,
+    );
+    return this.getPrerequisites(courseId);
+  }
+
+  async removePrerequisite(courseId: string, prerequisiteId: string) {
+    const link = await this.prisma.coursePrerequisite.findUnique({
+      where: {
+        courseId_prerequisiteId: { courseId, prerequisiteId },
+      },
+    });
+    if (!link) {
+      throw new NotFoundException(
+        `Course ${courseId} has no prerequisite ${prerequisiteId}`,
+      );
+    }
+    await this.prisma.coursePrerequisite.delete({ where: { id: link.id } });
+    this.logger.log(`Prerequisite removed: ${prerequisiteId} ↛ ${courseId}`);
+    return { message: 'Prerequisite removed successfully' };
+  }
+
+  /**
+   * Detects a directed cycle in the "course requires prerequisite" graph
+   * using an iterative DFS with coloring. Returns the cycle path or null.
+   */
+  private findCycle(
+    edges: Array<{ courseId: string; prerequisiteId: string }>,
+  ): string[] | null {
+    const adjacency = new Map<string, string[]>();
+    for (const e of edges) {
+      if (!adjacency.has(e.courseId)) adjacency.set(e.courseId, []);
+      adjacency.get(e.courseId)!.push(e.prerequisiteId);
+    }
+
+    const WHITE = 0;
+    const GRAY = 1;
+    const BLACK = 2;
+    const color = new Map<string, number>();
+
+    for (const start of adjacency.keys()) {
+      if ((color.get(start) ?? WHITE) !== WHITE) continue;
+
+      // stack holds nodes plus their current path index for backtracking
+      const stack: Array<{ node: string; pathIndex: number }> = [{ node: start, pathIndex: 0 }];
+      const path: string[] = [];
+
+      while (stack.length) {
+        const frame = stack[stack.length - 1];
+        const neighbors = adjacency.get(frame.node) ?? [];
+
+        if (frame.pathIndex === 0) {
+          path.push(frame.node);
+          color.set(frame.node, GRAY);
+        }
+
+        let advanced = false;
+        while (frame.pathIndex < neighbors.length) {
+          const next = neighbors[frame.pathIndex];
+          frame.pathIndex += 1;
+          const nextColor = color.get(next) ?? WHITE;
+
+          if (nextColor === GRAY) {
+            const from = path.indexOf(next);
+            return [...path.slice(from), next];
+          }
+          if (nextColor === WHITE) {
+            stack.push({ node: next, pathIndex: 0 });
+            advanced = true;
+            break;
+          }
+        }
+
+        if (!advanced && frame.pathIndex >= neighbors.length) {
+          color.set(frame.node, BLACK);
+          path.pop();
+          stack.pop();
+        }
+      }
+    }
+    return null;
   }
 }
