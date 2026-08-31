@@ -38,6 +38,7 @@ import { AnalyticsModule }    from './modules/analytics/analytics.module';
 import { BackupsModule }      from './modules/backups/backups.module';
 import { UploadsModule }      from './modules/uploads/uploads.module';
 import { TagsModule }         from './modules/tags/tags.module';
+import { PrivacyModule }      from './modules/privacy/privacy.module';
 import { LearningPathsModule } from './modules/learning-paths/learning-paths.module';
 
 @Module({
@@ -87,6 +88,7 @@ import { LearningPathsModule } from './modules/learning-paths/learning-paths.mod
     BackupsModule,
     UploadsModule,
     TagsModule,
+    PrivacyModule,
     LearningPathsModule,
   ],
   providers: [
