@@ -1,5 +1,7 @@
 import {
   Controller, Get, Post, Patch, Body, Param, UseGuards, HttpCode, HttpStatus,
+  Res,
+  NotFoundException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { CertificatesService } from './certificates.service';
@@ -66,5 +68,22 @@ export class CertificatesController {
   @ApiOperation({ summary: 'Admin revokes a certificate' })
   revoke(@Param('id') id: string, @CurrentUser('id') adminId: string) {
     return this.certificatesService.revoke(id, adminId);
+  }
+
+  @Get(':id/download')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Download the PDF certificate by ID' })
+  async download(@Param('id') id: string, @Res() res: any) {
+    const certificate = await this.certificatesService.findById(id);
+
+    if (!certificate.pdfUrl) {
+      throw new NotFoundException('PDF certificate not found for this ID');
+    }
+
+    res.json({
+      pdfUrl: certificate.pdfUrl,
+      message: 'PDF certificate ready for download',
+    });
   }
 }

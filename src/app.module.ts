@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -6,6 +7,9 @@ import { TerminusModule } from '@nestjs/terminus';
 
 import { PrismaModule }  from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
+import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
+import { WebhookSignatureMiddleware } from './common/middleware/webhook-signature.middleware';
+import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
 
 import { AuthModule }         from './modules/auth/auth.module';
 import { UsersModule }        from './modules/users/users.module';
@@ -34,6 +38,7 @@ import { AnalyticsModule }    from './modules/analytics/analytics.module';
 import { BackupsModule }      from './modules/backups/backups.module';
 import { UploadsModule }      from './modules/uploads/uploads.module';
 import { TagsModule }         from './modules/tags/tags.module';
+import { LearningPathsModule } from './modules/learning-paths/learning-paths.module';
 
 @Module({
   imports: [
@@ -82,6 +87,24 @@ import { TagsModule }         from './modules/tags/tags.module';
     BackupsModule,
     UploadsModule,
     TagsModule,
+    LearningPathsModule,
+  ],
+  providers: [
+    // Issue #72 — role-based throttling runs before every route's own guards
+    { provide: APP_GUARD, useClass: RoleThrottlerGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Issue #71 — global per-IP rate limiting (runs before all guards)
+    consumer.apply(RateLimitMiddleware).forRoutes('*');
+
+    // Webhook HMAC-SHA256 signature verification.
+    // Applied only to /webhooks/* routes so legitimate API traffic is unaffected.
+    // Add .exclude({ path: 'webhooks/ping', method: RequestMethod.GET }) for
+    // unsigned health-check endpoints from specific providers.
+    consumer
+      .apply(WebhookSignatureMiddleware)
+      .forRoutes('webhooks');
+  }
+}

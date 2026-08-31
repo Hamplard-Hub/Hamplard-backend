@@ -1,11 +1,12 @@
 import {
-  Controller, Get, Post, Patch, Body, Param,
+  Controller, Get, Post, Put, Patch, Delete, Body, Param,
   Query, UseGuards, HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { CoursesService } from './courses.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
+import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -135,5 +136,47 @@ export class CoursesController {
     @Body() body: { reason: string },
   ) {
     return this.coursesService.reject(id, adminId, body.reason);
+  }
+
+  // ----------------------------------------------------------
+  // COURSE PREREQUISITES (issue #24)
+  // ----------------------------------------------------------
+
+  @Get(':id/prerequisites')
+  @ApiOperation({
+    summary: 'List the prerequisite courses of a course',
+    description: 'Public read — used by catalog cards and enrollment feedback.',
+  })
+  getPrerequisites(@Param('id') id: string) {
+    return this.coursesService.getPrerequisites(id);
+  }
+
+  @Put(':id/prerequisites')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Replace the full prerequisite list of a course',
+    description:
+      'PUT semantics — the provided array replaces all existing prerequisites ' +
+      '(empty array clears them). Rejects self-references and any configuration ' +
+      'that would create a circular prerequisite chain (409).',
+  })
+  setPrerequisites(@Param('id') id: string, @Body() dto: SetPrerequisitesDto) {
+    return this.coursesService.setPrerequisites(id, dto);
+  }
+
+  @Delete(':id/prerequisites/:prerequisiteId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Remove a single prerequisite link from a course' })
+  removePrerequisite(
+    @Param('id') id: string,
+    @Param('prerequisiteId') prerequisiteId: string,
+  ) {
+    return this.coursesService.removePrerequisite(id, prerequisiteId);
   }
 }
