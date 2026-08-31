@@ -3,6 +3,7 @@ import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ReferralsService } from '../referrals/referrals.service';
+import { TwoFactorService } from './two-factor.service';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 
 /**
@@ -35,6 +36,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly referrals: ReferralsService,
+    private readonly twoFactor: TwoFactorService,
   ) {}
 
   // ------------------------------------------------------------------
@@ -110,8 +112,9 @@ export class AuthService {
     signature: string;
     role?: 'STUDENT' | 'INSTRUCTOR';
     referralCode?: string;
+    totpCode?: string;
   }): Promise<{ accessToken: string; user: any }> {
-    const { stellarAddress, signedNonce, signature, role, referralCode } = payload;
+    const { stellarAddress, signedNonce, signature, role, referralCode, totpCode } = payload;
 
     // ---- 1. Validate Stellar address format ----
     if (!StrKey.isValidEd25519PublicKey(stellarAddress)) {
@@ -175,6 +178,17 @@ export class AuthService {
     // ---- 8. Upsert user ----
     const existing = await this.prisma.user.findUnique({ where: { stellarAddress } });
     const isNewUser = !existing;
+
+    // ---- 8b. Validate 2FA code when the account has it enabled ----
+    if (existing?.twoFactorEnabled) {
+      if (!totpCode) {
+        throw new UnauthorizedException('Two-factor authentication code required');
+      }
+      const isTotpValid = await this.twoFactor.verifyLoginCode(existing.id, totpCode);
+      if (!isTotpValid) {
+        throw new UnauthorizedException('Invalid two-factor authentication code');
+      }
+    }
 
     const user = await this.prisma.user.upsert({
       where: { stellarAddress },

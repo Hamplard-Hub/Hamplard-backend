@@ -7,6 +7,7 @@ import { TerminusModule } from '@nestjs/terminus';
 
 import { PrismaModule }  from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
+import { LoggerModule }  from './common/logging/logger.module';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
 
@@ -57,6 +58,7 @@ import { LearningPathsModule } from './modules/learning-paths/learning-paths.mod
     TerminusModule,
     PrismaModule,
     StellarModule,
+    LoggerModule,
 
     AuthModule,
     UsersModule,
