@@ -4,6 +4,8 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
+import { SessionsService, DeviceMetadata } from './sessions.service';
+import { v4 as uuidv4 } from 'uuid';
 
 /**
  * How many milliseconds of clock-skew between client and server we tolerate
@@ -35,6 +37,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly referrals: ReferralsService,
+    private readonly sessions: SessionsService,
   ) {}
 
   // ------------------------------------------------------------------
@@ -110,7 +113,7 @@ export class AuthService {
     signature: string;
     role?: 'STUDENT' | 'INSTRUCTOR';
     referralCode?: string;
-  }): Promise<{ accessToken: string; user: any }> {
+  }, deviceMeta?: DeviceMetadata): Promise<{ accessToken: string; user: any }> {
     const { stellarAddress, signedNonce, signature, role, referralCode } = payload;
 
     // ---- 1. Validate Stellar address format ----
@@ -198,12 +201,18 @@ export class AuthService {
       }
     }
 
-    // ---- 10. Issue JWT ----
+    // ---- 10. Issue JWT (with a session-tracking jti — issue #69) ----
+    const jti = uuidv4();
     const accessToken = this.jwt.sign({
       sub:            user.id,
       stellarAddress: user.stellarAddress,
       role:           user.role,
+      jti,
     });
+
+    const decoded = this.jwt.decode(accessToken) as { exp?: number };
+    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await this.sessions.createSession({ userId: user.id, jti, expiresAt, meta: deviceMeta });
 
     this.logger.log(`User authenticated: ${stellarAddress} (${user.role})`);
     return { accessToken, user };

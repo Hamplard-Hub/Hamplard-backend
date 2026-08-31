@@ -250,6 +250,10 @@ model User {
   avatarUrl      String?
   role           UserRole  @default(STUDENT)
   isVerified     Boolean   @default(false)
+  phoneNumber    String?
+  phoneCountryCode String?
+  isPhoneVerified Boolean  @default(false)
+  phoneVerifiedAt DateTime?
   isBanned       Boolean   @default(false)
   bannedAt       DateTime?
   banReason      String?
@@ -302,8 +306,51 @@ model User {
   answersGiven        Answer[]              @relation("AnswersGiven")
   courseDrafts        CourseDraft[]         @relation("InstructorCourseDrafts")
   learningPathsCreated LearningPath[]       @relation("LearningPathCreator")
+  phoneOtps            PhoneOtp[]           @relation("UserPhoneOtps")
+  sessions            Session[]             @relation("UserSessions")
 
   @@map("users")
+}
+
+model PhoneOtp {
+  id           String    @id @default(uuid())
+  userId       String
+  phoneNumber  String
+  countryCode  String
+  otp          String
+  attemptCount Int       @default(0)
+  expiresAt    DateTime
+  verifiedAt   DateTime?
+  isUsed       Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  user User @relation("UserPhoneOtps", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([phoneNumber])
+  @@index([expiresAt])
+  @@index([isUsed])
+  @@map("phone_otp")
+// Tracks an issued JWT so it can be listed and revoked per device (issue #69).
+model Session {
+  id           String    @id @default(uuid())
+  userId       String
+  jti          String    @unique // matches the `jti` claim embedded in the JWT
+  deviceLabel  String?   // parsed friendly label, e.g. "Chrome on Windows"
+  userAgent    String?
+  ipAddress    String?
+  createdAt    DateTime  @default(now())
+  lastActiveAt DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+
+  // Relations
+  user User @relation("UserSessions", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("sessions")
 }
 
 model Course {
@@ -581,10 +628,25 @@ model Certificate {
   issuedAt        DateTime @default(now())
 
   // Relations
-  student User   @relation(fields: [studentId], references: [id])
-  course  Course @relation(fields: [courseId], references: [id])
+  student User              @relation(fields: [studentId], references: [id])
+  course  Course            @relation(fields: [courseId], references: [id])
+  share   CertificateShare?
 
   @@map("certificates")
+}
+
+model CertificateShare {
+  id            String    @id @default(uuid())
+  certificateId String   @unique
+  token         String    @unique
+  viewCount     Int       @default(0)
+  lastViewedAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  certificate Certificate @relation(fields: [certificateId], references: [id], onDelete: Cascade)
+
+  @@map("certificate_shares")
 }
 
 // Admin-configured certificate branding/layout per course category.
@@ -1518,4 +1580,3 @@ model CoursePrerequisite {
   @@index([prerequisiteId])
   @@map("course_prerequisites")
 }
-

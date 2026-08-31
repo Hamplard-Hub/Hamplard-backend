@@ -6,6 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
+import { CacheService } from '../../common/cache/cache.service';
 import { CourseStatus, NotificationType } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -20,7 +21,16 @@ export class CoursesService {
     private readonly notifications: NotificationsService,
     private readonly feeCalculator: FeeCalculatorService,
     private readonly searchService: SearchService,
+    private readonly cache: CacheService,
   ) {}
+
+  /** Issue #92 — invalidate cached course listings/categories on content updates. */
+  private async invalidateCourseCaches(): Promise<void> {
+    await Promise.all([
+      this.cache.invalidateNamespace('courses:list'),
+      this.cache.invalidateNamespace('courses:categories'),
+    ]);
+  }
 
   // ----------------------------------------------------------
   // CREATE
@@ -55,6 +65,7 @@ export class CoursesService {
     });
 
     this.logger.log(`Course created (draft): ${course.id} by ${instructorAddress}`);
+    await this.invalidateCourseCaches();
     return course;
   }
 
@@ -116,6 +127,7 @@ export class CoursesService {
     }
 
     this.logger.log(`Course approved: ${courseId}`);
+    await this.invalidateCourseCaches();
     return updated;
   }
 
@@ -143,6 +155,7 @@ export class CoursesService {
       );
     }
 
+    await this.invalidateCourseCaches();
     return updated;
   }
 
@@ -230,6 +243,8 @@ export class CoursesService {
     if (updated.status === CourseStatus.ACTIVE) {
       await this.indexCourseForSearch(courseId);
     }
+
+    await this.invalidateCourseCaches();
 
     return updated;
   }

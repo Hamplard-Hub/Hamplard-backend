@@ -8,6 +8,8 @@ import { JwtService } from '@nestjs/jwt';
 import { OAuth2Client, TokenPayload } from 'google-auth-library';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { SessionsService, DeviceMetadata } from './sessions.service';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface GoogleIdentity {
   googleId: string;
@@ -26,6 +28,7 @@ export class GoogleAuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
+    private readonly sessions: SessionsService,
     config: ConfigService,
   ) {
     this.clientId = config.get<string>('GOOGLE_CLIENT_ID');
@@ -74,11 +77,11 @@ export class GoogleAuthService {
     };
   }
 
-  async loginWithIdToken(idToken: string) {
-    return this.login(await this.verifyIdToken(idToken));
+  async loginWithIdToken(idToken: string, deviceMeta?: DeviceMetadata) {
+    return this.login(await this.verifyIdToken(idToken), deviceMeta);
   }
 
-  async login(identity: GoogleIdentity) {
+  async login(identity: GoogleIdentity, deviceMeta?: DeviceMetadata) {
     if (!identity.emailVerified) {
       throw new UnauthorizedException('A verified Google email is required');
     }
@@ -112,12 +115,18 @@ export class GoogleAuthService {
             },
           });
 
+      const jti = uuidv4();
       const accessToken = this.jwt.sign({
         sub: user.id,
         stellarAddress: user.stellarAddress,
         googleId: user.googleId,
         role: user.role,
+        jti,
       });
+
+      const decoded = this.jwt.decode(accessToken) as { exp?: number };
+      const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await this.sessions.createSession({ userId: user.id, jti, expiresAt, meta: deviceMeta });
 
       return { accessToken, user };
     } catch (error) {

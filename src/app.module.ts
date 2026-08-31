@@ -7,6 +7,7 @@ import { TerminusModule } from '@nestjs/terminus';
 
 import { PrismaModule }  from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
+import { CacheModule }   from './common/cache/cache.module';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { WebhookSignatureMiddleware } from './common/middleware/webhook-signature.middleware';
 import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
@@ -59,6 +60,7 @@ import { LearningPathsModule } from './modules/learning-paths/learning-paths.mod
     TerminusModule,
     PrismaModule,
     StellarModule,
+    CacheModule,
 
     AuthModule,
     UsersModule,
