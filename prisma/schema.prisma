@@ -250,6 +250,10 @@ model User {
   avatarUrl      String?
   role           UserRole  @default(STUDENT)
   isVerified     Boolean   @default(false)
+  phoneNumber    String?
+  phoneCountryCode String?
+  isPhoneVerified Boolean  @default(false)
+  phoneVerifiedAt DateTime?
   isBanned       Boolean   @default(false)
   bannedAt       DateTime?
   banReason      String?
@@ -301,8 +305,54 @@ model User {
   questionsAsked      Question[]            @relation("QuestionsAsked")
   answersGiven        Answer[]              @relation("AnswersGiven")
   courseDrafts        CourseDraft[]         @relation("InstructorCourseDrafts")
+  learningPathsCreated LearningPath[]       @relation("LearningPathCreator")
+  phoneOtps            PhoneOtp[]           @relation("UserPhoneOtps")
+  sessions            Session[]             @relation("UserSessions")
 
   @@map("users")
+}
+
+model PhoneOtp {
+  id           String    @id @default(uuid())
+  userId       String
+  phoneNumber  String
+  countryCode  String
+  otp          String
+  attemptCount Int       @default(0)
+  expiresAt    DateTime
+  verifiedAt   DateTime?
+  isUsed       Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  user User @relation("UserPhoneOtps", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([phoneNumber])
+  @@index([expiresAt])
+  @@index([isUsed])
+  @@map("phone_otp")
+}
+
+// Tracks an issued JWT so it can be listed and revoked per device (issue #69).
+model Session {
+  id           String    @id @default(uuid())
+  userId       String
+  jti          String    @unique // matches the `jti` claim embedded in the JWT
+  deviceLabel  String?   // parsed friendly label, e.g. "Chrome on Windows"
+  userAgent    String?
+  ipAddress    String?
+  createdAt    DateTime  @default(now())
+  lastActiveAt DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+
+  // Relations
+  user User @relation("UserSessions", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("sessions")
 }
 
 model Course {
@@ -343,6 +393,10 @@ model Course {
   coupons       Coupon[]
   wishlistItems WishlistItem[]
   tags          CourseTag[]
+  pathCourses   LearningPathCourse[]
+  prerequisites CoursePrerequisite[] @relation("CourseRequires") // this course requires them
+  unlocks       CoursePrerequisite[] @relation("CourseUnlocks")  // courses requiring this one
+  dripConfig    CourseDripConfig?
 
   @@map("courses")
 }
@@ -398,6 +452,8 @@ model Lesson {
   assignment  Assignment?
   quizQuestions QuizQuestion[]
   questions   Question[]
+  dripConfig  LessonDripConfig?
+  dripUnlocks EnrollmentLessonUnlock[]
 
   @@map("lessons")
 }
@@ -475,9 +531,56 @@ model Enrollment {
   refunds        Refund[]
   invoice        Invoice?
   fraudFlag      EnrollmentFraudFlag?
+  dripUnlocks    EnrollmentLessonUnlock[]
 
   @@unique([studentId, courseId])
   @@map("enrollments")
+}
+
+model CourseDripConfig {
+  id               String   @id @default(uuid())
+  courseId         String   @unique
+  enabled          Boolean  @default(false)
+  dripIntervalDays Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@map("course_drip_configs")
+}
+
+model LessonDripConfig {
+  id         String    @id @default(uuid())
+  lessonId   String    @unique
+  delayDays  Int       @default(0)
+  unlockDate DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@map("lesson_drip_configs")
+}
+
+model EnrollmentLessonUnlock {
+  id           String    @id @default(uuid())
+  enrollmentId String
+  lessonId     String
+  unlockAt     DateTime
+  isOverridden Boolean   @default(false)
+  overriddenBy String?
+  notifiedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  lesson     Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([enrollmentId, lessonId])
+  @@index([enrollmentId])
+  @@index([unlockAt])
+  @@map("enrollment_lesson_unlocks")
 }
 
 model WishlistItem {
@@ -522,14 +625,51 @@ model Certificate {
   courseTitle     String   // stored for quick display
   instructorAddress String
   txHash          String?  // on-chain certificate issuance tx
+  pdfUrl          String?  // generated PDF file reference/URL
   isRevoked       Boolean  @default(false)
   issuedAt        DateTime @default(now())
 
   // Relations
-  student User   @relation(fields: [studentId], references: [id])
-  course  Course @relation(fields: [courseId], references: [id])
+  student User              @relation(fields: [studentId], references: [id])
+  course  Course            @relation(fields: [courseId], references: [id])
+  share   CertificateShare?
 
   @@map("certificates")
+}
+
+model CertificateShare {
+  id            String    @id @default(uuid())
+  certificateId String   @unique
+  token         String    @unique
+  viewCount     Int       @default(0)
+  lastViewedAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  certificate Certificate @relation(fields: [certificateId], references: [id], onDelete: Cascade)
+
+  @@map("certificate_shares")
+}
+
+// Admin-configured certificate branding/layout per course category.
+// At most one template may be active for a given category (enforced in SQL
+// via a partial unique index and in the service on activation).
+model CertificateTemplate {
+  id          String   @id @default(uuid())
+  name        String
+  category    String   // matches Course.category, e.g. "Tailoring"
+  branding    Json     // logo, colors, organization name, footer
+  layout      Json     // orientation, title/body copy, field visibility
+  signatures  Json     // [{ name, label, title?, imageUrl? }]
+  isActive    Boolean  @default(false)
+  createdById String
+  activatedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+  @@index([category, isActive])
+  @@map("certificate_templates")
 }
 
 model ChainEvent {
@@ -549,6 +689,23 @@ model ChainEvent {
   @@index([eventName])
   @@index([processed])
   @@map("chain_events")
+}
+
+/// Durable checkpoint for the Stellar event poller (EventsService).
+/// A single row (keyed by `key`) records the last Stellar ledger the poller
+/// finished processing so the service can resume from it after a restart or
+/// crash instead of replaying from the chain tip and missing events.
+model EventPollerCheckpoint {
+  id                       String    @id @default(uuid())
+  key                      String    @unique
+  lastProcessedLedger      Int       @default(0)
+  lastPolledAt             DateTime?
+  lastWriteError           String?
+  consecutiveWriteFailures Int       @default(0)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  @@map("event_poller_checkpoints")
 }
 
 model Notification {
@@ -1359,3 +1516,69 @@ model CourseDraft {
   @@map("course_drafts")
 }
 
+// ============================================================
+// LEARNING PATHS
+// ============================================================
+
+enum LearningPathStatus {
+  DRAFT      // admin still curating courses and order
+  PUBLISHED  // visible to students for enrollment
+  ARCHIVED   // retired from student listings
+}
+
+model LearningPath {
+  id           String             @id @default(uuid())
+  title        String
+  slug         String             @unique // normalised, URL-safe identifier
+  description  String?
+  thumbnailUrl String?
+  status       LearningPathStatus @default(DRAFT)
+  createdById  String
+  publishedAt  DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  // Relations
+  createdBy User                 @relation("LearningPathCreator", fields: [createdById], references: [id])
+  courses   LearningPathCourse[]
+
+  @@index([status])
+  @@index([createdById])
+  @@map("learning_paths")
+}
+
+model LearningPathCourse {
+  id       String @id @default(uuid())
+  pathId   String
+  courseId String
+  position Int    // ordering within the path (0-based)
+
+  // Relations
+  path   LearningPath @relation(fields: [pathId], references: [id], onDelete: Cascade)
+  course Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([pathId, courseId])
+  @@unique([pathId, position])
+  @@index([pathId])
+  @@index([courseId])
+  @@map("learning_path_courses")
+}
+
+// ============================================================
+// COURSE PREREQUISITES
+// ============================================================
+
+model CoursePrerequisite {
+  id             String @id @default(uuid())
+  courseId       String // course that REQUIRES the prerequisite
+  prerequisiteId String // course that must be COMPLETED first
+
+  // Relations
+  course       Course @relation("CourseRequires", fields: [courseId], references: [id], onDelete: Cascade)
+  prerequisite Course @relation("CourseUnlocks", fields: [prerequisiteId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, prerequisiteId])
+  @@index([courseId])
+  @@index([prerequisiteId])
+  @@map("course_prerequisites")
+}
