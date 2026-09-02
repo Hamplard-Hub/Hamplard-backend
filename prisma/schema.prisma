@@ -305,11 +305,31 @@ model User {
   questionsAsked      Question[]            @relation("QuestionsAsked")
   answersGiven        Answer[]              @relation("AnswersGiven")
   courseDrafts        CourseDraft[]         @relation("InstructorCourseDrafts")
+  refreshTokens       RefreshToken[]
   learningPathsCreated LearningPath[]       @relation("LearningPathCreator")
   phoneOtps            PhoneOtp[]           @relation("UserPhoneOtps")
   sessions            Session[]             @relation("UserSessions")
 
   @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String
+  familyId   String
+  generation Int
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 model PhoneOtp {
@@ -333,6 +353,8 @@ model PhoneOtp {
   @@index([expiresAt])
   @@index([isUsed])
   @@map("phone_otp")
+}
+
 // Tracks an issued JWT so it can be listed and revoked per device (issue #69).
 model Session {
   id           String    @id @default(uuid())
