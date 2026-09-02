@@ -5,6 +5,8 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
+import { SearchService, CourseSearchDocument } from '../search/search.service';
+import { CacheService } from '../../common/cache/cache.service';
 import { CourseStatus, NotificationType } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -18,7 +20,17 @@ export class CoursesService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly feeCalculator: FeeCalculatorService,
+    private readonly searchService: SearchService,
+    private readonly cache: CacheService,
   ) {}
+
+  /** Issue #92 — invalidate cached course listings/categories on content updates. */
+  private async invalidateCourseCaches(): Promise<void> {
+    await Promise.all([
+      this.cache.invalidateNamespace('courses:list'),
+      this.cache.invalidateNamespace('courses:categories'),
+    ]);
+  }
 
   // ----------------------------------------------------------
   // CREATE
@@ -28,6 +40,8 @@ export class CoursesService {
    * Instructor creates a course draft in the backend DB.
    * The course starts as DRAFT until the instructor submits it for review.
    * On submission, status becomes PENDING and admin is notified.
+   *
+   * Does NOT index into search — only ACTIVE courses are searchable.
    */
   async create(instructorId: string, instructorAddress: string, dto: CreateCourseDto) {
     const existing = await this.prisma.course.findUnique({ where: { id: dto.courseId } });
@@ -51,6 +65,7 @@ export class CoursesService {
     });
 
     this.logger.log(`Course created (draft): ${course.id} by ${instructorAddress}`);
+    await this.invalidateCourseCaches();
     return course;
   }
 
@@ -94,6 +109,9 @@ export class CoursesService {
       data: { status: CourseStatus.ACTIVE, approvedAt: new Date() },
     });
 
+    // Index the approved course into the search engine
+    await this.indexCourseForSearch(updated.id);
+
     // Notify instructor
     const instructor = await this.prisma.user.findUnique({
       where: { stellarAddress: course.instructorAddress },
@@ -109,6 +127,7 @@ export class CoursesService {
     }
 
     this.logger.log(`Course approved: ${courseId}`);
+    await this.invalidateCourseCaches();
     return updated;
   }
 
@@ -136,6 +155,7 @@ export class CoursesService {
       );
     }
 
+    await this.invalidateCourseCaches();
     return updated;
   }
 
@@ -216,7 +236,17 @@ export class CoursesService {
     if (course.status === CourseStatus.ARCHIVED) {
       throw new ForbiddenException('Cannot update an archived course');
     }
-    return this.prisma.course.update({ where: { id: courseId }, data: dto });
+
+    const updated = await this.prisma.course.update({ where: { id: courseId }, data: dto });
+
+    // Re-index if the course is active (search index should reflect changes)
+    if (updated.status === CourseStatus.ACTIVE) {
+      await this.indexCourseForSearch(courseId);
+    }
+
+    await this.invalidateCourseCaches();
+
+    return updated;
   }
 
   // ----------------------------------------------------------
@@ -251,6 +281,54 @@ export class CoursesService {
         totalRevenue:     { increment: delta.revenue ?? 0 },
       },
     });
+  }
+
+  // ----------------------------------------------------------
+  // SEARCH INDEX HELPERS
+  // ----------------------------------------------------------
+
+  /**
+   * Builds a search document from the course in the database and
+   * syncs it to the Meilisearch index.
+   */
+  private async indexCourseForSearch(courseId: string): Promise<void> {
+    try {
+      const course = await this.prisma.course.findUnique({
+        where: { id: courseId },
+        include: {
+          instructor: { select: { name: true } },
+        },
+      });
+
+      if (!course) {
+        this.logger.warn(`Cannot index course ${courseId}: not found`);
+        return;
+      }
+
+      const doc: CourseSearchDocument = {
+        id: course.id,
+        title: course.title,
+        description: course.description ?? '',
+        category: course.category,
+        level: course.level,
+        language: course.language,
+        instructorAddress: course.instructorAddress,
+        instructorName: course.instructor?.name ?? '',
+        price: Number(course.price),
+        avgRating: course.avgRating,
+        totalEnrollments: course.totalEnrollments,
+        totalReviews: course.totalReviews,
+        thumbnailUrl: course.thumbnailUrl ?? '',
+        status: course.status,
+        lastIndexedAt: 0, // will be set by searchService.indexCourse
+      };
+
+      await this.searchService.indexCourse(doc);
+    } catch (err) {
+      this.logger.error(
+        `Failed to index course ${courseId} for search: ${(err as Error).message}`,
+      );
+    }
   }
 
   // ----------------------------------------------------------

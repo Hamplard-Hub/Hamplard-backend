@@ -7,8 +7,9 @@ import { TerminusModule } from '@nestjs/terminus';
 
 import { PrismaModule }  from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
-import { LoggerModule }  from './common/logging/logger.module';
+import { CacheModule }   from './common/cache/cache.module';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
+import { WebhookSignatureMiddleware } from './common/middleware/webhook-signature.middleware';
 import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
 
 import { AuthModule }         from './modules/auth/auth.module';
@@ -31,6 +32,7 @@ import { ReviewsModule }      from './modules/reviews/reviews.module';
 import { AdminModule }        from './modules/admin/admin.module';
 import { ModerationModule }   from './modules/moderation/moderation.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
+import { SearchModule } from './modules/search/search.module';
 import { ReferralsModule }    from './modules/referrals/referrals.module';
 import { AuditLogModule }     from './modules/audit-log/audit-log.module';
 import { AnalyticsModule }    from './modules/analytics/analytics.module';
@@ -38,6 +40,7 @@ import { BackupsModule }      from './modules/backups/backups.module';
 import { UploadsModule }      from './modules/uploads/uploads.module';
 import { TagsModule }         from './modules/tags/tags.module';
 import { LearningPathsModule } from './modules/learning-paths/learning-paths.module';
+import { WishlistModule } from './modules/wishlist/wishlist.module';
 
 @Module({
   imports: [
@@ -58,7 +61,7 @@ import { LearningPathsModule } from './modules/learning-paths/learning-paths.mod
     TerminusModule,
     PrismaModule,
     StellarModule,
-    LoggerModule,
+    CacheModule,
 
     AuthModule,
     UsersModule,
@@ -80,6 +83,7 @@ import { LearningPathsModule } from './modules/learning-paths/learning-paths.mod
     AdminModule,
     ModerationModule,
     GamificationModule,
+    SearchModule,
     ReferralsModule,
     AuditLogModule,
     AnalyticsModule,
@@ -87,6 +91,7 @@ import { LearningPathsModule } from './modules/learning-paths/learning-paths.mod
     UploadsModule,
     TagsModule,
     LearningPathsModule,
+    WishlistModule,
   ],
   providers: [
     // Issue #72 — role-based throttling runs before every route's own guards
@@ -97,5 +102,13 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     // Issue #71 — global per-IP rate limiting (runs before all guards)
     consumer.apply(RateLimitMiddleware).forRoutes('*');
+
+    // Webhook HMAC-SHA256 signature verification.
+    // Applied only to /webhooks/* routes so legitimate API traffic is unaffected.
+    // Add .exclude({ path: 'webhooks/ping', method: RequestMethod.GET }) for
+    // unsigned health-check endpoints from specific providers.
+    consumer
+      .apply(WebhookSignatureMiddleware)
+      .forRoutes('webhooks');
   }
 }

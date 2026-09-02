@@ -2,12 +2,12 @@
 import { Module } from '@nestjs/common';
 import { ReportsController } from './reports.controller';
 import { ReportsService } from './reports.service';
-import { TopCoursesController } from './top-courses.controller';
-import { TopCoursesService } from './top-courses.service';
+import { EngagementReportController } from './engagement-report.controller';
+import { EngagementReportService } from './engagement-report.service';
 
 @Module({
-  controllers: [ReportsController, TopCoursesController],
-  providers: [ReportsService, TopCoursesService],
-  exports: [ReportsService, TopCoursesService],
+  controllers: [ReportsController, EngagementReportController],
+  providers: [ReportsService, EngagementReportService],
+  exports: [ReportsService, EngagementReportService],
 })
 export class ReportsModule {}

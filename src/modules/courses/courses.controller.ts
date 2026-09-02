@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Put, Patch, Delete, Body, Param,
-  Query, UseGuards, HttpCode, HttpStatus,
+  Query, UseGuards, UseInterceptors, HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { CoursesService } from './courses.service';
@@ -11,6 +11,8 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CourseStatus, UserRole } from '@prisma/client';
+import { Cacheable } from '../../common/cache/cache.decorator';
+import { HttpCacheInterceptor } from '../../common/cache/cache.interceptor';
 
 @ApiTags('courses')
 @Controller('courses')
@@ -22,6 +24,8 @@ export class CoursesController {
   // ----------------------------------------------------------
 
   @Get()
+  @UseInterceptors(HttpCacheInterceptor)
+  @Cacheable('courses:list', 60)
   @ApiOperation({ summary: 'Browse active courses with filters' })
   @ApiQuery({ name: 'category', required: false })
   @ApiQuery({ name: 'level',    required: false })
@@ -42,6 +46,8 @@ export class CoursesController {
   }
 
   @Get('categories')
+  @UseInterceptors(HttpCacheInterceptor)
+  @Cacheable('courses:categories', 300)
   @ApiOperation({ summary: 'List all course categories with counts' })
   getCategories() { return this.coursesService.getCategories(); }
 

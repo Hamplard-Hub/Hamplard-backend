@@ -10,8 +10,11 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
-  app.useLogger(app.get(PinoLogger));
+  const app = await NestFactory.create(AppModule, {
+    // rawBody: true makes the unparsed request body available as req.rawBody
+    // (Buffer), which WebhookSignatureMiddleware needs for HMAC-SHA256 signing.
+    rawBody: true,
+  });
 
   const config = app.get(ConfigService);
   const port       = config.get<number>('PORT', 3000);
@@ -23,7 +26,7 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigin,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-captcha-token'],
     credentials: true,
   });
 

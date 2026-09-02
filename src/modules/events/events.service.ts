@@ -6,6 +6,27 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CoursesService } from '../courses/courses.service';
 import { NotificationType } from '@prisma/client';
 
+/** Fixed primary key for the singleton poller checkpoint row. */
+export const EVENT_POLLER_CHECKPOINT_KEY = 'stellar-event-poller';
+
+/** Number of ledgers to rewind behind the chain tip on a cold start. */
+const COLD_START_LOOKBACK = 10;
+
+export interface CheckpointStatus {
+  key: string;
+  /** Ledger the running process will poll from next. */
+  lastProcessedLedger: number;
+  /** Ledger currently persisted in the database (null if never written). */
+  persistedLedger: number | null;
+  lastPolledAt: Date | null;
+  /** How the poller obtained its starting ledger on the last boot. */
+  resumedFromCheckpoint: boolean;
+  consecutiveWriteFailures: number;
+  lastWriteError: string | null;
+  /** true when the last checkpoint write succeeded. */
+  healthy: boolean;
+}
+
 /**
  * EventsService
  *
@@ -19,11 +40,21 @@ import { NotificationType } from '@prisma/client';
  *   - certificate_revoked  → update DB flag
  *   - course_paused        → update course status
  *   - course_archived      → update course status
+ *
+ * The last processed Stellar ledger is persisted to the `event_poller_checkpoints`
+ * table after every poll. On boot the service resumes from that checkpoint so a
+ * restart or crash does not skip events that landed while the process was down.
  */
 @Injectable()
 export class EventsService implements OnModuleInit {
   private readonly logger = new Logger(EventsService.name);
   private lastProcessedLedger = 0;
+
+  // Checkpoint bookkeeping (in-memory mirror of the DB row).
+  private resumedFromCheckpoint = false;
+  private consecutiveWriteFailures = 0;
+  private lastWriteError: string | null = null;
+  private lastPolledAt: Date | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -33,31 +64,150 @@ export class EventsService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    const checkpoint = await this.loadCheckpoint();
+    let latestLedger: number | null = null;
     try {
-      const latest = await this.stellar.getLatestLedger();
-      this.lastProcessedLedger = Math.max(1, latest - 10);
-      this.logger.log(`Event poller initialised at ledger ${this.lastProcessedLedger}`);
+      latestLedger = await this.stellar.getLatestLedger();
     } catch {
-      this.lastProcessedLedger = 1;
       this.logger.warn('Could not fetch latest ledger on init');
     }
+
+    if (checkpoint && checkpoint.lastProcessedLedger > 0) {
+      // Guard against a corrupt / stale checkpoint that points past the chain
+      // tip (e.g. restored from another network) — fall back to a cold start.
+      if (latestLedger !== null && checkpoint.lastProcessedLedger > latestLedger + 1) {
+        this.lastProcessedLedger = Math.max(1, latestLedger - COLD_START_LOOKBACK);
+        this.resumedFromCheckpoint = false;
+        this.logger.warn(
+          `Persisted checkpoint ledger ${checkpoint.lastProcessedLedger} is ahead of ` +
+            `chain tip ${latestLedger}; ignoring it and restarting near the tip at ` +
+            `${this.lastProcessedLedger}`,
+        );
+      } else {
+        this.lastProcessedLedger = checkpoint.lastProcessedLedger;
+        this.resumedFromCheckpoint = true;
+        this.logger.log(
+          `Resumed event poller from persisted ledger ${this.lastProcessedLedger}`,
+        );
+      }
+      return;
+    }
+
+    // Cold start — no usable checkpoint yet.
+    this.lastProcessedLedger =
+      latestLedger !== null ? Math.max(1, latestLedger - COLD_START_LOOKBACK) : 1;
+    this.resumedFromCheckpoint = false;
+    this.logger.log(`Event poller initialised at ledger ${this.lastProcessedLedger}`);
+    await this.persistCheckpoint();
   }
 
   @Cron(CronExpression.EVERY_5_SECONDS)
   async pollEvents() {
     try {
       const events = await this.stellar.fetchContractEvents(this.lastProcessedLedger);
-      if (!events.length) return;
 
-      this.logger.log(`Processing ${events.length} chain event(s)`);
+      if (events.length) {
+        this.logger.log(`Processing ${events.length} chain event(s)`);
 
-      for (const event of events) {
-        await this.processEvent(event);
-        this.lastProcessedLedger = Math.max(this.lastProcessedLedger, event.ledger + 1);
+        for (const event of events) {
+          await this.processEvent(event);
+          this.lastProcessedLedger = Math.max(this.lastProcessedLedger, event.ledger + 1);
+        }
       }
     } catch (error) {
       this.logger.error('Event polling failed', error.message);
+    } finally {
+      // Persist progress even when a poll finds nothing — a checkpoint write
+      // failure is logged but never allowed to stop the poll loop.
+      this.lastPolledAt = new Date();
+      await this.persistCheckpoint();
     }
+  }
+
+  // ----------------------------------------------------------
+  // CHECKPOINT PERSISTENCE (Issue #80 — crash recovery)
+  // ----------------------------------------------------------
+
+  /** Read the persisted checkpoint row, tolerating any DB error. */
+  private async loadCheckpoint() {
+    try {
+      return await this.prisma.eventPollerCheckpoint.findUnique({
+        where: { key: EVENT_POLLER_CHECKPOINT_KEY },
+      });
+    } catch (error) {
+      this.logger.error('Could not read event poller checkpoint', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Write the current ledger to the checkpoint row. Best-effort: a failure
+   * increments the failure counter and is surfaced via the health endpoint,
+   * but is swallowed so polling keeps running.
+   */
+  private async persistCheckpoint(): Promise<void> {
+    try {
+      await this.prisma.eventPollerCheckpoint.upsert({
+        where: { key: EVENT_POLLER_CHECKPOINT_KEY },
+        create: {
+          key: EVENT_POLLER_CHECKPOINT_KEY,
+          lastProcessedLedger: this.lastProcessedLedger,
+          lastPolledAt: this.lastPolledAt,
+        },
+        update: {
+          lastProcessedLedger: this.lastProcessedLedger,
+          lastPolledAt: this.lastPolledAt,
+          lastWriteError: null,
+          consecutiveWriteFailures: 0,
+        },
+      });
+      this.consecutiveWriteFailures = 0;
+      this.lastWriteError = null;
+    } catch (error) {
+      this.consecutiveWriteFailures += 1;
+      this.lastWriteError = error?.message ?? String(error);
+      this.logger.error(
+        `Failed to persist ledger checkpoint (consecutive failure ` +
+          `#${this.consecutiveWriteFailures}); polling continues`,
+        this.lastWriteError,
+      );
+      // Try to record the failure on the row itself, but do not care if this
+      // also fails — the poll loop must not be blocked by checkpoint I/O.
+      try {
+        await this.prisma.eventPollerCheckpoint.updateMany({
+          where: { key: EVENT_POLLER_CHECKPOINT_KEY },
+          data: {
+            lastWriteError: this.lastWriteError.slice(0, 500),
+            consecutiveWriteFailures: this.consecutiveWriteFailures,
+          },
+        });
+      } catch {
+        /* already logged above */
+      }
+    }
+  }
+
+  /** Current checkpoint state, exposed through GET /health/checkpoint. */
+  async getCheckpointStatus(): Promise<CheckpointStatus> {
+    let persisted: Awaited<ReturnType<typeof this.loadCheckpoint>> = null;
+    try {
+      persisted = await this.prisma.eventPollerCheckpoint.findUnique({
+        where: { key: EVENT_POLLER_CHECKPOINT_KEY },
+      });
+    } catch (error) {
+      this.logger.error('Could not read checkpoint for health report', error.message);
+    }
+
+    return {
+      key: EVENT_POLLER_CHECKPOINT_KEY,
+      lastProcessedLedger: this.lastProcessedLedger,
+      persistedLedger: persisted?.lastProcessedLedger ?? null,
+      lastPolledAt: persisted?.lastPolledAt ?? this.lastPolledAt,
+      resumedFromCheckpoint: this.resumedFromCheckpoint,
+      consecutiveWriteFailures: this.consecutiveWriteFailures,
+      lastWriteError: this.lastWriteError,
+      healthy: this.consecutiveWriteFailures === 0,
+    };
   }
 
   private async processEvent(event: any) {

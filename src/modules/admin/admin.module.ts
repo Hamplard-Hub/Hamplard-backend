@@ -3,6 +3,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ImpersonationController } from './impersonation.controller';
 import { ImpersonationService } from './impersonation.service';
+import { DashboardController } from './dashboard.controller';
+import { DashboardService } from './dashboard.service';
 
 @Module({
   imports: [
@@ -15,8 +17,8 @@ import { ImpersonationService } from './impersonation.service';
       }),
     }),
   ],
-  controllers: [ImpersonationController],
-  providers: [ImpersonationService],
-  exports: [ImpersonationService],
+  controllers: [ImpersonationController, DashboardController],
+  providers: [ImpersonationService, DashboardService],
+  exports: [ImpersonationService, DashboardService],
 })
 export class AdminModule {}

@@ -1,7 +1,6 @@
-// enrollments.service.ts
 import {
   Injectable, NotFoundException, ConflictException, Logger, HttpException,
-  ForbiddenException,
+  ForbiddenException, Inject, forwardRef,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -9,6 +8,7 @@ import { InvoicesService } from '../invoices/invoices.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { NotificationType } from '@prisma/client';
 import { FraudDetectionService } from './fraud-detection.service';
+import { DripScheduleService } from '../lessons/drip-schedule.service';
 
 @Injectable()
 export class EnrollmentsService {
@@ -20,6 +20,8 @@ export class EnrollmentsService {
     private readonly invoices: InvoicesService,
     private readonly fraudDetection: FraudDetectionService,
     private readonly referrals: ReferralsService,
+    @Inject(forwardRef(() => DripScheduleService))
+    private readonly dripSchedule: DripScheduleService,
   ) {}
 
   /**
@@ -153,6 +155,13 @@ export class EnrollmentsService {
       await this.referrals.trackConversion(studentId, enrollment.id);
     } catch (error) {
       this.logger.warn(`Referral conversion tracking failed for ${studentId}: ${error.message}`);
+    }
+
+    // Initialize drip content unlock schedule for enrollment
+    try {
+      await this.dripSchedule.calculateAndSyncUnlockSchedule(enrollment.id);
+    } catch (error) {
+      this.logger.error(`Drip schedule initialization failed for enrollment ${enrollment.id}`, error.message);
     }
 
     this.logger.log(`Enrollment created: ${studentId} → ${courseId}`);
