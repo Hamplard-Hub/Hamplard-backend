@@ -10,5 +10,6 @@ import { CoursesModule } from '../courses/courses.module';
   imports: [NotificationsModule, EnrollmentsModule, CoursesModule],
   providers: [EventsService],
   controllers: [EventsController],
+  exports: [EventsService],
 })
 export class EventsModule {}

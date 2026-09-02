@@ -26,12 +26,18 @@ export class GoogleAuthController {
   @UseGuards(GoogleAuthGuard)
   @ApiOperation({ summary: 'Handle the Google OAuth callback' })
   callback(@Req() request: Request & { user: GoogleIdentity }) {
-    return this.googleAuth.login(request.user);
+    return this.googleAuth.login(request.user, {
+      userAgent: request.headers['user-agent'],
+      ipAddress: request.ip,
+    });
   }
 
   @Post('token')
   @ApiOperation({ summary: 'Validate a Google ID token and receive a platform JWT' })
-  loginWithToken(@Body() dto: GoogleTokenDto) {
-    return this.googleAuth.loginWithIdToken(dto.idToken);
+  loginWithToken(@Body() dto: GoogleTokenDto, @Req() request: Request) {
+    return this.googleAuth.loginWithIdToken(dto.idToken, {
+      userAgent: request.headers['user-agent'],
+      ipAddress: request.ip,
+    });
   }
 }

@@ -9,8 +9,32 @@ describe('GoogleAuthService', () => {
       update: jest.fn(),
     },
   };
-  const jwt = { sign: jest.fn().mockReturnValue('platform-jwt') };
+  const jwt = {
+    decode: jest.fn().mockReturnValue({
+      sub: 'user-1',
+      jti: 'access-jti',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    }),
+  };
+  const sessions = {
+    createSession: jest.fn(),
+  };
+  const refreshTokens = {
+    issueTokenPair: jest.fn().mockResolvedValue({
+      accessToken: 'platform-jwt',
+      refreshToken: 'refresh-jwt',
+    }),
+  };
   const config = { get: jest.fn((key: string) => key === 'GOOGLE_CLIENT_ID' ? 'google-client-id' : 'google-client-secret') };
+
+  const buildService = () =>
+    new GoogleAuthService(
+      prisma as any,
+      jwt as any,
+      sessions as any,
+      refreshTokens as any,
+      config as any,
+    );
 
   const identity: GoogleIdentity = {
     googleId: 'google-123',
@@ -20,10 +44,20 @@ describe('GoogleAuthService', () => {
     avatarUrl: 'https://example.com/avatar.jpg',
   };
 
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    config.get.mockImplementation((key: string) =>
+      key === 'GOOGLE_CLIENT_ID' ? 'google-client-id' : 'google-client-secret',
+    );
+    jwt.decode.mockReturnValue({
+      sub: 'user-1',
+      jti: 'access-jti',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+  });
 
   it('creates and consumes single-use OAuth state values', () => {
-    const service = new GoogleAuthService(prisma as any, jwt as any, config as any);
+    const service = buildService();
     const state = service.createOAuthState();
 
     expect(service.consumeOAuthState(state)).toBe(true);
@@ -31,7 +65,7 @@ describe('GoogleAuthService', () => {
   });
 
   it('rejects an ID token when Google signature verification fails', async () => {
-    const service = new GoogleAuthService(prisma as any, jwt as any, config as any);
+    const service = buildService();
     (service as any).googleClient.verifyIdToken = jest.fn().mockRejectedValue(new Error('bad token'));
 
     await expect(service.verifyIdToken('invalid-token')).rejects.toBeInstanceOf(
@@ -39,7 +73,7 @@ describe('GoogleAuthService', () => {
     );
   });
 
-  it('creates a walletless user and returns a platform JWT', async () => {
+  it('creates a walletless user and returns a platform JWT pair', async () => {
     prisma.user.findUnique.mockResolvedValue(null);
     prisma.user.create.mockResolvedValue({
       id: 'user-1',
@@ -48,7 +82,7 @@ describe('GoogleAuthService', () => {
       role: 'STUDENT',
       ...identity,
     });
-    const service = new GoogleAuthService(prisma as any, jwt as any, config as any);
+    const service = buildService();
 
     const result = await service.login(identity);
 
@@ -57,12 +91,13 @@ describe('GoogleAuthService', () => {
       email: identity.email,
       role: 'STUDENT',
     }) });
-    expect(jwt.sign).toHaveBeenCalledWith(expect.objectContaining({
-      sub: 'user-1',
+    expect(refreshTokens.issueTokenPair).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'user-1',
       googleId: identity.googleId,
       stellarAddress: null,
     }));
     expect(result.accessToken).toBe('platform-jwt');
+    expect(result.refreshToken).toBe('refresh-jwt');
   });
 
   it('does not allow a client to choose the instructor role', async () => {
@@ -73,7 +108,7 @@ describe('GoogleAuthService', () => {
       googleId: identity.googleId,
       role: 'STUDENT',
     });
-    const service = new GoogleAuthService(prisma as any, jwt as any, config as any);
+    const service = buildService();
 
     await service.login(identity);
 
@@ -98,7 +133,7 @@ describe('GoogleAuthService', () => {
       googleId: identity.googleId,
       role: 'STUDENT',
     });
-    const service = new GoogleAuthService(prisma as any, jwt as any, config as any);
+    const service = buildService();
 
     await service.login(identity);
 
