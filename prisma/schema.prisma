@@ -333,6 +333,8 @@ model PhoneOtp {
   @@index([expiresAt])
   @@index([isUsed])
   @@map("phone_otp")
+}
+
 // Tracks an issued JWT so it can be listed and revoked per device (issue #69).
 model Session {
   id           String    @id @default(uuid())

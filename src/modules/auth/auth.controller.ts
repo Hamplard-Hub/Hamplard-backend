@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Body, Query, Req, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { Controller, Get, Post, Body, Query, HttpCode, HttpStatus, Req, Headers } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
+import { CaptchaService } from './captcha.service';
 import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -22,11 +23,27 @@ class LoginDto {
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly captchaService: CaptchaService,
+  ) {}
 
   @Get('nonce')
-  @ApiOperation({ summary: 'Get challenge nonce for a Stellar address' })
-  getNonce(@Query('address') address: string) {
+  @ApiOperation({ summary: 'Get challenge nonce for a Stellar address after CAPTCHA verification' })
+  @ApiQuery({ name: 'address', required: true })
+  @ApiQuery({
+    name: 'captchaToken',
+    required: true,
+    description: 'CAPTCHA token from the configured provider. May also be sent as x-captcha-token.',
+  })
+  async getNonce(
+    @Query('address') address: string,
+    @Query('captchaToken') captchaToken: string,
+    @Req() req: Request,
+    @Headers('x-captcha-token') captchaHeader?: string,
+  ) {
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    await this.captchaService.verifyBeforeNonce(captchaToken || captchaHeader, ip);
     return { nonce: this.authService.generateNonce(address), address };
   }
 
