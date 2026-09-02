@@ -180,6 +180,17 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { stellarAddress } });
     const isNewUser = !existing;
 
+    // ---- 8b. Validate 2FA code when the account has it enabled ----
+    if (existing?.twoFactorEnabled) {
+      if (!totpCode) {
+        throw new UnauthorizedException('Two-factor authentication code required');
+      }
+      const isTotpValid = await this.twoFactor.verifyLoginCode(existing.id, totpCode);
+      if (!isTotpValid) {
+        throw new UnauthorizedException('Invalid two-factor authentication code');
+      }
+    }
+
     const user = await this.prisma.user.upsert({
       where: { stellarAddress },
       create: {

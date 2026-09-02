@@ -261,6 +261,10 @@ model User {
   suspendedAt    DateTime?
   suspendedUntil DateTime?
   suspensionReason String?
+  twoFactorSecret        String?
+  twoFactorEnabled       Boolean   @default(false)
+  twoFactorEnabledAt     DateTime?
+  twoFactorRecoveryCodes String[]  @default([])
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 

@@ -18,6 +18,12 @@ class LoginDto {
     description: 'Optional referral code applied on first-time registration',
   })
   @IsOptional() @IsString() referralCode?: string;
+  @ApiProperty({
+    required: false,
+    example: '123456',
+    description: 'TOTP or recovery code, required when the account has 2FA enabled',
+  })
+  @IsOptional() @IsString() totpCode?: string;
 }
 
 class RefreshTokenDto {
