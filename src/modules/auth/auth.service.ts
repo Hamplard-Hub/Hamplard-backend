@@ -3,9 +3,9 @@ import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ReferralsService } from '../referrals/referrals.service';
+import { RefreshTokenService, TokenPair } from './refresh-token.service';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { SessionsService, DeviceMetadata } from './sessions.service';
-import { v4 as uuidv4 } from 'uuid';
 
 /**
  * How many milliseconds of clock-skew between client and server we tolerate
@@ -38,6 +38,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly referrals: ReferralsService,
     private readonly sessions: SessionsService,
+    private readonly refreshTokens: RefreshTokenService,
   ) {}
 
   // ------------------------------------------------------------------
@@ -113,7 +114,7 @@ export class AuthService {
     signature: string;
     role?: 'STUDENT' | 'INSTRUCTOR';
     referralCode?: string;
-  }, deviceMeta?: DeviceMetadata): Promise<{ accessToken: string; user: any }> {
+  }, deviceMeta?: DeviceMetadata): Promise<TokenPair & { user: any }> {
     const { stellarAddress, signedNonce, signature, role, referralCode } = payload;
 
     // ---- 1. Validate Stellar address format ----
@@ -201,20 +202,41 @@ export class AuthService {
       }
     }
 
-    // ---- 10. Issue JWT (with a session-tracking jti — issue #69) ----
-    const jti = uuidv4();
-    const accessToken = this.jwt.sign({
-      sub:            user.id,
-      stellarAddress: user.stellarAddress,
-      role:           user.role,
-      jti,
-    });
-
-    const decoded = this.jwt.decode(accessToken) as { exp?: number };
-    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    await this.sessions.createSession({ userId: user.id, jti, expiresAt, meta: deviceMeta });
+    // ---- 10. Issue rotating refresh pair and track the access-token session ----
+    const tokens = await this.issueSessionedTokenPair(user, deviceMeta);
 
     this.logger.log(`User authenticated: ${stellarAddress} (${user.role})`);
-    return { accessToken, user };
+    return { ...tokens, user };
+  }
+
+  async refresh(refreshToken: string, deviceMeta?: DeviceMetadata): Promise<TokenPair> {
+    const tokens = await this.refreshTokens.rotate(refreshToken);
+    await this.trackAccessTokenSession(tokens.accessToken, deviceMeta);
+    return tokens;
+  }
+
+  private async issueSessionedTokenPair(
+    user: { id: string; stellarAddress: string | null; googleId?: string | null; role: string },
+    deviceMeta?: DeviceMetadata,
+  ): Promise<TokenPair> {
+    const tokens = await this.refreshTokens.issueTokenPair(user);
+    await this.trackAccessTokenSession(tokens.accessToken, deviceMeta);
+    return tokens;
+  }
+
+  private async trackAccessTokenSession(accessToken: string, deviceMeta?: DeviceMetadata) {
+    const decoded = this.jwt.decode(accessToken) as { exp?: number; jti?: string; sub?: string } | null;
+    if (!decoded?.jti || !decoded.sub) return;
+
+    const expiresAt = decoded.exp
+      ? new Date(decoded.exp * 1000)
+      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    await this.sessions.createSession({
+      userId: decoded.sub,
+      jti: decoded.jti,
+      expiresAt,
+      meta: deviceMeta,
+    });
   }
 }

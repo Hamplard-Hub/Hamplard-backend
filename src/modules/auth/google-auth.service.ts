@@ -8,8 +8,8 @@ import { JwtService } from '@nestjs/jwt';
 import { OAuth2Client, TokenPayload } from 'google-auth-library';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RefreshTokenService } from './refresh-token.service';
 import { SessionsService, DeviceMetadata } from './sessions.service';
-import { v4 as uuidv4 } from 'uuid';
 
 export interface GoogleIdentity {
   googleId: string;
@@ -29,6 +29,7 @@ export class GoogleAuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly sessions: SessionsService,
+    private readonly refreshTokens: RefreshTokenService,
     config: ConfigService,
   ) {
     this.clientId = config.get<string>('GOOGLE_CLIENT_ID');
@@ -115,20 +116,21 @@ export class GoogleAuthService {
             },
           });
 
-      const jti = uuidv4();
-      const accessToken = this.jwt.sign({
-        sub: user.id,
-        stellarAddress: user.stellarAddress,
-        googleId: user.googleId,
-        role: user.role,
-        jti,
-      });
+      const tokens = await this.refreshTokens.issueTokenPair(user);
+      const decoded = this.jwt.decode(tokens.accessToken) as { exp?: number; jti?: string } | null;
+      if (decoded?.jti) {
+        const expiresAt = decoded.exp
+          ? new Date(decoded.exp * 1000)
+          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        await this.sessions.createSession({
+          userId: user.id,
+          jti: decoded.jti,
+          expiresAt,
+          meta: deviceMeta,
+        });
+      }
 
-      const decoded = this.jwt.decode(accessToken) as { exp?: number };
-      const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      await this.sessions.createSession({ userId: user.id, jti, expiresAt, meta: deviceMeta });
-
-      return { accessToken, user };
+      return { ...tokens, user };
     } catch (error) {
       if (error?.code === 'P2002') {
         throw new ConflictException('Google account is already linked to another user');
