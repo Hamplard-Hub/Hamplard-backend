@@ -18,6 +18,7 @@
     "format": "prettier --write \"src/**/*.ts\""
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1098.0",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/cache-manager": "^2.2.1",
     "@nestjs/common": "^10.0.0",
