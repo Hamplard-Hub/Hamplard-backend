@@ -5,6 +5,7 @@ import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { CaptchaService } from './captcha.service';
 import { JwtStrategy } from './jwt.strategy';
 import { GoogleAuthController } from './google-auth.controller';
 import { GoogleAuthService } from './google-auth.service';
@@ -13,6 +14,7 @@ import { GoogleAuthGuard } from './google-auth.guard';
 import { OtpController } from './otp.controller';
 import { OtpService } from './otp.service';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { RefreshTokenService } from './refresh-token.service';
 import { SessionsController } from './sessions.controller';
 import { SessionsService } from './sessions.service';
 
@@ -29,11 +31,17 @@ import { SessionsService } from './sessions.service';
     }),
     ReferralsModule,
   ],
-  controllers: [AuthController, GoogleAuthController, OtpController],
-  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard, OtpService],
-  exports: [AuthService, OtpService],
-  controllers: [AuthController, GoogleAuthController, SessionsController],
-  providers: [AuthService, JwtStrategy, GoogleAuthService, GoogleStrategy, GoogleAuthGuard, SessionsService],
-  exports: [AuthService, SessionsService],
+  controllers: [AuthController, GoogleAuthController, OtpController, SessionsController],
+  providers: [
+    AuthService,
+    CaptchaService,
+    JwtStrategy,
+    GoogleAuthService,
+    GoogleStrategy,
+    GoogleAuthGuard,
+    OtpService,
+    SessionsService,
+  ],
+  exports: [AuthService, OtpService, SessionsService],
 })
 export class AuthModule {}
