@@ -8,6 +8,7 @@ import { TerminusModule } from '@nestjs/terminus';
 import { PrismaModule }  from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
 import { CacheModule }   from './common/cache/cache.module';
+import { QueueModule }   from './common/queue/queue.module';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { WebhookSignatureMiddleware } from './common/middleware/webhook-signature.middleware';
 import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
@@ -62,6 +63,7 @@ import { WishlistModule } from './modules/wishlist/wishlist.module';
     PrismaModule,
     StellarModule,
     CacheModule,
+    QueueModule,
 
     AuthModule,
     UsersModule,
