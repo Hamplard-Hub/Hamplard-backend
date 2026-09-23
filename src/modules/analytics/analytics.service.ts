@@ -133,6 +133,84 @@ export class AnalyticsService {
   }
 
   /**
+   * Export analytics events as CSV (admin-only).
+   * Streams results to avoid loading entire result set into memory.
+   * Enforces a maximum row cap to prevent excessive exports.
+   */
+  async exportAnalyticsEventsCsv(query: QueryAnalyticsEventsDto): Promise<{
+    csv: string;
+    rowCount: number;
+  }> {
+    const maxRows = 50000;
+
+    const where: Prisma.AnalyticsEventWhereInput = {};
+    if (query.eventType) where.eventType = query.eventType;
+    if (query.userId) where.userId = query.userId;
+    if (query.sessionId) where.sessionId = query.sessionId;
+    if (query.from || query.to) {
+      where.occurredAt = {};
+      if (query.from) where.occurredAt.gte = new Date(query.from);
+      if (query.to) where.occurredAt.lte = new Date(query.to);
+    }
+
+    const total = await this.prisma.analyticsEvent.count({ where });
+
+    if (total > maxRows) {
+      throw new BadRequestException(
+        `Result set exceeds maximum exportable rows (${total} > ${maxRows}). Please narrow the date range or apply stricter filters.`,
+      );
+    }
+
+    const events = await this.prisma.analyticsEvent.findMany({
+      where,
+      orderBy: { occurredAt: 'desc' },
+    });
+
+    const csv = this.toCsvString(events);
+    return { csv, rowCount: events.length };
+  }
+
+  /**
+   * Convert analytics events to CSV string.
+   */
+  private toCsvString(events: any[]): string {
+    const headers = [
+      'id',
+      'eventType',
+      'userId',
+      'sessionId',
+      'path',
+      'properties',
+      'userAgent',
+      'ipAddress',
+      'occurredAt',
+      'createdAt',
+    ];
+
+    const escape = (value: unknown) => {
+      const str = String(value ?? '');
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+
+    const lines = events.map((event) =>
+      [
+        event.id,
+        event.eventType,
+        event.userId ?? '',
+        event.sessionId ?? '',
+        event.path ?? '',
+        event.properties ? JSON.stringify(event.properties) : '',
+        event.userAgent ?? '',
+        event.ipAddress ?? '',
+        event.occurredAt?.toISOString() ?? '',
+        event.createdAt?.toISOString() ?? '',
+      ].map(escape).join(','),
+    );
+
+    return [headers.join(','), ...lines].join('\n');
+  }
+
+  /**
    * Validate analytics payload schema beyond class-validator decorators.
    */
   validateEventPayload(dto: TrackAnalyticsEventDto) {

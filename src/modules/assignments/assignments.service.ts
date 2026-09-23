@@ -2,6 +2,7 @@
 import {
   Injectable, NotFoundException, ForbiddenException, Logger,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AssignmentStatus, NotificationType } from '@prisma/client';
@@ -15,11 +16,47 @@ export class AssignmentsService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  async create(lessonId: string, data: {
-    title: string;
-    description: string;
-    instructions?: string;
-  }) {
+  /**
+   * Helper to verify instructor owns the lesson's course, or user is admin.
+   */
+  private async verifyLessonOwnership(lessonId: string, userId: string, userRole: string) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      include: {
+        module: {
+          include: {
+            course: true,
+          },
+        },
+      },
+    });
+
+    if (!lesson) {
+      throw new NotFoundException('Lesson not found');
+    }
+
+    if (userRole !== UserRole.ADMIN) {
+      const course = lesson.module.course;
+      if (course.instructorAddress !== userId && course.instructor?.id !== userId) {
+        throw new ForbiddenException('You are not authorized to manage assignments for this course');
+      }
+    }
+
+    return lesson;
+  }
+
+  async create(
+    lessonId: string,
+    data: {
+      title: string;
+      description: string;
+      instructions?: string;
+    },
+    userId: string,
+    userRole: string,
+  ) {
+    await this.verifyLessonOwnership(lessonId, userId, userRole);
+
     return this.prisma.assignment.create({
       data: { lessonId, ...data },
     });
@@ -102,12 +139,35 @@ export class AssignmentsService {
     instructorId: string,
     approved: boolean,
     feedback: string,
+    userRole: string,
   ) {
     const submission = await this.prisma.assignmentSubmission.findUnique({
       where: { id: submissionId },
-      include: { assignment: true },
+      include: {
+        assignment: {
+          include: {
+            lesson: {
+              include: {
+                module: {
+                  include: {
+                    course: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     });
     if (!submission) throw new NotFoundException('Submission not found');
+
+    // Verify ownership
+    if (userRole !== UserRole.ADMIN) {
+      const course = submission.assignment.lesson.module.course;
+      if (course.instructorAddress !== instructorId && course.instructor?.id !== instructorId) {
+        throw new ForbiddenException('You are not authorized to review assignments for this course');
+      }
+    }
 
     const updated = await this.prisma.assignmentSubmission.update({
       where: { id: submissionId },
@@ -140,23 +200,57 @@ export class AssignmentsService {
     });
   }
 
-  async findPendingForInstructor(instructorAddress: string) {
-    return this.prisma.assignmentSubmission.findMany({
-      where: {
-        status: AssignmentStatus.SUBMITTED,
-        assignment: {
-          lesson: {
-            module: {
-              course: { instructorAddress },
+  async findPendingForInstructor(
+    instructorAddress: string,
+    page?: number,
+    limit?: number,
+  ) {
+    const pageNum = Math.max(1, page ?? 1);
+    const pageLimit = Math.min(100, Math.max(1, limit ?? 20));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.assignmentSubmission.findMany({
+        where: {
+          status: AssignmentStatus.SUBMITTED,
+          assignment: {
+            lesson: {
+              module: {
+                course: { instructorAddress },
+              },
             },
           },
         },
+        include: {
+          assignment: { include: { lesson: true } },
+          student:    { select: { name: true, stellarAddress: true } },
+        },
+        orderBy: { submittedAt: 'asc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.assignmentSubmission.count({
+        where: {
+          status: AssignmentStatus.SUBMITTED,
+          assignment: {
+            lesson: {
+              module: {
+                course: { instructorAddress },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit) || 0,
       },
-      include: {
-        assignment: { include: { lesson: true } },
-        student:    { select: { name: true, stellarAddress: true } },
-      },
-      orderBy: { submittedAt: 'asc' },
-    });
+    };
   }
 }

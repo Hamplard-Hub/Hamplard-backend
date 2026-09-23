@@ -19,4 +19,15 @@ export class AuditLogController {
   findAll(@Query() query: QueryAuditLogDto) {
     return this.auditLogService.findAll(query);
   }
+
+  @Get('export')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Export admin audit logs as CSV' })
+  async exportCsv(@Query() query: QueryAuditLogDto) {
+    const { csv, rowCount } = await this.auditLogService.exportAuditLogCsv(query);
+    return {
+      csv,
+      rowCount,
+    };
+  }
 }

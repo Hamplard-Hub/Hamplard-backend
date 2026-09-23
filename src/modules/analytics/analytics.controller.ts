@@ -9,6 +9,7 @@ import {
   Query,
   Req,
   UseGuards,
+  StreamableFile,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -89,5 +90,18 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Query raw analytics events (admin only)' })
   queryRawEvents(@Query() query: QueryAnalyticsEventsDto) {
     return this.analyticsService.queryRawEvents(query);
+  }
+
+  @Get('events/export')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Export analytics events as CSV (admin only)' })
+  async exportEvents(@Query() query: QueryAnalyticsEventsDto) {
+    const { csv, rowCount } = await this.analyticsService.exportAnalyticsEventsCsv(query);
+    return {
+      csv,
+      rowCount,
+    };
   }
 }
