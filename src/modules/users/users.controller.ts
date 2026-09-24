@@ -11,6 +11,8 @@ import { SuspendUserDto } from './dto/suspend-user.dto';
 import { UnsuspendUserDto } from './dto/unsuspend-user.dto';
 import { Request } from 'express';
 
+import { UpdateProfileDto } from './dto/update-profile.dto';
+
 @ApiTags('users')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -28,9 +30,9 @@ export class UsersController {
   @ApiOperation({ summary: 'Update profile (name, email, bio, avatar)' })
   updateMe(
     @CurrentUser('id') userId: string,
-    @Body() body: { name?: string; email?: string; bio?: string; avatarUrl?: string },
+    @Body() dto: UpdateProfileDto,
   ) {
-    return this.usersService.updateProfile(userId, body);
+    return this.usersService.updateProfile(userId, dto);
   }
 
   @Get(':address/public')

@@ -1,7 +1,8 @@
 // users.service.ts
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditAction, AuditTargetType } from '@prisma/client';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class UsersService {
@@ -28,9 +29,16 @@ export class UsersService {
 
   async updateProfile(
     id: string,
-    data: { name?: string; email?: string; bio?: string; avatarUrl?: string },
+    data: UpdateProfileDto,
   ) {
-    return this.prisma.user.update({ where: { id }, data });
+    try {
+      return await this.prisma.user.update({ where: { id }, data });
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException('An account with this email address already exists');
+      }
+      throw error;
+    }
   }
 
   async getInstructorStats(instructorAddress: string) {

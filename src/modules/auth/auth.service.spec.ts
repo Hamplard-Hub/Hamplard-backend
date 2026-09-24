@@ -1,5 +1,5 @@
 import { UnauthorizedException } from '@nestjs/common';
-import { StrKey } from '@stellar/stellar-sdk';
+import { Keypair } from '@stellar/stellar-sdk';
 import { AuthService } from './auth.service';
 
 describe('AuthService', () => {
@@ -34,13 +34,6 @@ describe('AuthService', () => {
     }),
   };
 
-  const user = {
-    id: 'user-1',
-    stellarAddress: 'GABC',
-    googleId: null,
-    role: 'STUDENT',
-  };
-
   const buildService = () =>
     new AuthService(
       prisma as any,
@@ -59,18 +52,26 @@ describe('AuthService', () => {
     });
   });
 
-  it('issues an access/refresh pair on login and tracks the session', async () => {
+  it('succeeds and issues tokens when signature and nonce are valid', async () => {
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+    const user = {
+      id: 'user-1',
+      stellarAddress,
+      googleId: null,
+      role: 'STUDENT',
+    };
     prisma.user.findUnique.mockResolvedValue(null);
     prisma.user.upsert.mockResolvedValue(user);
-    jest.spyOn(StrKey, 'isValidEd25519PublicKey').mockReturnValue(true);
+
     const service = buildService();
-    jest.spyOn(service, 'verifySignature').mockReturnValue(true);
-    const nonce = service.generateNonce('GABC');
+    const nonce = service.generateNonce(stellarAddress);
+    const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
 
     const result = await service.login({
-      stellarAddress: 'GABC',
+      stellarAddress,
       signedNonce: nonce,
-      signature: 'sig',
+      signature,
     });
 
     expect(refreshTokens.issueTokenPair).toHaveBeenCalledWith(user);
@@ -83,6 +84,46 @@ describe('AuthService', () => {
     expect(result.accessToken).toBe('access-jwt');
     expect(result.refreshToken).toBe('refresh-jwt');
     expect(result.user).toEqual(user);
+  });
+
+  it('rejects login when signature verification fails', async () => {
+    const keypair = Keypair.random();
+    const wrongKeypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+
+    const service = buildService();
+    const nonce = service.generateNonce(stellarAddress);
+    const wrongSignature = wrongKeypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
+
+    await expect(
+      service.login({
+        stellarAddress,
+        signedNonce: nonce,
+        signature: wrongSignature,
+      }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('rejects login when nonce is tampered', async () => {
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+
+    const service = buildService();
+    const nonce = service.generateNonce(stellarAddress);
+    const tamperedNonce = nonce + '_tampered';
+    const signature = keypair.sign(Buffer.from(tamperedNonce, 'utf-8')).toString('base64');
+
+    await expect(
+      service.login({
+        stellarAddress,
+        signedNonce: tamperedNonce,
+        signature,
+      }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
   });
 
   it('exchanges a refresh token through the rotation service', async () => {
@@ -99,12 +140,13 @@ describe('AuthService', () => {
   });
 
   it('rejects login when the nonce has expired', async () => {
-    jest.spyOn(StrKey, 'isValidEd25519PublicKey').mockReturnValue(true);
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
     const service = buildService();
 
     await expect(
       service.login({
-        stellarAddress: 'GABC',
+        stellarAddress,
         signedNonce: 'signed',
         signature: 'sig',
       }),
@@ -112,3 +154,4 @@ describe('AuthService', () => {
     expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
   });
 });
+

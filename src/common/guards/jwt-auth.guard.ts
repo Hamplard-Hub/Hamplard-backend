@@ -23,53 +23,6 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
             throw new UnauthorizedException('Invalid token payload');
         }
 
-        // Check user account status
-        const userRecord = await this.prisma.user.findUnique({
-            where: { id: user.id },
-            select: {
-                isBanned: true,
-                banReason: true,
-                isSuspended: true,
-                suspendedUntil: true,
-                suspensionReason: true,
-            },
-        });
-
-        if (!userRecord) {
-            throw new UnauthorizedException('User not found');
-        }
-
-        // Check if user is banned
-        if (userRecord.isBanned) {
-            throw new UnauthorizedException(
-                `Account is permanently banned. Reason: ${userRecord.banReason || 'Violation of terms'}`,
-            );
-        }
-
-        // Check if user is suspended
-        if (userRecord.isSuspended) {
-            // Check if suspension has expired
-            if (userRecord.suspendedUntil && userRecord.suspendedUntil <= new Date()) {
-                // Auto-unsuspend
-                await this.prisma.user.update({
-                    where: { id: user.id },
-                    data: {
-                        isSuspended: false,
-                        suspendedAt: null,
-                        suspendedUntil: null,
-                        suspensionReason: null,
-                    },
-                });
-            } else {
-                const untilDate = userRecord.suspendedUntil
-                    ? userRecord.suspendedUntil.toISOString()
-                    : 'indefinitely';
-                throw new UnauthorizedException(
-                    `Account is suspended until ${untilDate}. Reason: ${userRecord.suspensionReason || 'Under review'}`,
-                );
-            }
-        }
-
         // Issue #69 — reject requests carrying a revoked/expired session token.
         // Tokens issued before session tracking existed carry no `jti` and are let through.
         if (user.jti) {
