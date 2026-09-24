@@ -1589,6 +1589,40 @@ model LearningPathCourse {
 }
 
 // ============================================================
+// IMPERSONATION SESSIONS
+// ============================================================
+
+enum ImpersonationSessionStatus {
+  ACTIVE
+  EXPIRED
+  ENDED
+  FORCE_ENDED
+}
+
+model ImpersonationSession {
+  id              String                    @id @default(uuid())
+  sessionId       String                    @unique
+  adminId         String
+  targetUserId    String
+  reason          String?
+  durationSeconds Int
+  startedAt       DateTime                  @default(now())
+  expiresAt       DateTime
+  status          ImpersonationSessionStatus @default(ACTIVE)
+  endedAt         DateTime?
+  endedBy         String?                   // admin who ended the session
+  forceEndedBy    String?                   // admin who force-ended the session
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  @@index([adminId])
+  @@index([targetUserId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("impersonation_sessions")
+}
+
+// ============================================================
 // COURSE PREREQUISITES
 // ============================================================
 

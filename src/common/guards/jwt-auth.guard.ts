@@ -9,13 +9,11 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     }
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
-        // First, validate the JWT token
         const canActivate = await super.canActivate(context);
         if (!canActivate) {
             return false;
         }
 
-        // Get the request object
         const request = context.switchToHttp().getRequest();
         const user = request.user;
 
@@ -23,7 +21,6 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
             throw new UnauthorizedException('Invalid token payload');
         }
 
-        // Check user account status
         const userRecord = await this.prisma.user.findUnique({
             where: { id: user.id },
             select: {
@@ -39,18 +36,14 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
             throw new UnauthorizedException('User not found');
         }
 
-        // Check if user is banned
         if (userRecord.isBanned) {
             throw new UnauthorizedException(
                 `Account is permanently banned. Reason: ${userRecord.banReason || 'Violation of terms'}`,
             );
         }
 
-        // Check if user is suspended
         if (userRecord.isSuspended) {
-            // Check if suspension has expired
             if (userRecord.suspendedUntil && userRecord.suspendedUntil <= new Date()) {
-                // Auto-unsuspend
                 await this.prisma.user.update({
                     where: { id: user.id },
                     data: {
@@ -70,8 +63,6 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
             }
         }
 
-        // Issue #69 — reject requests carrying a revoked/expired session token.
-        // Tokens issued before session tracking existed carry no `jti` and are let through.
         if (user.jti) {
             const session = await this.prisma.session.findUnique({
                 where: { jti: user.jti },
@@ -85,10 +76,28 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
                 if (session.expiresAt <= new Date()) {
                     throw new UnauthorizedException('Session has expired');
                 }
-
                 this.prisma.session
                     .update({ where: { jti: user.jti }, data: { lastActiveAt: new Date() } })
                     .catch(() => undefined);
+            }
+        }
+
+        if (user.isImpersonating && user.sessionId) {
+            const impersonationSession = await this.prisma.impersonationSession.findUnique({
+                where: { sessionId: user.sessionId },
+                select: { status: true, expiresAt: true },
+            });
+
+            if (!impersonationSession) {
+                throw new UnauthorizedException('Impersonation session not found');
+            }
+
+            if (impersonationSession.status !== 'ACTIVE') {
+                throw new UnauthorizedException('Impersonation session is no longer active');
+            }
+
+            if (impersonationSession.expiresAt <= new Date()) {
+                throw new UnauthorizedException('Impersonation session has expired');
             }
         }
 

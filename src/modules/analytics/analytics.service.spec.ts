@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AnalyticsService } from './analytics.service';
 
@@ -13,7 +14,12 @@ describe('AnalyticsService', () => {
       groupBy: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
+      deleteMany: jest.fn(),
     },
+  };
+
+  const mockConfigService = {
+    get: jest.fn().mockReturnValue(180),
   };
 
   beforeEach(async () => {
@@ -21,10 +27,11 @@ describe('AnalyticsService', () => {
       providers: [
         AnalyticsService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
 
-    service = module.get(AnalyticsService);
+    service = module.get<AnalyticsService>(AnalyticsService);
     jest.clearAllMocks();
   });
 
@@ -148,6 +155,38 @@ describe('AnalyticsService', () => {
           properties: huge,
         }),
       ).toThrow(BadRequestException);
+    });
+  });
+
+  describe('purgeOldEntries()', () => {
+    it('deletes only events older than retention period', async () => {
+      const now = new Date();
+      const retentionDays = 180;
+      const purgeDate = new Date(now);
+      purgeDate.setDate(purgeDate.getDate() - retentionDays);
+
+      mockConfigService.get.mockReturnValue(retentionDays);
+      mockPrisma.analyticsEvent.deleteMany.mockResolvedValueOnce({ count: 5000 })
+        .mockResolvedValueOnce({ count: 2000 })
+        .mockResolvedValueOnce({ count: 0 });
+
+      await service.purgeOldEntries();
+
+      expect(mockPrisma.analyticsEvent.deleteMany).toHaveBeenCalledWith({
+        where: { occurredAt: { lt: expect.any(Date) } },
+      });
+    });
+
+    it('logs number of purged rows', async () => {
+      mockConfigService.get.mockReturnValue(180);
+      mockPrisma.analyticsEvent.deleteMany.mockResolvedValue({ count: 1234 });
+
+      const loggerSpy = jest.spyOn(service['logger'], 'log');
+      await service.purgeOldEntries();
+
+      expect(loggerSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Purged 1234 old analytics events'),
+      );
     });
   });
 });

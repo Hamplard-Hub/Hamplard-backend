@@ -1,29 +1,19 @@
 import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StartImpersonationDto } from './dto/start-impersonation.dto';
 import { v4 as uuidv4 } from 'uuid';
-
-export interface ImpersonationAuditLog {
-  sessionId: string;
-  adminId: string;
-  targetUserId: string;
-  targetUserEmail?: string;
-  reason?: string;
-  durationSeconds: number;
-  startedAt: Date;
-  expiresAt: Date;
-  status: 'ACTIVE' | 'EXPIRED' | 'ENDED';
-}
+import { AuditAction, AuditTargetType, ImpersonationSessionStatus } from '@prisma/client';
 
 @Injectable()
 export class ImpersonationService {
   private readonly logger = new Logger(ImpersonationService.name);
-  private readonly auditTrail: ImpersonationAuditLog[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {}
 
   async startImpersonation(adminId: string, dto: StartImpersonationDto) {
@@ -54,22 +44,36 @@ export class ImpersonationService {
       { expiresIn: `${durationSeconds}s` },
     );
 
-    const logEntry: ImpersonationAuditLog = {
-      sessionId,
-      adminId,
-      targetUserId: targetUser.id,
-      targetUserEmail: targetUser.email ?? undefined,
-      reason: dto.reason,
-      durationSeconds,
-      startedAt: now,
-      expiresAt,
-      status: 'ACTIVE',
-    };
+    const session = await this.prisma.impersonationSession.create({
+      data: {
+        sessionId,
+        adminId,
+        targetUserId: targetUser.id,
+        reason: dto.reason,
+        durationSeconds,
+        startedAt: now,
+        expiresAt,
+        status: ImpersonationSessionStatus.ACTIVE,
+      },
+    });
 
-    this.auditTrail.unshift(logEntry);
-    this.logger.log(
-      `Admin ${adminId} started impersonating user ${targetUser.id} for ${durationSeconds}s (Session: ${sessionId})`,
-    );
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.IMPERSONATION_STARTED,
+        targetType: AuditTargetType.USER,
+        targetId: targetUser.id,
+        metadata: {
+          sessionId,
+          targetUserEmail: targetUser.email,
+          targetUserName: targetUser.name,
+          reason: dto.reason,
+          durationSeconds,
+        },
+      },
+    });
+
+    this.logger.log(`Admin ${adminId} started impersonating user ${targetUser.id} for ${durationSeconds}s (Session: ${sessionId})`);
 
     return {
       sessionId,
@@ -86,58 +90,106 @@ export class ImpersonationService {
     };
   }
 
-  getAuditTrail(page: number = 1, limit: number = 10) {
+  async getAuditTrail(page: number = 1, limit: number = 10) {
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.impersonationSession.findMany({
+        skip,
+        take: limit,
+        orderBy: { startedAt: 'desc' },
+      }),
+      this.prisma.impersonationSession.count(),
+    ]);
+
+    return { data, total, page, limit };
+  }
+
+  async getActiveSessions() {
     const now = new Date();
-    // Update expired statuses
-    this.auditTrail.forEach((log) => {
-      if (log.status === 'ACTIVE' && now > log.expiresAt) {
-        log.status = 'EXPIRED';
-      }
+    return this.prisma.impersonationSession.findMany({
+      where: {
+        status: ImpersonationSessionStatus.ACTIVE,
+        expiresAt: { gt: now },
+      },
+      orderBy: { startedAt: 'desc' },
+    });
+  }
+
+  async verifySession(sessionId: string) {
+    const session = await this.prisma.impersonationSession.findUnique({
+      where: { sessionId },
     });
 
-    const skip = (page - 1) * limit;
-    const items = this.auditTrail.slice(skip, skip + limit);
-    return {
-      data: items,
-      total: this.auditTrail.length,
-      page,
-      limit,
-    };
-  }
-
-  verifySession(sessionId: string) {
-    const log = this.auditTrail.find((s) => s.sessionId === sessionId);
-    if (!log) {
+    if (!session) {
       throw new NotFoundException('Impersonation session not found');
     }
 
     const now = new Date();
-    if (log.status === 'ACTIVE' && now > log.expiresAt) {
-      log.status = 'EXPIRED';
+    let currentStatus = session.status;
+
+    if (currentStatus === ImpersonationSessionStatus.ACTIVE && now > session.expiresAt) {
+      currentStatus = ImpersonationSessionStatus.EXPIRED;
+      await this.prisma.impersonationSession.update({
+        where: { sessionId },
+        data: { status: ImpersonationSessionStatus.EXPIRED },
+      });
     }
 
     return {
-      sessionId: log.sessionId,
-      adminId: log.adminId,
-      targetUserId: log.targetUserId,
-      status: log.status,
-      startedAt: log.startedAt,
-      expiresAt: log.expiresAt,
-      isActive: log.status === 'ACTIVE',
+      sessionId: session.sessionId,
+      adminId: session.adminId,
+      targetUserId: session.targetUserId,
+      status: currentStatus,
+      startedAt: session.startedAt,
+      expiresAt: session.expiresAt,
+      isActive: currentStatus === ImpersonationSessionStatus.ACTIVE,
     };
   }
 
-  endSession(sessionId: string, adminId: string) {
-    const log = this.auditTrail.find((s) => s.sessionId === sessionId);
-    if (!log) {
+  async endSession(sessionId: string, adminId: string, force: boolean = false) {
+    const session = await this.prisma.impersonationSession.findUnique({
+      where: { sessionId },
+    });
+
+    if (!session) {
       throw new NotFoundException('Impersonation session not found');
     }
-    if (log.adminId !== adminId) {
+
+    if (!force && session.adminId !== adminId) {
       throw new ForbiddenException('Cannot end an impersonation session created by another admin');
     }
 
-    log.status = 'ENDED';
-    this.logger.log(`Impersonation session ${sessionId} ended by admin ${adminId}`);
-    return { sessionId, status: 'ENDED', endedAt: new Date() };
+    const now = new Date();
+    const isForceEnd = force && session.adminId !== adminId;
+
+    await this.prisma.impersonationSession.update({
+      where: { sessionId },
+      data: {
+        status: isForceEnd ? ImpersonationSessionStatus.FORCE_ENDED : ImpersonationSessionStatus.ENDED,
+        endedAt: now,
+        endedBy: adminId,
+        forceEndedBy: isForceEnd ? adminId : null,
+      },
+    });
+
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.IMPERSONATION_ENDED,
+        targetType: AuditTargetType.USER,
+        targetId: session.targetUserId,
+        metadata: {
+          sessionId,
+          originalAdminId: session.adminId,
+          forceEnded: isForceEnd,
+          reason: isForceEnd ? 'Force-ended by admin' : 'Session ended by originating admin',
+        },
+      },
+    });
+
+    this.logger.log(`Impersonation session ${sessionId} ${isForceEnd ? 'force-' : ''}ended by admin ${adminId}`);
+
+    return { sessionId, status: isForceEnd ? 'FORCE_ENDED' : 'ENDED', endedAt: now };
   }
 }

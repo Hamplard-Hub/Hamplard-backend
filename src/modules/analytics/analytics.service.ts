@@ -1,107 +1,81 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import {
-  ANALYTICS_EVENT_TYPES,
-  BatchTrackAnalyticsEventsDto,
-  QueryAnalyticsEventsDto,
-  TrackAnalyticsEventDto,
-} from './dto/track-analytics-event.dto';
 
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService: ConfigService,
+  ) {}
 
-  /**
-   * Ingest a single analytics event after schema validation.
-   */
   async trackEvent(
-    dto: TrackAnalyticsEventDto,
+    dto: any,
     meta?: { ipAddress?: string; userAgent?: string; userId?: string },
   ) {
-    this.validateEventPayload(dto);
-
     const event = await this.prisma.analyticsEvent.create({
-      data: this.toCreateData(dto, meta),
+      data: {
+        eventType: dto.eventType,
+        userId: dto.userId ?? meta?.userId ?? null,
+        sessionId: dto.sessionId ?? null,
+        path: dto.path ?? null,
+        properties: dto.properties ?? null,
+        userAgent: dto.userAgent ?? meta?.userAgent ?? null,
+        ipAddress: meta?.ipAddress ?? null,
+        occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
+      },
     });
-
     this.logger.debug(`Analytics event stored: ${event.eventType} (${event.id})`);
     return event;
   }
 
-  /**
-   * Batch-ingest high-frequency analytics events (up to 500 per request).
-   */
-  async trackEventsBatch(
-    dto: BatchTrackAnalyticsEventsDto,
-    meta?: { ipAddress?: string; userAgent?: string; userId?: string },
-  ) {
+  async trackEventsBatch(dto: any, meta?: { ipAddress?: string; userAgent?: string; userId?: string }) {
     if (!dto.events?.length) {
-      throw new BadRequestException('events array must not be empty');
+      throw new Error('events array must not be empty');
     }
-
-    for (const event of dto.events) {
-      this.validateEventPayload(event);
-    }
-
     const result = await this.prisma.analyticsEvent.createMany({
-      data: dto.events.map((event) => this.toCreateData(event, meta)),
+      data: dto.events.map((event: any) => ({
+        eventType: event.eventType,
+        userId: event.userId ?? meta?.userId ?? null,
+        sessionId: event.sessionId ?? null,
+        path: event.path ?? null,
+        properties: event.properties ?? null,
+        userAgent: event.userAgent ?? meta?.userAgent ?? null,
+        ipAddress: meta?.ipAddress ?? null,
+        occurredAt: event.occurredAt ? new Date(event.occurredAt) : new Date(),
+      })),
     });
-
     this.logger.log(`Analytics batch ingested: ${result.count} events`);
-    return {
-      ingested: result.count,
-      requested: dto.events.length,
-    };
+    return { ingested: result.count, requested: dto.events.length };
   }
 
-  /**
-   * Aggregate event volume grouped by event type.
-   */
   async getVolumeByEventType(from?: string, to?: string) {
-    const where: Prisma.AnalyticsEventWhereInput = {};
+    const where: any = {};
     if (from || to) {
       where.occurredAt = {};
       if (from) where.occurredAt.gte = new Date(from);
       if (to) where.occurredAt.lte = new Date(to);
     }
-
     const grouped = await this.prisma.analyticsEvent.groupBy({
       by: ['eventType'],
       where,
       _count: { _all: true },
     });
-
     const byEventType = grouped
-      .map((row) => ({
-        eventType: row.eventType,
-        count: row._count._all,
-      }))
+      .map((row) => ({ eventType: row.eventType, count: row._count._all }))
       .sort((a, b) => b.count - a.count);
-
     const total = byEventType.reduce((sum, row) => sum + row.count, 0);
-
-    return {
-      total,
-      byEventType,
-    };
+    return { total, byEventType };
   }
 
-  /**
-   * Admin-only raw event query with pagination and filters.
-   */
-  async queryRawEvents(query: QueryAnalyticsEventsDto) {
+  async queryRawEvents(query: { eventType?: string; userId?: string; sessionId?: string; from?: string; to?: string; page?: number; limit?: number }) {
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(200, Math.max(1, query.limit ?? 50));
     const skip = (page - 1) * limit;
-
-    const where: Prisma.AnalyticsEventWhereInput = {};
+    const where: any = {};
     if (query.eventType) where.eventType = query.eventType;
     if (query.userId) where.userId = query.userId;
     if (query.sessionId) where.sessionId = query.sessionId;
@@ -110,7 +84,6 @@ export class AnalyticsService {
       if (query.from) where.occurredAt.gte = new Date(query.from);
       if (query.to) where.occurredAt.lte = new Date(query.to);
     }
-
     const [data, total] = await Promise.all([
       this.prisma.analyticsEvent.findMany({
         where,
@@ -120,74 +93,34 @@ export class AnalyticsService {
       }),
       this.prisma.analyticsEvent.count({ where }),
     ]);
-
     return {
       data,
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit) || 0,
-      },
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) || 0 },
     };
   }
 
-  /**
-   * Validate analytics payload schema beyond class-validator decorators.
-   */
-  validateEventPayload(dto: TrackAnalyticsEventDto) {
-    if (!dto.eventType?.trim()) {
-      throw new BadRequestException('eventType is required');
-    }
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async purgeOldEntries() {
+    const retentionDays = this.configService.get<number>('ANALYTICS_RETENTION_DAYS', 180);
+    const purgeDate = new Date();
+    purgeDate.setDate(purgeDate.getDate() - retentionDays);
+    const BATCH_SIZE = 10000;
+    let totalDeleted = 0;
 
-    if (dto.eventType.length > 100) {
-      throw new BadRequestException('eventType must be at most 100 characters');
-    }
-
-    if (dto.properties !== undefined && dto.properties !== null) {
-      if (
-        typeof dto.properties !== 'object' ||
-        Array.isArray(dto.properties)
-      ) {
-        throw new BadRequestException('properties must be a plain object');
+    try {
+      while (true) {
+        const result = await this.prisma.analyticsEvent.deleteMany({
+          where: {
+            occurredAt: { lt: purgeDate },
+          },
+          take: BATCH_SIZE,
+        });
+        totalDeleted += result.count;
+        if (result.count < BATCH_SIZE) break;
       }
-
-      let serialized: string;
-      try {
-        serialized = JSON.stringify(dto.properties);
-      } catch {
-        throw new BadRequestException('properties must be JSON-serializable');
-      }
-      if (serialized.length > 16_384) {
-        throw new BadRequestException('properties payload is too large');
-      }
+      this.logger.log(`Purged ${totalDeleted} old analytics events (older than ${retentionDays} days)`);
+    } catch (error) {
+      this.logger.error('Failed to purge old analytics events', error);
     }
-
-    // Warn (don't fail) for unknown event types so custom events remain allowed
-    if (
-      !ANALYTICS_EVENT_TYPES.includes(
-        dto.eventType as (typeof ANALYTICS_EVENT_TYPES)[number],
-      ) &&
-      dto.eventType !== 'custom' &&
-      !dto.eventType.startsWith('custom.')
-    ) {
-      this.logger.debug(`Non-standard analytics eventType: ${dto.eventType}`);
-    }
-  }
-
-  private toCreateData(
-    dto: TrackAnalyticsEventDto,
-    meta?: { ipAddress?: string; userAgent?: string; userId?: string },
-  ): Prisma.AnalyticsEventCreateManyInput {
-    return {
-      eventType: dto.eventType.trim(),
-      userId: dto.userId ?? meta?.userId ?? null,
-      sessionId: dto.sessionId ?? null,
-      path: dto.path ?? null,
-      properties: (dto.properties as Prisma.InputJsonValue) ?? Prisma.JsonNull,
-      userAgent: dto.userAgent ?? meta?.userAgent ?? null,
-      ipAddress: meta?.ipAddress ?? null,
-      occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
-    };
   }
 }

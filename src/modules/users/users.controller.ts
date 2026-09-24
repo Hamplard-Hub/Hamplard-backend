@@ -1,5 +1,5 @@
-import { Controller, Get, Patch, Post, Body, Param, UseGuards, Req } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { Controller, Get, Patch, Post, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -16,7 +16,7 @@ import { Request } from 'express';
 @UseGuards(JwtAuthGuard)
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) { }
+  constructor(private readonly usersService: UsersService) {}
 
   @Get('me')
   @ApiOperation({ summary: 'Get the authenticated user profile' })
@@ -45,9 +45,33 @@ export class UsersController {
     return this.usersService.getInstructorStats(address);
   }
 
-  // ============================================================
-  // ADMIN ENDPOINTS - User Management
-  // ============================================================
+  @Get('')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: '[Admin] List and search users with filters and pagination' })
+  @ApiQuery({ name: 'role', required: false, enum: UserRole })
+  @ApiQuery({ name: 'isBanned', required: false, type: Boolean })
+  @ApiQuery({ name: 'isSuspended', required: false, type: Boolean })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  findAll(
+    @Query('role') role?: UserRole,
+    @Query('isBanned') isBanned?: string,
+    @Query('isSuspended') isSuspended?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.usersService.findAll({
+      role,
+      isBanned: isBanned === 'true' ? true : isBanned === 'false' ? false : undefined,
+      isSuspended: isSuspended === 'true' ? true : isSuspended === 'false' ? false : undefined,
+      search,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
 
   @Post(':userId/ban')
   @UseGuards(JwtAuthGuard, RolesGuard)

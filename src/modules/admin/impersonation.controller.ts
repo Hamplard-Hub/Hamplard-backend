@@ -27,6 +27,12 @@ export class ImpersonationController {
     return this.impersonationService.startImpersonation(adminId, dto);
   }
 
+  @Get('sessions/active')
+  @ApiOperation({ summary: 'Get all active impersonation sessions' })
+  getActiveSessions() {
+    return this.impersonationService.getActiveSessions();
+  }
+
   @Get('audit-logs')
   @ApiOperation({ summary: 'Retrieve impersonation audit trail (admin only)' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -49,11 +55,21 @@ export class ImpersonationController {
 
   @Post('sessions/:sessionId/stop')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'End an active impersonation session' })
+  @ApiOperation({ summary: 'End an active impersonation session (only by originating admin)' })
   endSession(
     @Param('sessionId') sessionId: string,
     @CurrentUser('id') adminId: string,
   ) {
-    return this.impersonationService.endSession(sessionId, adminId);
+    return this.impersonationService.endSession(sessionId, adminId, false);
+  }
+
+  @Post('sessions/:sessionId/force-end')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Force-end any active impersonation session (super-admin override)' })
+  forceEndSession(
+    @Param('sessionId') sessionId: string,
+    @CurrentUser('id') adminId: string,
+  ) {
+    return this.impersonationService.endSession(sessionId, adminId, true);
   }
 }
