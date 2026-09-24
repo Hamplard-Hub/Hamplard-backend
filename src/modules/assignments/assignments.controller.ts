@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Body, Param, UseGuards, HttpCode, HttpStatus,
+  Controller, Get, Post, Body, Param, UseGuards, HttpCode, HttpStatus, Query,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AssignmentsService } from './assignments.service';
@@ -7,6 +7,9 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
+import { CreateAssignmentDto } from './dto/create-assignment.dto';
+import { ReviewAssignmentDto } from './dto/review-assignment.dto';
+import { PendingSubmissionsQueryDto } from './dto/pending-submissions-query.dto';
 
 @ApiTags('assignments')
 @ApiBearerAuth()
@@ -26,13 +29,12 @@ export class AssignmentsController {
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create assignment for a lesson (instructor)' })
-  create(@Body() body: {
-    lessonId: string;
-    title: string;
-    description: string;
-    instructions?: string;
-  }) {
-    return this.assignmentsService.create(body.lessonId, body);
+  create(
+    @Body() dto: CreateAssignmentDto,
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') userRole: UserRole,
+  ) {
+    return this.assignmentsService.create(dto.lessonId, dto, userId, userRole);
   }
 
   @Post(':id/submit')
@@ -56,10 +58,11 @@ export class AssignmentsController {
   review(
     @Param('id') submissionId: string,
     @CurrentUser('id') instructorId: string,
-    @Body() body: { approved: boolean; feedback: string },
+    @CurrentUser('role') userRole: UserRole,
+    @Body() dto: ReviewAssignmentDto,
   ) {
     return this.assignmentsService.review(
-      submissionId, instructorId, body.approved, body.feedback,
+      submissionId, instructorId, dto.approved, dto.feedback, userRole,
     );
   }
 
@@ -72,8 +75,11 @@ export class AssignmentsController {
   @Get('instructor/pending')
   @UseGuards(RolesGuard)
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Get all pending submissions for instructor review' })
-  pendingReviews(@CurrentUser('stellarAddress') address: string) {
-    return this.assignmentsService.findPendingForInstructor(address);
+  @ApiOperation({ summary: 'Get all pending submissions for instructor review (paginated)' })
+  pendingReviews(
+    @CurrentUser('stellarAddress') address: string,
+    @Query() query: PendingSubmissionsQueryDto,
+  ) {
+    return this.assignmentsService.findPendingForInstructor(address, query.page, query.limit);
   }
 }

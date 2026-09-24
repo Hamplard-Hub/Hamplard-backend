@@ -533,6 +533,7 @@ model AssignmentSubmission {
   student    User       @relation(fields: [studentId], references: [id])
 
   @@unique([assignmentId, studentId])
+  @@index([status])
   @@map("assignment_submissions")
 }
 
