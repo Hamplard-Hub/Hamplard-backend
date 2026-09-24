@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationType } from '@prisma/client';
+import { QueueService } from '../../common/queue/queue.service';
 
 @Injectable()
 export class NotificationsService {
@@ -13,6 +14,7 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly queueService: QueueService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: this.config.get('SMTP_HOST'),
@@ -41,19 +43,28 @@ export class NotificationsService {
       const channelState = preferences[type] ?? { email: true, push: true, inApp: true };
 
       const user = await this.prisma.user.findUnique({ where: { id: userId } });
+      let emailJobId: string | undefined;
       if (user?.email && channelState.email) {
-        await this.sendEmail(user.email, title, message, type);
-        await this.prisma.notification.update({
-          where: { id: notification.id },
-          data: { emailSent: true },
-        });
+        try {
+          const job = await this.queueService.enqueueNotificationEmail({
+            userId,
+            notificationId: notification.id,
+            to: user.email,
+            subject: title,
+            text: message,
+            type,
+          });
+          emailJobId = job.id;
+        } catch (error) {
+          this.logger.error(`Failed to enqueue email for user ${userId}`, error.message);
+        }
       }
 
       if (channelState.push) {
         await this.sendPushNotification(userId, type, title, message, data);
       }
 
-      return notification;
+      return { ...notification, emailJobId };
     } catch (error) {
       this.logger.error(`Failed to notify user ${userId}`, error.message);
     }
@@ -81,6 +92,20 @@ export class NotificationsService {
       where: { userId, read: false },
     });
     return { count, unreadCount: count };
+  }
+
+  async processEmailJob(data: {
+    notificationId: string;
+    to: string;
+    subject: string;
+    text: string;
+    type: NotificationType;
+  }) {
+    await this.sendEmail(data.to, data.subject, data.text, data.type);
+    await this.prisma.notification.update({
+      where: { id: data.notificationId },
+      data: { emailSent: true },
+    });
   }
 
   async markRead(id: string, userId: string) {
@@ -456,8 +481,7 @@ export class NotificationsService {
       PAYOUT_SCHEDULED: '📅',
     };
 
-    try {
-      await this.transporter.sendMail({
+    await this.transporter.sendMail({
         from: this.config.get('EMAIL_FROM', 'noreply@hamplard.com'),
         to,
         subject: `${emoji[type] ?? '📬'} ${platformName} — ${subject}`,
@@ -472,9 +496,6 @@ export class NotificationsService {
             </small>
           </div>
         `,
-      });
-    } catch (error) {
-      this.logger.error(`Email failed to ${to}`, error.message);
-    }
+    });
   }
 }
