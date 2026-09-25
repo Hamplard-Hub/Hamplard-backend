@@ -3,10 +3,17 @@ import {
   BadRequestException,
   UnauthorizedException,
   Logger,
-  TooManyRequestsException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
+
+export class TooManyRequestsException extends HttpException {
+  constructor(message: string = 'Too Many Requests') {
+    super(message, HttpStatus.TOO_MANY_REQUESTS);
+  }
+}
 import * as africastalking from 'africastalking';
 
 const OTP_EXPIRY_MINUTES = 10;
