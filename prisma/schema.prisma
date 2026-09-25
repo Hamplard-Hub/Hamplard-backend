@@ -313,6 +313,7 @@ model User {
   learningPathsCreated LearningPath[]       @relation("LearningPathCreator")
   phoneOtps            PhoneOtp[]           @relation("UserPhoneOtps")
   sessions            Session[]             @relation("UserSessions")
+  dataExportJobs      DataExportJob[]       @relation("DataExportRequester")
 
   @@map("users")
 }
@@ -1606,4 +1607,40 @@ model CoursePrerequisite {
   @@index([courseId])
   @@index([prerequisiteId])
   @@map("course_prerequisites")
+}
+
+// ============================================================
+// PRIVACY — GDPR DATA EXPORT (Issue #73)
+// ============================================================
+
+enum DataExportJobStatus {
+  PENDING     // request accepted, export not started yet
+  PROCESSING  // data is being compiled across modules
+  COMPLETED   // export file is ready for download
+  FAILED      // compilation failed; errorMessage explains why
+  EXPIRED     // retention window elapsed; file was destroyed
+}
+
+model DataExportJob {
+  id             String              @id @default(uuid())
+  userId         String
+  status         DataExportJobStatus @default(PENDING)
+  payload        Json?
+  fileSizeBytes  Int?
+  checksum       String?
+  errorMessage   String?
+  requestedAt    DateTime            @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  expiresAt      DateTime?
+  downloadCount  Int                 @default(0)
+  lastDownloadAt DateTime?
+
+  // Relations
+  user User @relation("DataExportRequester", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("data_export_jobs")
 }
