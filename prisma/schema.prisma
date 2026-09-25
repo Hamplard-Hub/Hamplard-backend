@@ -236,6 +236,12 @@ enum PointsActivityType {
   COURSE_COMPLETED
 }
 
+enum BadgeRequirementType {
+  LESSONS_COMPLETED
+  COURSES_COMPLETED
+  POINTS_EARNED
+}
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -313,6 +319,7 @@ model User {
   learningPathsCreated LearningPath[]       @relation("LearningPathCreator")
   phoneOtps            PhoneOtp[]           @relation("UserPhoneOtps")
   sessions            Session[]             @relation("UserSessions")
+  badgesEarned        StudentBadge[]
 
   @@map("users")
 }
@@ -1089,6 +1096,38 @@ model PointsAward {
   @@unique([userId, activityType, awardedDate])
   @@index([userId])
   @@map("points_awards")
+}
+
+model Badge {
+  id               String               @id @default(uuid())
+  code             String               @unique
+  name             String
+  description      String?
+  iconUrl          String?
+  requirementType  BadgeRequirementType
+  requirementValue Int
+  isActive         Boolean              @default(true)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  studentBadges StudentBadge[]
+
+  @@index([isActive])
+  @@map("badges")
+}
+
+model StudentBadge {
+  id        String   @id @default(uuid())
+  studentId String
+  badgeId   String
+  awardedAt DateTime @default(now())
+
+  student User  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  badge   Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, badgeId])
+  @@index([studentId, awardedAt])
+  @@map("student_badges")
 }
 
 model Question {
