@@ -7,6 +7,9 @@ import { RefreshTokenService, TokenPair } from './refresh-token.service';
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { SessionsService, DeviceMetadata } from './sessions.service';
 
+import { TwoFactorService } from './two-factor.service';
+import { Optional, Inject } from '@nestjs/common';
+
 /**
  * How many milliseconds of clock-skew between client and server we tolerate
  * when evaluating nonce expiry. Set to 30 seconds.
@@ -39,6 +42,7 @@ export class AuthService {
     private readonly referrals: ReferralsService,
     private readonly sessions: SessionsService,
     private readonly refreshTokens: RefreshTokenService,
+    @Optional() private readonly twoFactor?: TwoFactorService,
   ) {}
 
   // ------------------------------------------------------------------
@@ -114,8 +118,9 @@ export class AuthService {
     signature: string;
     role?: 'STUDENT' | 'INSTRUCTOR';
     referralCode?: string;
+    totpCode?: string;
   }, deviceMeta?: DeviceMetadata): Promise<TokenPair & { user: any }> {
-    const { stellarAddress, signedNonce, signature, role, referralCode } = payload;
+    const { stellarAddress, signedNonce, signature, role, referralCode, totpCode } = payload;
 
     // ---- 1. Validate Stellar address format ----
     if (!StrKey.isValidEd25519PublicKey(stellarAddress)) {
@@ -181,7 +186,7 @@ export class AuthService {
     const isNewUser = !existing;
 
     // ---- 8b. Validate 2FA code when the account has it enabled ----
-    if (existing?.twoFactorEnabled) {
+    if (existing?.twoFactorEnabled && this.twoFactor) {
       if (!totpCode) {
         throw new UnauthorizedException('Two-factor authentication code required');
       }

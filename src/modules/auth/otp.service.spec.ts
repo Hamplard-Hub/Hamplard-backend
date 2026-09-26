@@ -1,7 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from '@nestjs/config';
-import { TooManyRequestsException, UnauthorizedException } from '@nestjs/common';
-import { OtpService } from './otp.service';
+import { UnauthorizedException } from '@nestjs/common';
+import { OtpService, TooManyRequestsException } from './otp.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 describe('OtpService', () => {

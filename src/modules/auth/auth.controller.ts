@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Body, Query, HttpCode, HttpStatus, Req, Headers } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, HttpCode, HttpStatus, Req, Headers, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
+import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { CaptchaService } from './captcha.service';
@@ -34,6 +35,7 @@ class RefreshTokenDto {
 }
 
 @ApiTags('auth')
+@UseGuards(ThrottlerGuard)
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -42,7 +44,11 @@ export class AuthController {
   ) {}
 
   @Get('nonce')
-  @ApiOperation({ summary: 'Get challenge nonce for a Stellar address after CAPTCHA verification' })
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Get challenge nonce for a Stellar address after CAPTCHA verification',
+    description: 'Rate limit: 10 requests per minute per IP.',
+  })
   @ApiQuery({ name: 'address', required: true })
   @ApiQuery({
     name: 'captchaToken',
@@ -62,7 +68,11 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Submit signed nonce and receive JWT access and refresh tokens' })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Submit signed nonce and receive JWT access and refresh tokens',
+    description: 'Rate limit: 5 requests per minute per IP.',
+  })
   login(@Body() dto: LoginDto, @Req() req: Request) {
     return this.authService.login(dto, {
       userAgent: req.headers['user-agent'],
@@ -77,3 +87,4 @@ export class AuthController {
     return this.authService.refresh(dto.refreshToken);
   }
 }
+

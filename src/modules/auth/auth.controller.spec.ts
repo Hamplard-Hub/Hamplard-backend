@@ -10,6 +10,8 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { CaptchaService } from './captcha.service';
 
+import { ThrottlerModule } from '@nestjs/throttler';
+
 describe('AuthController', () => {
   let controller: AuthController;
   const authService = {
@@ -28,6 +30,7 @@ describe('AuthController', () => {
     authService.generateNonce.mockReturnValue('issued-nonce');
 
     const module: TestingModule = await Test.createTestingModule({
+      imports: [ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }])],
       controllers: [AuthController],
       providers: [
         { provide: AuthService, useValue: authService },

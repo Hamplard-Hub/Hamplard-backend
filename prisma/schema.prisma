@@ -236,6 +236,12 @@ enum PointsActivityType {
   COURSE_COMPLETED
 }
 
+enum BadgeRequirementType {
+  LESSONS_COMPLETED
+  COURSES_COMPLETED
+  POINTS_EARNED
+}
+
 // ============================================================
 // MODELS
 // ============================================================
@@ -313,6 +319,8 @@ model User {
   learningPathsCreated LearningPath[]       @relation("LearningPathCreator")
   phoneOtps            PhoneOtp[]           @relation("UserPhoneOtps")
   sessions            Session[]             @relation("UserSessions")
+  badgesEarned        StudentBadge[]
+  dataExportJobs      DataExportJob[]       @relation("DataExportRequester")
 
   @@map("users")
 }
@@ -1091,6 +1099,38 @@ model PointsAward {
   @@map("points_awards")
 }
 
+model Badge {
+  id               String               @id @default(uuid())
+  code             String               @unique
+  name             String
+  description      String?
+  iconUrl          String?
+  requirementType  BadgeRequirementType
+  requirementValue Int
+  isActive         Boolean              @default(true)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  studentBadges StudentBadge[]
+
+  @@index([isActive])
+  @@map("badges")
+}
+
+model StudentBadge {
+  id        String   @id @default(uuid())
+  studentId String
+  badgeId   String
+  awardedAt DateTime @default(now())
+
+  student User  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  badge   Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, badgeId])
+  @@index([studentId, awardedAt])
+  @@map("student_badges")
+}
+
 model Question {
   id        String   @id @default(uuid())
   lessonId  String
@@ -1606,4 +1646,40 @@ model CoursePrerequisite {
   @@index([courseId])
   @@index([prerequisiteId])
   @@map("course_prerequisites")
+}
+
+// ============================================================
+// PRIVACY — GDPR DATA EXPORT (Issue #73)
+// ============================================================
+
+enum DataExportJobStatus {
+  PENDING     // request accepted, export not started yet
+  PROCESSING  // data is being compiled across modules
+  COMPLETED   // export file is ready for download
+  FAILED      // compilation failed; errorMessage explains why
+  EXPIRED     // retention window elapsed; file was destroyed
+}
+
+model DataExportJob {
+  id             String              @id @default(uuid())
+  userId         String
+  status         DataExportJobStatus @default(PENDING)
+  payload        Json?
+  fileSizeBytes  Int?
+  checksum       String?
+  errorMessage   String?
+  requestedAt    DateTime            @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  expiresAt      DateTime?
+  downloadCount  Int                 @default(0)
+  lastDownloadAt DateTime?
+
+  // Relations
+  user User @relation("DataExportRequester", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("data_export_jobs")
 }

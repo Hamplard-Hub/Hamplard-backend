@@ -78,7 +78,7 @@ export class QueueService {
       id: job.id as string,
       queue: NOTIFICATION_EMAIL_QUEUE,
       status: await job.getState(),
-      progress: job.progress,
+      progress: job.progress as any,
       attemptsMade: job.attemptsMade,
       result: job.returnvalue,
       failedReason: job.failedReason,
