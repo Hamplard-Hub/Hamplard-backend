@@ -7,8 +7,10 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { initializeSentry } from './common/logging/sentry';
 
 async function bootstrap() {
+  initializeSentry();
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, {
     // rawBody: true makes the unparsed request body available as req.rawBody
