@@ -42,6 +42,7 @@ import { UploadsModule }      from './modules/uploads/uploads.module';
 import { TagsModule }         from './modules/tags/tags.module';
 import { LearningPathsModule } from './modules/learning-paths/learning-paths.module';
 import { WishlistModule } from './modules/wishlist/wishlist.module';
+import { BadgesModule } from './modules/badges/badges.module';
 import { PrivacyModule } from './modules/privacy/privacy.module';
 
 @Module({
@@ -95,6 +96,7 @@ import { PrivacyModule } from './modules/privacy/privacy.module';
     TagsModule,
     LearningPathsModule,
     WishlistModule,
+    BadgesModule,
     PrivacyModule,
   ],
   providers: [
