@@ -1683,3 +1683,19 @@ model DataExportJob {
   @@index([expiresAt])
   @@map("data_export_jobs")
 }
+
+// ============================================================
+// BILLING — admin-configurable regional tax rates
+// ============================================================
+
+model TaxRate {
+  id          String   @id @default(uuid())
+  region      String   @unique // ISO country code, "EU", or "DEFAULT" (fallback)
+  ratePercent Decimal  @db.Decimal(5, 2)
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("tax_rates")
+}
