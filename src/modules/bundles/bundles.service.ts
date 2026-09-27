@@ -3,6 +3,7 @@ import {
   Injectable, NotFoundException, BadRequestException,
   ConflictException, ForbiddenException, Logger,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateBundleDto } from './dto/create-bundle.dto';
 import { EnrollBundleDto } from './dto/enroll-bundle.dto';
@@ -95,6 +96,13 @@ export class BundlesService {
 
   // ----------------------------------------------------------
   // ENROLL — single transaction across bundle + each included course
+  //
+  // Concurrent requests for the same student/bundle are resolved by the
+  // (bundleId, studentId) unique constraint rather than the pre-check alone:
+  // the loser's insert fails with P2002, rolling back its transaction, and is
+  // surfaced as a 409. Per-course enrollments use ON CONFLICT DO NOTHING so a
+  // parallel single-course purchase can't abort the bundle transaction, and
+  // course stats are only incremented for rows this request actually created.
   // ----------------------------------------------------------
 
   async enroll(studentId: string, bundleId: string, dto: EnrollBundleDto) {
@@ -112,36 +120,45 @@ export class BundlesService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const bundleEnrollment = await tx.bundleEnrollment.create({
-        data: { bundleId, studentId, amountPaid: dto.amountPaid, txHash: dto.txHash },
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const bundleEnrollment = await tx.bundleEnrollment.create({
+          data: { bundleId, studentId, amountPaid: dto.amountPaid, txHash: dto.txHash },
+        });
+
+        for (const { course } of bundle.courses) {
+          const { count } = await tx.enrollment.createMany({
+            data: [{
+              studentId,
+              courseId: course.id,
+              amountPaid: course.price,
+              txHash: dto.txHash,
+            }],
+            skipDuplicates: true,
+          });
+          if (count === 0) continue; // already enrolled in this course
+
+          await tx.course.update({
+            where: { id: course.id },
+            data: {
+              totalEnrollments: { increment: 1 },
+              totalRevenue: { increment: course.price },
+            },
+          });
+        }
+
+        this.logger.log(`Bundle enrollment: ${studentId} → ${bundleId}`);
+        return bundleEnrollment;
       });
-
-      for (const { course } of bundle.courses) {
-        const alreadyEnrolled = await tx.enrollment.findUnique({
-          where: { studentId_courseId: { studentId, courseId: course.id } },
-        });
-        if (alreadyEnrolled) continue;
-
-        await tx.enrollment.create({
-          data: {
-            studentId,
-            courseId: course.id,
-            amountPaid: course.price,
-            txHash: dto.txHash,
-          },
-        });
-        await tx.course.update({
-          where: { id: course.id },
-          data: {
-            totalEnrollments: { increment: 1 },
-            totalRevenue: { increment: course.price },
-          },
-        });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        this.logger.warn(`Concurrent bundle enrollment rejected: ${studentId} → ${bundleId}`);
+        throw new ConflictException('Already enrolled in this bundle');
       }
-
-      this.logger.log(`Bundle enrollment: ${studentId} → ${bundleId}`);
-      return bundleEnrollment;
-    });
+      throw error;
+    }
   }
 }

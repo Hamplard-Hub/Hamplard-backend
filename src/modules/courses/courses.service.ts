@@ -264,11 +264,11 @@ export class CoursesService {
     return {
       courseId: course.id,
       courseTitle: course.title,
-      ...this.feeCalculator.computeBreakdown({
+      ...(await this.feeCalculator.computeBreakdown({
         coursePrice: Number(course.price),
         platformFeePercent: course.platformFeePercent,
         region,
-      }),
+      })),
     };
   }
 
