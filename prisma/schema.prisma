@@ -323,6 +323,7 @@ model User {
   sessions            Session[]             @relation("UserSessions")
   badgesEarned        StudentBadge[]
   dataExportJobs      DataExportJob[]       @relation("DataExportRequester")
+  leaderboardSnapshots LeaderboardSnapshot[]
 
   @@map("users")
 }
@@ -431,6 +432,7 @@ model Course {
   prerequisites CoursePrerequisite[] @relation("CourseRequires") // this course requires them
   unlocks       CoursePrerequisite[] @relation("CourseUnlocks")  // courses requiring this one
   dripConfig    CourseDripConfig?
+  leaderboardSnapshots LeaderboardSnapshot[]
 
   @@map("courses")
 }
@@ -1707,4 +1709,25 @@ model TaxRate {
   updatedAt   DateTime @updatedAt
 
   @@map("tax_rates")
+}
+
+// ============================================================
+// GAMIFICATION — Leaderboard Snapshots
+// ============================================================
+
+model LeaderboardSnapshot {
+  id         String   @id @default(uuid())
+  scope      String   // "GLOBAL" | "COURSE"
+  courseId   String?
+  userId     String
+  rank       Int
+  computedAt DateTime @default(now())
+
+  // Relations
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course Course? @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@index([scope, courseId])
+  @@index([userId])
+  @@map("leaderboard_snapshots")
 }

@@ -1,7 +1,8 @@
 // lessons.service.ts
 import {
-  Injectable, NotFoundException, ForbiddenException, Logger,
+  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 @Injectable()
@@ -10,24 +11,93 @@ export class LessonsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async createModule(courseId: string, title: string, position: number) {
+  private async verifyCourseOwnership(
+    courseId: string,
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+
+    if (!course) {
+      throw new NotFoundException('Course not found');
+    }
+
+    if (user && user.role !== UserRole.ADMIN) {
+      const isOwner =
+        (user.stellarAddress && course.instructorAddress === user.stellarAddress) ||
+        (user.id && (course.instructorAddress === user.id || course.instructor?.id === user.id));
+
+      if (!isOwner) {
+        throw new ForbiddenException('You are not authorized to manage content for this course');
+      }
+    }
+
+    return course;
+  }
+
+  private async verifyModuleOwnership(
+    moduleId: string,
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const module = await this.prisma.courseModule.findUnique({
+      where: { id: moduleId },
+      include: {
+        course: {
+          include: { instructor: true },
+        },
+      },
+    });
+
+    if (!module) {
+      throw new NotFoundException('Module not found');
+    }
+
+    if (user && user.role !== UserRole.ADMIN) {
+      const course = module.course;
+      const isOwner =
+        (user.stellarAddress && course.instructorAddress === user.stellarAddress) ||
+        (user.id && (course.instructorAddress === user.id || course.instructor?.id === user.id));
+
+      if (!isOwner) {
+        throw new ForbiddenException('You are not authorized to manage content for this course');
+      }
+    }
+
+    return module;
+  }
+
+  async createModule(
+    courseId: string,
+    title: string,
+    position: number,
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    await this.verifyCourseOwnership(courseId, user);
     return this.prisma.courseModule.create({
       data: { courseId, title, position },
     });
   }
 
-  async createLesson(moduleId: string, data: {
-    title: string;
-    description?: string;
-    type?: string;
-    videoUrl?: string;
-    videoDuration?: number;
-    thumbnailUrl?: string;
-    content?: string;
-    resourceUrl?: string;
-    position: number;
-    isFree?: boolean;
-  }) {
+  async createLesson(
+    moduleId: string,
+    data: {
+      title: string;
+      description?: string;
+      type?: string;
+      videoUrl?: string;
+      videoDuration?: number;
+      thumbnailUrl?: string;
+      content?: string;
+      resourceUrl?: string;
+      position: number;
+      isFree?: boolean;
+    },
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const module = await this.verifyModuleOwnership(moduleId, user);
+
     const lesson = await this.prisma.lesson.create({
       data: {
         moduleId,
@@ -45,15 +115,10 @@ export class LessonsService {
     });
 
     // Update totalLessons on the course
-    const module = await this.prisma.courseModule.findUnique({
-      where: { id: moduleId },
+    await this.prisma.course.update({
+      where: { id: module.courseId },
+      data: { totalLessons: { increment: 1 } },
     });
-    if (module) {
-      await this.prisma.course.update({
-        where: { id: module.courseId },
-        data: { totalLessons: { increment: 1 } },
-      });
-    }
 
     return lesson;
   }
@@ -85,6 +150,46 @@ export class LessonsService {
   // PROGRESS TRACKING
   // ----------------------------------------------------------
 
+  private async verifyEnrollmentAndLesson(
+    studentId: string,
+    enrollmentId: string,
+    lessonId: string,
+  ) {
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { id: enrollmentId },
+      include: {
+        course: {
+          include: {
+            modules: {
+              include: {
+                lessons: {
+                  select: { id: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!enrollment) {
+      throw new NotFoundException('Enrollment not found');
+    }
+
+    if (enrollment.studentId !== studentId) {
+      throw new ForbiddenException('This enrollment does not belong to you');
+    }
+
+    const courseLessonIds = new Set(
+      enrollment.course.modules.flatMap((m) => m.lessons.map((l) => l.id)),
+    );
+    if (!courseLessonIds.has(lessonId)) {
+      throw new BadRequestException('Lesson does not belong to the enrolled course');
+    }
+
+    return enrollment;
+  }
+
   /**
    * Mark a lesson as watched / completed by a student.
    * Automatically recalculates the enrollment progress percentage.
@@ -96,6 +201,8 @@ export class LessonsService {
     lessonId: string,
     watchedSecs?: number,
   ) {
+    await this.verifyEnrollmentAndLesson(studentId, enrollmentId, lessonId);
+
     const progress = await this.prisma.lessonProgress.upsert({
       where: { enrollmentId_lessonId: { enrollmentId, lessonId } },
       create: {
@@ -122,10 +229,13 @@ export class LessonsService {
    * Update video watch position (called periodically by the frontend player).
    */
   async updateWatchProgress(
+    studentId: string,
     enrollmentId: string,
     lessonId: string,
     watchedSecs: number,
   ) {
+    await this.verifyEnrollmentAndLesson(studentId, enrollmentId, lessonId);
+
     return this.prisma.lessonProgress.upsert({
       where: { enrollmentId_lessonId: { enrollmentId, lessonId } },
       create: { enrollmentId, lessonId, watchedSecs },

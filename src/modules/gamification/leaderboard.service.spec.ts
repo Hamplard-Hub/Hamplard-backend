@@ -37,6 +37,14 @@ const mockStudents = [
   },
 ];
 
+let snapshotStore: Array<{
+  scope: string;
+  courseId: string | null;
+  userId: string;
+  rank: number;
+  computedAt: Date;
+}> = [];
+
 const mockPrisma = {
   user: {
     findMany: jest.fn(),
@@ -44,12 +52,42 @@ const mockPrisma = {
   course: {
     findMany: jest.fn(),
   },
+  leaderboardSnapshot: {
+    findMany: jest.fn(async (args?: any) => {
+      const scope = args?.where?.scope;
+      const courseId = args?.where?.courseId ?? null;
+      return snapshotStore.filter(
+        (s) => s.scope === scope && (s.courseId ?? null) === courseId,
+      );
+    }),
+    deleteMany: jest.fn(async (args?: any) => {
+      const scope = args?.where?.scope;
+      const courseId = args?.where?.courseId ?? null;
+      snapshotStore = snapshotStore.filter(
+        (s) => !(s.scope === scope && (s.courseId ?? null) === courseId),
+      );
+      return { count: 1 };
+    }),
+    createMany: jest.fn(async (args?: any) => {
+      if (args?.data) {
+        snapshotStore.push(...args.data);
+      }
+      return { count: args?.data?.length ?? 0 };
+    }),
+  },
+  $transaction: jest.fn(async (callback: any) => {
+    if (typeof callback === 'function') {
+      return callback(mockPrisma);
+    }
+    return Promise.all(callback);
+  }),
 };
 
 describe('LeaderboardService', () => {
   let service: LeaderboardService;
 
   beforeEach(async () => {
+    snapshotStore = [];
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         LeaderboardService,
@@ -88,12 +126,14 @@ describe('LeaderboardService', () => {
       expect(result.data[1].currentRank).toBe(2);
     });
 
-    it('tracks rank position changes after recalculation', async () => {
+    it('tracks rank position changes after recalculation persisted in database', async () => {
       mockPrisma.user.findMany.mockResolvedValue(mockStudents);
       mockPrisma.course.findMany.mockResolvedValue([]);
 
       // First run: initial recalculation snapshot
       await service.recalculateRankings();
+      expect(mockPrisma.$transaction).toHaveBeenCalled();
+      expect(snapshotStore.length).toBe(2);
 
       // Now query leaderboard
       const result = await service.getLeaderboard({
@@ -103,6 +143,54 @@ describe('LeaderboardService', () => {
 
       expect(result.data[0].previousRank).toBe(1);
       expect(result.data[0].rankChange).toBe(0);
+      expect(result.data[1].previousRank).toBe(2);
+      expect(result.data[1].rankChange).toBe(0);
+    });
+
+    it('verifies rank-change survives a fresh service instantiation (application restart)', async () => {
+      mockPrisma.user.findMany.mockResolvedValue(mockStudents);
+      mockPrisma.course.findMany.mockResolvedValue([]);
+
+      // Instance 1 calculates and persists rankings to the database
+      await service.recalculateRankings();
+      expect(snapshotStore.length).toBe(2);
+
+      // Now simulate student-2 passing exams and overtaking student-1
+      const updatedStudents = [
+        {
+          ...mockStudents[1], // student-2 now has 300 points
+          examAttempts: [{ score: 290 }],
+        },
+        mockStudents[0], // student-1 has 255 points
+      ];
+      mockPrisma.user.findMany.mockResolvedValue(updatedStudents);
+
+      // Simulate application restart: instantiate a fresh second service instance
+      const freshModule: TestingModule = await Test.createTestingModule({
+        providers: [
+          LeaderboardService,
+          { provide: PrismaService, useValue: mockPrisma },
+        ],
+      }).compile();
+      const freshService = freshModule.get<LeaderboardService>(LeaderboardService);
+
+      // Fresh instance reads leaderboard without in-memory state
+      const result = await freshService.getLeaderboard({
+        scope: LeaderboardScope.GLOBAL,
+        limit: 10,
+      });
+
+      // student-2 was rank 2 in the database snapshot, now rank 1 -> rankChange = +1
+      expect(result.data[0].userId).toBe('student-2');
+      expect(result.data[0].currentRank).toBe(1);
+      expect(result.data[0].previousRank).toBe(2);
+      expect(result.data[0].rankChange).toBe(1); // 2 - 1 = +1
+
+      // student-1 was rank 1 in the database snapshot, now rank 2 -> rankChange = -1
+      expect(result.data[1].userId).toBe('student-1');
+      expect(result.data[1].currentRank).toBe(2);
+      expect(result.data[1].previousRank).toBe(1);
+      expect(result.data[1].rankChange).toBe(-1); // 1 - 2 = -1
     });
   });
 });
