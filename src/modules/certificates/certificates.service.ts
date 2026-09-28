@@ -97,6 +97,15 @@ export class CertificatesService {
     });
 
     this.logger.log(`Certificate issued: ${certificateId} for student ${studentId}, PDF: ${pdfUrl}`);
+
+    await this.notifications.notifyUser(
+      studentId,
+      NotificationType.CERTIFICATE_ISSUED,
+      '🎓 Certificate Issued!',
+      `Congratulations! Your certificate for "${enrollment.course.title}" has been issued.`,
+      { certificateId, courseId },
+    );
+
     return updatedCert;
   }
 
@@ -120,8 +129,9 @@ export class CertificatesService {
     const cert = await this.prisma.certificate.findUnique({
       where: { id: certificateId },
       include: {
-        student: { select: { name: true, stellarAddress: true } },
+        student: { select: { id: true, name: true, stellarAddress: true } },
         course:  { include: { instructor: { select: { name: true, stellarAddress: true } } } },
+        revokedBy: { select: { id: true, name: true, email: true } },
       },
     });
     if (!cert) throw new NotFoundException('Certificate not found');
@@ -152,13 +162,28 @@ export class CertificatesService {
     return { valid: true, certificate: cert };
   }
 
-  async revoke(certificateId: string, adminId: string) {
+  async revoke(certificateId: string, adminId: string, reason?: string) {
     const cert = await this.findById(certificateId);
     if (cert.isRevoked) throw new ForbiddenException('Certificate already revoked');
 
-    return this.prisma.certificate.update({
+    const updated = await this.prisma.certificate.update({
       where: { id: certificateId },
-      data: { isRevoked: true },
+      data: {
+        isRevoked: true,
+        revokedById: adminId,
+        revokedAt: new Date(),
+        revokeReason: reason ?? null,
+      },
     });
+
+    await this.notifications.notifyUser(
+      cert.studentId,
+      NotificationType.CERTIFICATE_REVOKED,
+      'Certificate Revoked',
+      `Your certificate for "${cert.course?.title ?? 'your course'}" has been revoked.${reason ? ` Reason: ${reason}` : ''}`,
+      { certificateId, reason },
+    );
+
+    return updated;
   }
 }

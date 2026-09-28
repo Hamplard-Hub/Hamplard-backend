@@ -10,6 +10,12 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
 
+import {
+  IssueCertificateDto,
+  UpdateCertificateTxHashDto,
+  RevokeCertificateDto,
+} from './dto/issue-certificate.dto';
+
 @ApiTags('certificates')
 @Controller('certificates')
 export class CertificatesController {
@@ -46,9 +52,9 @@ export class CertificatesController {
   @ApiOperation({ summary: 'Admin issues a certificate for a completed student' })
   issue(
     @CurrentUser('id') adminId: string,
-    @Body() body: { studentId: string; courseId: string },
+    @Body() dto: IssueCertificateDto,
   ) {
-    return this.certificatesService.issue(adminId, body.studentId, body.courseId);
+    return this.certificatesService.issue(adminId, dto.studentId, dto.courseId);
   }
 
   @Patch(':id/tx-hash')
@@ -56,8 +62,8 @@ export class CertificatesController {
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update on-chain tx hash after issue_certificate() is called' })
-  updateTxHash(@Param('id') id: string, @Body() body: { txHash: string }) {
-    return this.certificatesService.updateTxHash(id, body.txHash);
+  updateTxHash(@Param('id') id: string, @Body() dto: UpdateCertificateTxHashDto) {
+    return this.certificatesService.updateTxHash(id, dto.txHash);
   }
 
   @Post(':id/revoke')
@@ -66,8 +72,12 @@ export class CertificatesController {
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Admin revokes a certificate' })
-  revoke(@Param('id') id: string, @CurrentUser('id') adminId: string) {
-    return this.certificatesService.revoke(id, adminId);
+  revoke(
+    @Param('id') id: string,
+    @CurrentUser('id') adminId: string,
+    @Body() dto?: RevokeCertificateDto,
+  ) {
+    return this.certificatesService.revoke(id, adminId, dto?.reason);
   }
 
   @Get(':id/download')

@@ -141,15 +141,10 @@ export class FraudDetectionService {
       return { action, score, riskLevel, reasons };
     }
 
-    // FLAG or HOLD — persist a fraud flag if we have an enrollmentId
-    // (For HOLD the caller skips creating the enrollment, so we persist
-    //  with a sentinel enrollmentId provided by the service layer.)
-    if (!enrollmentId) {
-      // Cannot persist without an enrollment FK — return result only
-      this.logger.warn(
-        `Fraud check ${action} (score=${score}) for student=${studentId} ` +
-        `but no enrollmentId provided — flag not persisted.`,
-      );
+    // FLAG or HOLD — persist a fraud flag
+    // If FLAG action and no enrollmentId provided yet, return result without persisting
+    // (the flag will be persisted in post-check once enrollment is created)
+    if (action === 'FLAG' && !enrollmentId) {
       return { action, score, riskLevel, reasons };
     }
 
@@ -158,8 +153,10 @@ export class FraudDetectionService {
 
     const flag = await this.prisma.enrollmentFraudFlag.create({
       data: {
-        enrollmentId,
+        enrollmentId: enrollmentId ?? null,
         studentId,
+        blockedCourseId: enrollmentId ? null : courseId,
+        blockedAmountPaid: enrollmentId ? null : amountPaid,
         riskScore: score,
         riskLevel,
         reasons,
@@ -202,6 +199,7 @@ export class FraudDetectionService {
               student: { select: { id: true, name: true, email: true, stellarAddress: true } },
             },
           },
+          student: { select: { id: true, name: true, email: true, stellarAddress: true } },
           reviewedBy: { select: { id: true, name: true } },
         },
         orderBy: [{ riskScore: 'desc' }, { createdAt: 'desc' }],
@@ -235,6 +233,7 @@ export class FraudDetectionService {
             student: { select: { id: true, name: true, email: true, stellarAddress: true } },
           },
         },
+        student: { select: { id: true, name: true, email: true, stellarAddress: true } },
         reviewedBy: { select: { id: true, name: true } },
       },
     });

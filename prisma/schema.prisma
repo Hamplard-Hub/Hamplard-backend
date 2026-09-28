@@ -72,6 +72,7 @@ enum NotificationType {
   ASSIGNMENT_REJECTED
   COURSE_COMPLETED
   CERTIFICATE_ISSUED
+  CERTIFICATE_REVOKED
   NEW_ENROLLMENT        // for instructors
   PAYMENT_RECEIVED      // for instructors
   LIVE_SESSION_REMINDER // for scheduled live sessions
@@ -280,6 +281,7 @@ model User {
   assignments         AssignmentSubmission[]
   notifications       Notification[]
   certificates        Certificate[]
+  certificatesRevoked Certificate[]         @relation("CertificatesRevoked")
   examAttempts        ExamAttempt[]
   payouts             Payout[]              @relation("Payouts")
   reportsFiled        AbuseReport[]         @relation("ReportsFiled")
@@ -322,6 +324,7 @@ model User {
   badgesEarned        StudentBadge[]
   dataExportJobs      DataExportJob[]       @relation("DataExportRequester")
   courseBackups       CourseBackup[]        @relation("CourseBackupRequester")
+  leaderboardSnapshots LeaderboardSnapshot[]
 
   @@map("users")
 }
@@ -431,6 +434,7 @@ model Course {
   unlocks       CoursePrerequisite[] @relation("CourseUnlocks")  // courses requiring this one
   dripConfig    CourseDripConfig?
   backups       CourseBackup[]
+  leaderboardSnapshots LeaderboardSnapshot[]
 
   @@map("courses")
 }
@@ -661,14 +665,19 @@ model Certificate {
   instructorAddress String
   txHash          String?  // on-chain certificate issuance tx
   pdfUrl          String?  // generated PDF file reference/URL
-  isRevoked       Boolean  @default(false)
-  issuedAt        DateTime @default(now())
+  isRevoked       Boolean   @default(false)
+  revokedById     String?
+  revokedAt       DateTime?
+  revokeReason    String?
+  issuedAt        DateTime  @default(now())
 
   // Relations
-  student User              @relation(fields: [studentId], references: [id])
-  course  Course            @relation(fields: [courseId], references: [id])
-  share   CertificateShare?
+  student   User              @relation(fields: [studentId], references: [id])
+  revokedBy User?             @relation("CertificatesRevoked", fields: [revokedById], references: [id])
+  course    Course            @relation(fields: [courseId], references: [id])
+  share     CertificateShare?
 
+  @@index([revokedById])
   @@map("certificates")
 }
 
@@ -1189,21 +1198,23 @@ model DiscussionComment {
 }
 
 model EnrollmentFraudFlag {
-  id           String          @id @default(uuid())
-  enrollmentId String          @unique
-  studentId    String
-  riskScore    Int             // computed 0–100
-  riskLevel    FraudRiskLevel
-  reasons      Json            // string[] of triggered rule names
-  status       FraudFlagStatus @default(OPEN)
-  reviewedById String?
-  reviewNotes  String?
-  reviewedAt   DateTime?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  id                String          @id @default(uuid())
+  enrollmentId      String?         @unique
+  studentId         String
+  blockedCourseId   String?
+  blockedAmountPaid Decimal?
+  riskScore         Int             // computed 0–100
+  riskLevel         FraudRiskLevel
+  reasons           Json            // string[] of triggered rule names
+  status            FraudFlagStatus @default(OPEN)
+  reviewedById      String?
+  reviewNotes       String?
+  reviewedAt        DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
 
   // Relations
-  enrollment Enrollment  @relation(fields: [enrollmentId], references: [id])
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
   student    User        @relation("StudentFraudFlags", fields: [studentId], references: [id])
   reviewedBy User?       @relation("FraudReviewedBy", fields: [reviewedById], references: [id])
 
@@ -1740,4 +1751,25 @@ model TaxRate {
   updatedAt   DateTime @updatedAt
 
   @@map("tax_rates")
+}
+
+// ============================================================
+// GAMIFICATION — Leaderboard Snapshots
+// ============================================================
+
+model LeaderboardSnapshot {
+  id         String   @id @default(uuid())
+  scope      String   // "GLOBAL" | "COURSE"
+  courseId   String?
+  userId     String
+  rank       Int
+  computedAt DateTime @default(now())
+
+  // Relations
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course Course? @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@index([scope, courseId])
+  @@index([userId])
+  @@map("leaderboard_snapshots")
 }
