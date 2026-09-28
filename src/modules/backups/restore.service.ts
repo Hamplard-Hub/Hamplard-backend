@@ -29,9 +29,14 @@ export interface CourseRestoreSummary {
   coursesRequested: number;
   coursesRestored: number;
   coursesSkipped: number;
+  coursesFailed: number;
   modulesRestored: number;
   lessonsRestored: number;
+  errors: Array<{ courseId: string; message: string }>;
 }
+
+// Transactional Prisma client — the type Prisma passes into $transaction callbacks.
+type TxClient = Prisma.TransactionClient;
 
 @Injectable()
 export class RestoreService {
@@ -239,82 +244,116 @@ export class RestoreService {
       coursesRequested: payload.courses.length,
       coursesRestored: 0,
       coursesSkipped: 0,
+      coursesFailed: 0,
       modulesRestored: 0,
       lessonsRestored: 0,
+      errors: [],
     };
 
     let completedSteps = 0;
     const totalSteps = job.totalSteps || this.countSteps(payload.courses);
 
-    try {
-      for (const course of payload.courses) {
-        const instructor = await this.prisma.user.findUnique({
-          where: { stellarAddress: course.instructorAddress },
-          select: { id: true },
-        });
-        if (!instructor) {
-          summary.coursesSkipped += 1;
-          completedSteps += this.countCourseSteps(course);
-          await this.updateProgress(jobId, completedSteps, totalSteps);
-          continue;
-        }
+    for (const course of payload.courses) {
+      // Resolve instructor outside the transaction (read-only, no atomicity needed)
+      const instructor = await this.prisma.user.findUnique({
+        where: { stellarAddress: course.instructorAddress },
+        select: { id: true },
+      });
 
-        const existing = await this.prisma.course.findUnique({
-          where: { id: course.id },
-        });
-
-        if (existing && !overwriteExisting) {
-          summary.coursesSkipped += 1;
-          completedSteps += this.countCourseSteps(course);
-          await this.updateProgress(jobId, completedSteps, totalSteps);
-          continue;
-        }
-
-        await this.restoreCourse(course, !!existing);
-        summary.coursesRestored += 1;
-        completedSteps += 1;
+      if (!instructor) {
+        summary.coursesSkipped += 1;
+        completedSteps += this.countCourseSteps(course);
         await this.updateProgress(jobId, completedSteps, totalSteps);
-
-        for (const mod of course.modules ?? []) {
-          const moduleId = await this.restoreModule(course.id, mod);
-          summary.modulesRestored += 1;
-          completedSteps += 1;
-          await this.updateProgress(jobId, completedSteps, totalSteps);
-
-          for (const lesson of mod.lessons ?? []) {
-            await this.restoreLesson(moduleId, lesson);
-            summary.lessonsRestored += 1;
-            completedSteps += 1;
-            await this.updateProgress(jobId, completedSteps, totalSteps);
-          }
-        }
+        continue;
       }
 
-      return this.prisma.courseRestoreJob.update({
-        where: { id: jobId },
-        data: {
-          status: CourseRestoreStatus.COMPLETED,
-          progressPercent: 100,
-          completedSteps: totalSteps,
-          completedAt: new Date(),
-          summary: summary as unknown as Prisma.InputJsonValue,
-        },
+      const existing = await this.prisma.course.findUnique({
+        where: { id: course.id },
       });
-    } catch (error) {
-      this.logger.error(`Restore job ${jobId} failed`, error?.stack ?? error);
-      return this.prisma.courseRestoreJob.update({
-        where: { id: jobId },
-        data: {
-          status: CourseRestoreStatus.FAILED,
-          errorMessage: error?.message ?? 'Unknown restore error',
-          completedAt: new Date(),
-          summary: summary as unknown as Prisma.InputJsonValue,
-        },
-      });
+
+      if (existing && !overwriteExisting) {
+        summary.coursesSkipped += 1;
+        completedSteps += this.countCourseSteps(course);
+        await this.updateProgress(jobId, completedSteps, totalSteps);
+        continue;
+      }
+
+      // ─── Per-course atomic transaction ────────────────────────────────────
+      // A failure anywhere inside rolls back only this course's changes,
+      // leaving already-restored courses and the original data intact.
+      try {
+        const courseResult = await this.prisma.$transaction(async (tx) => {
+          const modulesRestored: number[] = [];
+          const lessonsRestored: number[] = [];
+
+          await this.restoreCourse(tx, course, !!existing);
+
+          for (const mod of course.modules ?? []) {
+            const moduleId = await this.restoreModule(tx, course.id, mod);
+            modulesRestored.push(1);
+
+            for (const lesson of mod.lessons ?? []) {
+              await this.restoreLesson(tx, moduleId, lesson);
+              lessonsRestored.push(1);
+            }
+          }
+
+          return {
+            modules: modulesRestored.length,
+            lessons: lessonsRestored.length,
+          };
+        });
+
+        summary.coursesRestored += 1;
+        summary.modulesRestored += courseResult.modules;
+        summary.lessonsRestored += courseResult.lessons;
+        completedSteps += this.countCourseSteps(course);
+        await this.updateProgress(jobId, completedSteps, totalSteps);
+      } catch (error) {
+        // Record the failure for this course but continue processing others
+        const message: string = error?.message ?? 'Unknown restore error';
+        this.logger.error(
+          `Restore job ${jobId}: course ${course.id} failed — ${message}`,
+          error?.stack,
+        );
+        summary.coursesFailed += 1;
+        summary.errors.push({ courseId: course.id, message });
+        completedSteps += this.countCourseSteps(course);
+        await this.updateProgress(jobId, completedSteps, totalSteps);
+      }
     }
+
+    // Mark the overall job completed (or failed if every course failed)
+    const allFailed =
+      summary.coursesFailed > 0 &&
+      summary.coursesRestored === 0 &&
+      summary.coursesSkipped === 0;
+
+    return this.prisma.courseRestoreJob.update({
+      where: { id: jobId },
+      data: {
+        status: allFailed
+          ? CourseRestoreStatus.FAILED
+          : CourseRestoreStatus.COMPLETED,
+        progressPercent: 100,
+        completedSteps: totalSteps,
+        completedAt: new Date(),
+        summary: summary as unknown as Prisma.InputJsonValue,
+        // Surface the first course-level error as the top-level message when
+        // the entire job failed, so callers get a useful errorMessage field.
+        ...(allFailed && summary.errors.length
+          ? {
+              errorMessage: `Course ${summary.errors[0].courseId}: ${summary.errors[0].message}`,
+            }
+          : {}),
+      },
+    });
   }
 
+  // ─── Private helpers (all accept a `tx` transactional client) ─────────────
+
   private async restoreCourse(
+    tx: TxClient,
     course: RestoreCourseBackupDto,
     exists: boolean,
   ) {
@@ -337,52 +376,57 @@ export class RestoreService {
     };
 
     if (exists) {
-      // Replace structure carefully (clear dependents before lessons/modules)
-      const modules = await this.prisma.courseModule.findMany({
+      // Clear dependents (lesson progress, quiz questions, assignments, lessons,
+      // then modules) before writing the new structure — all within the same tx.
+      const modules = await tx.courseModule.findMany({
         where: { courseId: course.id },
         select: { id: true },
       });
       const moduleIds = modules.map((m) => m.id);
+
       if (moduleIds.length) {
-        const lessons = await this.prisma.lesson.findMany({
+        const lessons = await tx.lesson.findMany({
           where: { moduleId: { in: moduleIds } },
           select: { id: true },
         });
         const lessonIds = lessons.map((l) => l.id);
+
         if (lessonIds.length) {
-          await this.prisma.lessonProgress.deleteMany({
+          await tx.lessonProgress.deleteMany({
             where: { lessonId: { in: lessonIds } },
           });
-          await this.prisma.quizQuestion.deleteMany({
+          await tx.quizQuestion.deleteMany({
             where: { lessonId: { in: lessonIds } },
           });
-          await this.prisma.assignment.deleteMany({
+          await tx.assignment.deleteMany({
             where: { lessonId: { in: lessonIds } },
           });
-          await this.prisma.lesson.deleteMany({
+          await tx.lesson.deleteMany({
             where: { id: { in: lessonIds } },
           });
         }
-        await this.prisma.courseModule.deleteMany({
+        await tx.courseModule.deleteMany({
           where: { courseId: course.id },
         });
       }
-      return this.prisma.course.update({
+
+      return tx.course.update({
         where: { id: course.id },
         data,
       });
     }
 
-    return this.prisma.course.create({
+    return tx.course.create({
       data: { id: course.id, ...data },
     });
   }
 
   private async restoreModule(
+    tx: TxClient,
     courseId: string,
     mod: RestoreModuleDto,
   ): Promise<string> {
-    const created = await this.prisma.courseModule.create({
+    const created = await tx.courseModule.create({
       data: {
         ...(mod.id ? { id: mod.id } : {}),
         courseId,
@@ -393,8 +437,12 @@ export class RestoreService {
     return created.id;
   }
 
-  private async restoreLesson(moduleId: string, lesson: RestoreLessonDto) {
-    return this.prisma.lesson.create({
+  private async restoreLesson(
+    tx: TxClient,
+    moduleId: string,
+    lesson: RestoreLessonDto,
+  ) {
+    return tx.lesson.create({
       data: {
         ...(lesson.id ? { id: lesson.id } : {}),
         moduleId,
