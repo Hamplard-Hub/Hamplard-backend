@@ -468,6 +468,7 @@ export class NotificationsService {
       ENROLLMENT_CONFIRMED: '🎓',
       COURSE_COMPLETED: '🏆',
       CERTIFICATE_ISSUED: '🎓',
+      CERTIFICATE_REVOKED: '❌',
       ASSIGNMENT_APPROVED: '✅',
       ASSIGNMENT_REJECTED: '🔄',
       ASSIGNMENT_SUBMITTED: '📋',
