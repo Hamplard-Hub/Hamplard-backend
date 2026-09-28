@@ -151,22 +151,46 @@ describe('CertificatesService', () => {
   });
 
   describe('revoke()', () => {
-    it('revokes a valid certificate', async () => {
+    it('revokes a valid certificate and records audit trail and sends notification', async () => {
       mockPrisma.certificate.findUnique.mockResolvedValue({
         id: 'CERT-ABC123',
+        studentId: 'student-1',
         isRevoked: false,
-        student: { name: 'Jane', stellarAddress: 'GABC' },
+        student: { id: 'student-1', name: 'Jane', stellarAddress: 'GABC' },
         course:  { title: 'Tailoring', instructor: { name: 'John' } },
       });
-      mockPrisma.certificate.update.mockResolvedValue({ id: 'CERT-ABC123', isRevoked: true });
+      mockPrisma.certificate.update.mockResolvedValue({
+        id: 'CERT-ABC123',
+        isRevoked: true,
+        revokedById: 'admin-1',
+        revokeReason: 'Fraudulent activity',
+      });
 
-      const result = await service.revoke('CERT-ABC123', 'admin-1');
+      const result = await service.revoke('CERT-ABC123', 'admin-1', 'Fraudulent activity');
       expect(result.isRevoked).toBe(true);
+      expect(mockPrisma.certificate.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'CERT-ABC123' },
+          data: expect.objectContaining({
+            isRevoked: true,
+            revokedById: 'admin-1',
+            revokeReason: 'Fraudulent activity',
+          }),
+        }),
+      );
+      expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
+        'student-1',
+        'CERTIFICATE_REVOKED',
+        'Certificate Revoked',
+        expect.stringContaining('Fraudulent activity'),
+        { certificateId: 'CERT-ABC123', reason: 'Fraudulent activity' },
+      );
     });
 
     it('throws ForbiddenException if already revoked', async () => {
       mockPrisma.certificate.findUnique.mockResolvedValue({
         id: 'CERT-ALREADY',
+        studentId: 'student-1',
         isRevoked: true,
         student: { name: 'Jane', stellarAddress: 'GABC' },
         course:  { title: 'Tailoring', instructor: { name: 'John' } },

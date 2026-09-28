@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateExamDto } from './dto/create-exam.dto';
 import { SubmitExamDto } from './dto/submit-exam.dto';
+import { UserRole } from '@prisma/client';
 
 @Injectable()
 export class ExamsService {
@@ -250,5 +251,42 @@ export class ExamsService {
     });
 
     return !!passedAttempt;
+  }
+
+  /**
+   * Delete an exam for a course (instructor-owner or admin operation).
+   */
+  async deleteExam(examId: string, userId: string, userRole?: UserRole) {
+    const exam = await this.prisma.exam.findUnique({
+      where: { id: examId },
+      include: {
+        course: { include: { instructor: true } },
+      },
+    });
+
+    if (!exam) {
+      throw new NotFoundException('Exam not found');
+    }
+
+    const isAdmin = userRole === UserRole.ADMIN;
+    const isOwner =
+      exam.course?.instructor?.id === userId ||
+      exam.course?.instructorAddress === userId;
+
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException('Only the course instructor or an admin can delete this exam');
+    }
+
+    const existingAttempt = await this.prisma.examAttempt.findFirst({
+      where: { examId },
+    });
+
+    if (existingAttempt) {
+      throw new BadRequestException('Cannot delete exam with existing student attempts');
+    }
+
+    return this.prisma.exam.delete({
+      where: { id: examId },
+    });
   }
 }

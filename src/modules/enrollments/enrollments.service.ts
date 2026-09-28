@@ -55,20 +55,20 @@ export class EnrollmentsService {
     // ------------------------------------------------------------------
     // PRE-CHECK #2: Run fraud scoring before writing the enrollment to DB.
     // If the score is CRITICAL the enrollment is blocked entirely (HOLD).
-    // We pass null for enrollmentId here because the row doesn't exist yet;
-    // the flag for HOLD actions is persisted in the post-check below once
-    // a sentinel record is available, or omitted if the call is rejected.
+    // We call processFraudCheck with null enrollmentId so a HELD flag row
+    // is persisted in the DB for admin review before the 423 is thrown.
     // ------------------------------------------------------------------
-    const preCheck = await this.fraudDetection.scoreEnrollment(
+    const fraudResult = await this.fraudDetection.processFraudCheck(
+      null,
       studentId,
       courseId,
       amountPaid,
     );
 
-    if (preCheck.action === 'HOLD') {
+    if (fraudResult.action === 'HOLD') {
       this.logger.warn(
         `Enrollment BLOCKED by fraud detection: student=${studentId} ` +
-        `course=${courseId} score=${preCheck.score} reasons=${preCheck.reasons.join(', ')}`,
+        `course=${courseId} score=${fraudResult.score} reasons=${fraudResult.reasons.join(', ')}`,
       );
       // HTTP 423 Locked — enrollment is on automatic hold
       throw new HttpException(
@@ -78,8 +78,9 @@ export class EnrollmentsService {
           message:
             'Your enrollment has been flagged and placed on hold pending a fraud review. ' +
             'Please contact support if you believe this is an error.',
-          riskScore: preCheck.score,
-          reasons:   preCheck.reasons,
+          riskScore: fraudResult.score,
+          reasons:   fraudResult.reasons,
+          flagId:    fraudResult.flagId,
         },
         423,
       );
@@ -102,7 +103,7 @@ export class EnrollmentsService {
     // POST-CHECK: Persist fraud flag if score is HIGH (FLAG action).
     // Runs fire-and-forget — a flag failure must not break the enrollment.
     // ------------------------------------------------------------------
-    if (preCheck.action === 'FLAG') {
+    if (fraudResult.action === 'FLAG') {
       this.fraudDetection
         .processFraudCheck(enrollment.id, studentId, courseId, amountPaid)
         .catch((err: Error) =>
