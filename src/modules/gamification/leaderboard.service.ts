@@ -16,8 +16,6 @@ export interface LeaderboardEntry {
 @Injectable()
 export class LeaderboardService {
   private readonly logger = new Logger(LeaderboardService.name);
-  // Store previous rankings per scope/course for rank change calculation
-  private previousRanksCache = new Map<string, Map<string, number>>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -29,8 +27,16 @@ export class LeaderboardService {
     const limit = query.limit && query.limit > 0 ? query.limit : 10;
     const page = query.page && query.page > 0 ? query.page : 1;
 
-    const cacheKey = query.scope === LeaderboardScope.COURSE ? `course:${query.courseId}` : 'global';
-    const previousRanks = this.previousRanksCache.get(cacheKey) || new Map<string, number>();
+    const courseId = query.scope === LeaderboardScope.COURSE ? query.courseId : null;
+    const snapshots = await this.prisma.leaderboardSnapshot.findMany({
+      where: {
+        scope: query.scope,
+        courseId,
+      },
+    });
+    const previousRanks = new Map<string, number>(
+      snapshots.map((s) => [s.userId, s.rank]),
+    );
 
     const rankedStudents = await this.calculateStudentPoints(query.scope, query.courseId);
 
@@ -71,13 +77,26 @@ export class LeaderboardService {
   }
 
   async recalculateRankings() {
+    const computedAt = new Date();
+
     // 1. Recalculate Global rankings
     const globalRankings = await this.calculateStudentPoints(LeaderboardScope.GLOBAL);
-    const globalRanksMap = new Map<string, number>();
-    globalRankings.forEach((student, index) => {
-      globalRanksMap.set(student.userId, index + 1);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.leaderboardSnapshot.deleteMany({
+        where: { scope: LeaderboardScope.GLOBAL, courseId: null },
+      });
+      if (globalRankings.length > 0) {
+        await tx.leaderboardSnapshot.createMany({
+          data: globalRankings.map((student, index) => ({
+            scope: LeaderboardScope.GLOBAL,
+            courseId: null,
+            userId: student.userId,
+            rank: index + 1,
+            computedAt,
+          })),
+        });
+      }
     });
-    this.previousRanksCache.set('global', globalRanksMap);
 
     // 2. Recalculate Course-level rankings
     const activeCourses = await this.prisma.course.findMany({
@@ -86,11 +105,22 @@ export class LeaderboardService {
 
     for (const course of activeCourses) {
       const courseRankings = await this.calculateStudentPoints(LeaderboardScope.COURSE, course.id);
-      const courseRanksMap = new Map<string, number>();
-      courseRankings.forEach((student, index) => {
-        courseRanksMap.set(student.userId, index + 1);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.leaderboardSnapshot.deleteMany({
+          where: { scope: LeaderboardScope.COURSE, courseId: course.id },
+        });
+        if (courseRankings.length > 0) {
+          await tx.leaderboardSnapshot.createMany({
+            data: courseRankings.map((student, index) => ({
+              scope: LeaderboardScope.COURSE,
+              courseId: course.id,
+              userId: student.userId,
+              rank: index + 1,
+              computedAt,
+            })),
+          });
+        }
       });
-      this.previousRanksCache.set(`course:${course.id}`, courseRanksMap);
     }
 
     return { status: 'recalculated', coursesCount: activeCourses.length };

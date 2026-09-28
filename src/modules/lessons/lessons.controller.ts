@@ -4,6 +4,8 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { LessonsService } from './lessons.service';
 import { DripScheduleService, ConfigureCourseDripDto, ConfigureLessonDripDto } from './drip-schedule.service';
+import { CreateModuleDto } from './dto/create-module.dto';
+import { CreateLessonDto } from './dto/create-lesson.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -33,8 +35,11 @@ export class LessonsController {
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a course module' })
-  createModule(@Body() body: { courseId: string; title: string; position: number }) {
-    return this.lessonsService.createModule(body.courseId, body.title, body.position);
+  createModule(
+    @Body() dto: CreateModuleDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.lessonsService.createModule(dto.courseId, dto.title, dto.position, user);
   }
 
   @Post()
@@ -43,21 +48,10 @@ export class LessonsController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Add a lesson to a module' })
   createLesson(
-    @Body() body: {
-      moduleId: string;
-      title: string;
-      description?: string;
-      type?: string;
-      videoUrl?: string;
-      videoDuration?: number;
-      thumbnailUrl?: string;
-      content?: string;
-      resourceUrl?: string;
-      position: number;
-      isFree?: boolean;
-    },
+    @Body() dto: CreateLessonDto,
+    @CurrentUser() user: any,
   ) {
-    return this.lessonsService.createLesson(body.moduleId, body);
+    return this.lessonsService.createLesson(dto.moduleId, dto, user);
   }
 
   @Patch(':id/thumbnail')
@@ -90,10 +84,11 @@ export class LessonsController {
   @ApiOperation({ summary: 'Update video watch position' })
   updateProgress(
     @Param('id') lessonId: string,
+    @CurrentUser('id') studentId: string,
     @Body() body: { enrollmentId: string; watchedSecs: number },
   ) {
     return this.lessonsService.updateWatchProgress(
-      body.enrollmentId, lessonId, body.watchedSecs,
+      studentId, body.enrollmentId, lessonId, body.watchedSecs,
     );
   }
 
