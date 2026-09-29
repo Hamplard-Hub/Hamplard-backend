@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateFlagDto } from './dto/create-flag.dto';
 import { ResolveFlagDto } from './dto/resolve-flag.dto';
@@ -15,6 +21,21 @@ export class ModerationService {
   async createFlag(reporterId: string, dto: CreateFlagDto) {
     if (!Object.values(ReportCategory).includes(dto.category)) {
       throw new BadRequestException(`Invalid flag category: ${dto.category}`);
+    }
+
+    const existingFlag = await this.prisma.abuseReport.findFirst({
+      where: {
+        reporterId,
+        targetType: dto.targetType,
+        targetId: dto.targetId,
+        status: { in: [ReportStatus.PENDING, ReportStatus.UNDER_REVIEW] },
+      },
+    });
+
+    if (existingFlag) {
+      throw new ConflictException(
+        'A pending or under-review report already exists for this reporter and target.',
+      );
     }
 
     const report = await this.prisma.abuseReport.create({
@@ -35,6 +56,7 @@ export class ModerationService {
         targetId: dto.targetId,
         status: { in: [ReportStatus.PENDING, ReportStatus.UNDER_REVIEW] },
       },
+      distinct: ['reporterId'],
     });
 
     let autoActionTaken = false;

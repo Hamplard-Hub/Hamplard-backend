@@ -7,12 +7,14 @@ import {
   Param,
   Query,
   UseGuards,
-  Req,
 } from '@nestjs/common';
 import { PayoutsService } from './payouts.service';
 import { PayoutQueryDto } from './dto/payout-query.dto';
 import { CreatePayoutDto, UpdatePayoutStatusDto } from './dto/create-payout.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard, Roles } from '../../common/guards/roles.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { UserRole } from '@prisma/client';
 
 @Controller('payouts')
 export class PayoutsController {
@@ -21,12 +23,12 @@ export class PayoutsController {
   @UseGuards(JwtAuthGuard)
   @Get('instructor/:instructorId')
   async getInstructorPayoutHistory(
-    @Req() req: any,
+    @CurrentUser() user: { id: string; role: UserRole },
     @Param('instructorId') instructorId: string,
     @Query() query: PayoutQueryDto,
   ) {
     return this.payoutsService.getInstructorPayoutHistory(
-      req.user,
+      user,
       instructorId,
       query,
     );
@@ -35,24 +37,26 @@ export class PayoutsController {
   @UseGuards(JwtAuthGuard)
   @Get('instructor/:instructorId/statement')
   async exportPayoutStatement(
-    @Req() req: any,
+    @CurrentUser() user: { id: string; role: UserRole },
     @Param('instructorId') instructorId: string,
     @Query() query: PayoutQueryDto,
   ) {
     return this.payoutsService.exportPayoutStatement(
-      req.user,
+      user,
       instructorId,
       query,
     );
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
   @Post()
   async createPayout(@Body() dto: CreatePayoutDto) {
     return this.payoutsService.createPayout(dto);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
   @Patch(':id/status')
   async updatePayoutStatus(
     @Param('id') id: string,
