@@ -10,7 +10,7 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ReportStatus, ReportTargetType, ReportCategory, UserRole } from '@prisma/client';
 
-@ApiTags('moderation')
+@ApiTags('moderation (admin dashboard)')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('moderation')

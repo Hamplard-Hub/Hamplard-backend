@@ -126,9 +126,20 @@ export class QuizzesService {
   }
 
   /**
+   * Strip answer fields for student callers.
+   */
+  private sanitizeForRole(question: any, userRole?: string): any {
+    if (userRole === UserRole.STUDENT) {
+      const { correctAnswer, explanation, ...safe } = question;
+      return safe;
+    }
+    return question;
+  }
+
+  /**
    * Get all questions for a given lesson (ordered by position asc).
    */
-  async getQuestionsByLesson(lessonId: string) {
+  async getQuestionsByLesson(lessonId: string, userRole?: string) {
     const lesson = await this.prisma.lesson.findUnique({
       where: { id: lessonId },
     });
@@ -136,23 +147,25 @@ export class QuizzesService {
       throw new NotFoundException('Lesson not found');
     }
 
-    return this.prisma.quizQuestion.findMany({
+    const questions = await this.prisma.quizQuestion.findMany({
       where: { lessonId },
       orderBy: { position: 'asc' },
     });
+
+    return questions.map((q) => this.sanitizeForRole(q, userRole));
   }
 
   /**
    * Get single question by ID.
    */
-  async getQuestionById(id: string) {
+  async getQuestionById(id: string, userRole?: string) {
     const question = await this.prisma.quizQuestion.findUnique({
       where: { id },
     });
     if (!question) {
       throw new NotFoundException('Quiz question not found');
     }
-    return question;
+    return this.sanitizeForRole(question, userRole);
   }
 
   /**

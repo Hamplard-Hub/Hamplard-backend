@@ -27,8 +27,11 @@ export class QuizzesController {
 
   @Get('lessons/:lessonId/questions')
   @ApiOperation({ summary: 'Get all quiz questions for a lesson' })
-  getQuestionsByLesson(@Param('lessonId') lessonId: string) {
-    return this.quizzesService.getQuestionsByLesson(lessonId);
+  getQuestionsByLesson(
+    @Param('lessonId') lessonId: string,
+    @CurrentUser('role') userRole: string,
+  ) {
+    return this.quizzesService.getQuestionsByLesson(lessonId, userRole);
   }
 
   @Post('lessons/:lessonId/questions')
@@ -47,8 +50,11 @@ export class QuizzesController {
 
   @Get('questions/:id')
   @ApiOperation({ summary: 'Get a specific quiz question by ID' })
-  getQuestionById(@Param('id') id: string) {
-    return this.quizzesService.getQuestionById(id);
+  getQuestionById(
+    @Param('id') id: string,
+    @CurrentUser('role') userRole: string,
+  ) {
+    return this.quizzesService.getQuestionById(id, userRole);
   }
 
   @Patch('questions/:id')

@@ -12,7 +12,7 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ReportTargetType, ReportStatus, UserRole } from '@prisma/client';
 
-@ApiTags('reports')
+@ApiTags('reports (reporter-facing)')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('reports')
