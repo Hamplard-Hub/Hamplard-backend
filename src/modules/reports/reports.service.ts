@@ -170,9 +170,11 @@ export class ReportsService {
         if (!user) throw new NotFoundException('Reported profile not found');
         return;
       }
-      case ReportTargetType.COMMENT:
-        // No Comment model exists yet in the schema, so existence can't be verified here.
+      case ReportTargetType.COMMENT: {
+        const comment = await this.prisma.discussionComment.findUnique({ where: { id: targetId } });
+        if (!comment) throw new NotFoundException('Reported comment not found');
         return;
+      }
     }
   }
 }

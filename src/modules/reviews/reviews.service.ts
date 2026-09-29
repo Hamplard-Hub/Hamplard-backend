@@ -3,6 +3,7 @@ import { Injectable, NotFoundException, ForbiddenException, ConflictException } 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { CreateReviewDto } from './dto/create-review.dto';
+import { UpdateReviewDto } from './dto/update-review.dto';
 
 @Injectable()
 export class ReviewsService {
@@ -49,6 +50,49 @@ export class ReviewsService {
     ]);
 
     return { data, meta: { total, page, limit } };
+  }
+
+  async updateMyReview(studentId: string, courseId: string, dto: UpdateReviewDto) {
+    const review = await this.prisma.courseReview.findUnique({
+      where: { courseId_studentId: { courseId, studentId } },
+    });
+    if (!review) throw new NotFoundException('Review not found');
+    if (review.studentId !== studentId) throw new ForbiddenException('You cannot edit this review');
+
+    const updated = await this.prisma.courseReview.update({
+      where: { courseId_studentId: { courseId, studentId } },
+      data: {
+        ...(dto.rating !== undefined && { rating: dto.rating }),
+        ...(dto.comment !== undefined && { comment: dto.comment }),
+      },
+    });
+
+    await this.recomputeCourseRating(courseId);
+    return updated;
+  }
+
+  async deleteMyReview(studentId: string, courseId: string) {
+    const review = await this.prisma.courseReview.findUnique({
+      where: { courseId_studentId: { courseId, studentId } },
+    });
+    if (!review) throw new NotFoundException('Review not found');
+    if (review.studentId !== studentId) throw new ForbiddenException('You cannot delete this review');
+
+    await this.prisma.courseReview.delete({
+      where: { courseId_studentId: { courseId, studentId } },
+    });
+
+    await this.recomputeCourseRating(courseId);
+    return { message: 'Review deleted' };
+  }
+
+  async adminDeleteReview(reviewId: string) {
+    const review = await this.prisma.courseReview.findUnique({ where: { id: reviewId } });
+    if (!review) throw new NotFoundException('Review not found');
+
+    await this.prisma.courseReview.delete({ where: { id: reviewId } });
+    await this.recomputeCourseRating(review.courseId);
+    return { message: 'Review deleted by admin' };
   }
 
   private async recomputeCourseRating(courseId: string) {
