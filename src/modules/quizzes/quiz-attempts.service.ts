@@ -21,6 +21,7 @@ export interface AnswerValidationResult {
 }
 
 export interface QuizAttemptResult {
+  attemptId?: string;
   lessonId: string;
   totalQuestions: number;
   totalPointsPossible: number;
@@ -162,7 +163,22 @@ export class QuizAttemptsService {
     const passThresholdPercentage = dto.passThreshold ?? 70;
     const passed = scorePercentage >= passThresholdPercentage;
 
+    const persisted = await this.prisma.quizAttempt.create({
+      data: {
+        lessonId,
+        studentId: userId,
+        score: Math.round(scorePercentage),
+        passed,
+        answers: answerResults as any,
+      },
+    });
+
+    this.logger.log(
+      `Quiz attempt recorded: lesson ${lessonId}, student ${userId}, score ${scorePercentage}%, passed: ${passed}`,
+    );
+
     return {
+      attemptId: persisted.id,
       lessonId,
       totalQuestions: questions.length,
       totalPointsPossible,
@@ -171,7 +187,17 @@ export class QuizAttemptsService {
       passThresholdPercentage,
       passed,
       answers: answerResults,
-      submittedAt: new Date().toISOString(),
+      submittedAt: persisted.attemptedAt.toISOString(),
     };
+  }
+
+  /**
+   * Attempt history for a student on a lesson (mirrors ExamsService.getAttemptHistory).
+   */
+  async getAttemptHistory(studentId: string, lessonId: string) {
+    return this.prisma.quizAttempt.findMany({
+      where: { studentId, lessonId },
+      orderBy: { attemptedAt: 'desc' },
+    });
   }
 }

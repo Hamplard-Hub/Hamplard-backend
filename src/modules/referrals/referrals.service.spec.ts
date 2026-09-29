@@ -41,6 +41,10 @@ describe('ReferralsService', () => {
       updateMany: jest.fn(),
       count: jest.fn(),
     },
+    referralRewardRule: {
+      findUnique: jest.fn(),
+      upsert: jest.fn(),
+    },
     $transaction: jest.fn(),
   };
 
@@ -355,22 +359,64 @@ describe('ReferralsService', () => {
   });
 
   describe('reward rules', () => {
-    it('returns default reward rules from config', () => {
-      const rules = service.getRewardRules();
+    it('returns default reward rules from config when no row is stored', async () => {
+      mockPrisma.referralRewardRule.findUnique.mockResolvedValue(null);
+      const rules = await service.getRewardRules();
       expect(rules.referrerDiscountPercent).toBe(10);
       expect(rules.refereeDiscountPercent).toBe(10);
       expect(rules.rewardExpiryDays).toBe(90);
       expect(rules.maxRewardsPerReferrer).toBe(50);
     });
 
-    it('applies admin overrides to reward rules', () => {
-      const updated = service.updateRewardRules({
+    it('applies admin overrides to reward rules', async () => {
+      mockPrisma.referralRewardRule.findUnique.mockResolvedValue(null);
+      mockPrisma.referralRewardRule.upsert.mockImplementation(
+        async ({ create }: any) => ({ id: 'default', ...create }),
+      );
+      const updated = await service.updateRewardRules({
         referrerDiscountPercent: 15,
         maxRewardsPerReferrer: 20,
       });
       expect(updated.referrerDiscountPercent).toBe(15);
       expect(updated.maxRewardsPerReferrer).toBe(20);
       expect(updated.refereeDiscountPercent).toBe(10);
+    });
+
+    it('persists rule updates across service instantiations', async () => {
+      let stored: any = null;
+      mockPrisma.referralRewardRule.findUnique.mockImplementation(
+        async () => stored,
+      );
+      mockPrisma.referralRewardRule.upsert.mockImplementation(
+        async ({ create, update }: any) => {
+          stored = { id: 'default', ...(stored ?? {}), ...(stored ? update : create) };
+          return stored;
+        },
+      );
+
+      await service.updateRewardRules({
+        referrerDiscountPercent: 15,
+        maxRewardsPerReferrer: 20,
+      });
+
+      // Simulate an application restart: a fresh service instance sharing
+      // the same database must observe the updated rules.
+      const restarted: TestingModule = await Test.createTestingModule({
+        providers: [
+          ReferralsService,
+          { provide: PrismaService, useValue: mockPrisma },
+          { provide: ConfigService, useValue: mockConfig },
+          { provide: NotificationsService, useValue: mockNotifications },
+        ],
+      }).compile();
+
+      const service2 = restarted.get<ReferralsService>(ReferralsService);
+      const rules = await service2.getRewardRules();
+
+      expect(rules.referrerDiscountPercent).toBe(15);
+      expect(rules.maxRewardsPerReferrer).toBe(20);
+      expect(rules.refereeDiscountPercent).toBe(10);
+      expect(mockPrisma.referralRewardRule.upsert).toHaveBeenCalled();
     });
   });
 

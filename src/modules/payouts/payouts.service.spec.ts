@@ -1,7 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PayoutsService } from './payouts.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { ForbiddenException } from '@nestjs/common';
+import { KycService } from '../kyc/kyc.service';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PayoutStatus, UserRole } from '@prisma/client';
 
 describe('PayoutsService', () => {
@@ -20,11 +21,16 @@ describe('PayoutsService', () => {
     $transaction: jest.fn(),
   };
 
+  const mockKyc = {
+    getVerificationStatus: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PayoutsService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: KycService, useValue: mockKyc },
       ],
     }).compile();
 
@@ -82,5 +88,66 @@ describe('PayoutsService', () => {
 
     expect(res.status).toBe(PayoutStatus.COMPLETED);
     expect(res.txHash).toBe('0x123');
+  });
+
+  describe('createPayout KYC gate', () => {
+    const dto: any = { instructorId: 'instructor-1', amount: 100 };
+
+    it('should reject payout creation for an unverified instructor', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'instructor-1' });
+      mockKyc.getVerificationStatus.mockResolvedValue({
+        isVerified: false,
+        status: 'PENDING',
+        adminNotes: null,
+        reviewedAt: null,
+      });
+
+      await expect(service.createPayout(dto)).rejects.toThrow(ForbiddenException);
+      expect(mockKyc.getVerificationStatus).toHaveBeenCalledWith('instructor-1');
+      expect(mockPrisma.payout.create).not.toHaveBeenCalled();
+    });
+
+    it('should reject payout creation when no KYC submission exists', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'instructor-1' });
+      mockKyc.getVerificationStatus.mockResolvedValue({
+        isVerified: false,
+        status: null,
+        adminNotes: null,
+        reviewedAt: null,
+      });
+
+      await expect(service.createPayout(dto)).rejects.toThrow(
+        /KYC/i,
+      );
+      expect(mockPrisma.payout.create).not.toHaveBeenCalled();
+    });
+
+    it('should create a payout for a KYC-verified instructor', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'instructor-1' });
+      mockKyc.getVerificationStatus.mockResolvedValue({
+        isVerified: true,
+        status: 'APPROVED',
+        adminNotes: null,
+        reviewedAt: new Date(),
+      });
+      mockPrisma.payout.create.mockResolvedValue({
+        id: 'pay-1',
+        instructorId: 'instructor-1',
+        amount: 100,
+        status: PayoutStatus.PENDING,
+      });
+
+      const res = await service.createPayout(dto);
+
+      expect(res.id).toBe('pay-1');
+      expect(mockPrisma.payout.create).toHaveBeenCalled();
+    });
+
+    it('should throw NotFoundException when the instructor does not exist', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(service.createPayout(dto)).rejects.toThrow(NotFoundException);
+      expect(mockKyc.getVerificationStatus).not.toHaveBeenCalled();
+    });
   });
 });
