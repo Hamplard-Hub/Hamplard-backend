@@ -2,12 +2,13 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ModerationService, DEFAULT_UNPUBLISH_THRESHOLD } from './moderation.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ReportCategory, ReportTargetType, ReportStatus, CourseStatus } from '@prisma/client';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 
 const mockPrisma = {
   abuseReport: {
     create: jest.fn(),
     count: jest.fn(),
+    findFirst: jest.fn(),
     findUnique: jest.fn(),
     update: jest.fn(),
     findMany: jest.fn(),
@@ -90,6 +91,54 @@ describe('ModerationService', () => {
       expect(mockPrisma.course.update).toHaveBeenCalledWith({
         where: { id: 'course-1' },
         data: { status: CourseStatus.PAUSED },
+      });
+    });
+
+    it('rejects duplicate pending flags from the same reporter for the same target', async () => {
+      mockPrisma.abuseReport.findFirst.mockResolvedValue({
+        id: 'existing-flag',
+        reporterId: 'user-1',
+        targetType: ReportTargetType.COURSE,
+        targetId: 'course-1',
+        status: ReportStatus.PENDING,
+      });
+
+      await expect(
+        service.createFlag('user-1', {
+          targetType: ReportTargetType.COURSE,
+          targetId: 'course-1',
+          category: ReportCategory.SPAM,
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(mockPrisma.abuseReport.create).not.toHaveBeenCalled();
+    });
+
+    it('only counts distinct reporters toward the auto-unpublish threshold', async () => {
+      mockPrisma.abuseReport.findFirst.mockResolvedValue(null);
+      mockPrisma.abuseReport.create.mockResolvedValue({
+        id: 'flag-3',
+        reporterId: 'user-3',
+        targetType: ReportTargetType.COURSE,
+        targetId: 'course-1',
+        category: ReportCategory.HARASSMENT,
+        status: ReportStatus.PENDING,
+      });
+      mockPrisma.abuseReport.count.mockResolvedValue(3);
+
+      await service.createFlag('user-3', {
+        targetType: ReportTargetType.COURSE,
+        targetId: 'course-1',
+        category: ReportCategory.HARASSMENT,
+      });
+
+      expect(mockPrisma.abuseReport.count).toHaveBeenCalledWith({
+        where: {
+          targetType: ReportTargetType.COURSE,
+          targetId: 'course-1',
+          status: { in: [ReportStatus.PENDING, ReportStatus.UNDER_REVIEW] },
+        },
+        distinct: ['reporterId'],
       });
     });
 
