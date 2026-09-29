@@ -5,6 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { KycService } from '../kyc/kyc.service';
 import { PayoutQueryDto } from './dto/payout-query.dto';
 import { CreatePayoutDto, UpdatePayoutStatusDto } from './dto/create-payout.dto';
 import { PayoutStatus, UserRole } from '@prisma/client';
@@ -13,7 +14,10 @@ import { PayoutStatus, UserRole } from '@prisma/client';
 export class PayoutsService {
   private readonly logger = new Logger(PayoutsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly kyc: KycService,
+  ) {}
 
   /**
    * Get payout history for an instructor with date range and status filtering.
@@ -126,6 +130,14 @@ export class PayoutsService {
 
     if (!instructor) {
       throw new NotFoundException('Instructor not found');
+    }
+
+    const verification = await this.kyc.getVerificationStatus(dto.instructorId);
+    if (!verification.isVerified) {
+      throw new ForbiddenException(
+        'Payout cannot be created: instructor has not completed KYC verification. ' +
+          'Please submit your KYC documents and wait for approval before requesting payouts.',
+      );
     }
 
     const payout = await this.prisma.payout.create({

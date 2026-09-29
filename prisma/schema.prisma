@@ -214,6 +214,12 @@ enum ReferralRewardKind {
   REFEREE        // welcome discount for the new user
 }
 
+enum QuizSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  EXPIRED
+}
+
 enum SmsStatus {
   PENDING
   SENT
@@ -283,6 +289,8 @@ model User {
   certificates        Certificate[]
   certificatesRevoked Certificate[]         @relation("CertificatesRevoked")
   examAttempts        ExamAttempt[]
+  quizAttempts        QuizAttempt[]
+  quizSessions        QuizSession[]
   payouts             Payout[]              @relation("Payouts")
   reportsFiled        AbuseReport[]         @relation("ReportsFiled")
   reportsHandled      AbuseReport[]         @relation("ReportsHandled")
@@ -489,6 +497,8 @@ model Lesson {
   progress    LessonProgress[]
   assignment  Assignment?
   quizQuestions QuizQuestion[]
+  quizAttempts QuizAttempt[]
+  quizSessions QuizSession[]
   questions   Question[]
   dripConfig  LessonDripConfig?
   dripUnlocks EnrollmentLessonUnlock[]
@@ -514,6 +524,45 @@ model QuizQuestion {
 
   @@index([lessonId])
   @@map("quiz_questions")
+}
+
+model QuizAttempt {
+  id          String   @id @default(uuid())
+  lessonId    String
+  studentId   String
+  score       Int      // score percentage achieved (0-100)
+  passed      Boolean
+  answers     Json?    // per-question submitted answers + correctness breakdown
+  attemptedAt DateTime @default(now())
+
+  lesson  Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  student User   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId, studentId])
+  @@index([studentId])
+  @@map("quiz_attempts")
+}
+
+model QuizSession {
+  id              String            @id @default(uuid())
+  lessonId        String
+  userId          String
+  startTime       DateTime          @default(now())
+  durationSeconds Int
+  expiresAt       DateTime
+  status          QuizSessionStatus @default(IN_PROGRESS)
+  result          Json?
+  autoSubmitted   Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, expiresAt])
+  @@index([lessonId])
+  @@map("quiz_sessions")
 }
 
 model Assignment {
@@ -1383,6 +1432,21 @@ model ReferralReward {
   @@index([beneficiaryId, status])
   @@index([referralId])
   @@map("referral_rewards")
+}
+
+// Singleton row (id = "default") holding the admin-configured referral
+// reward issuance rules. When no row exists, services fall back to the
+// REFERRAL_* .env defaults so existing deployments keep working.
+model ReferralRewardRule {
+  id                     String   @id @default("default")
+  referrerDiscountPercent Float   @default(10)
+  refereeDiscountPercent  Float   @default(10)
+  rewardExpiryDays       Int     @default(90)
+  maxRewardsPerReferrer  Int     @default(50)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@map("referral_reward_rules")
 }
 
 // ============================================================

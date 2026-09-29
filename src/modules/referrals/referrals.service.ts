@@ -29,8 +29,8 @@ export interface ReferralRewardRules {
 export class ReferralsService {
   private readonly logger = new Logger(ReferralsService.name);
 
-  /** In-memory overrides for admin-managed reward rules (env defaults underneath). */
-  private ruleOverrides: Partial<ReferralRewardRules> = {};
+  /** Singleton row id used for the persisted reward-rules record. */
+  private static readonly REWARD_RULES_ID = 'default';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -39,37 +39,76 @@ export class ReferralsService {
   ) {}
 
   // ----------------------------------------------------------
-  // REWARD RULES
+  // REWARD RULES (persisted in `referral_reward_rules`, .env fallback)
   // ----------------------------------------------------------
 
-  getRewardRules(): ReferralRewardRules {
+  private getDefaultRules(): ReferralRewardRules {
     return {
-      referrerDiscountPercent: this.ruleOverrides.referrerDiscountPercent
-        ?? Number(this.config.get('REFERRAL_REFERRER_DISCOUNT_PERCENT', 10)),
-      refereeDiscountPercent: this.ruleOverrides.refereeDiscountPercent
-        ?? Number(this.config.get('REFERRAL_REFEREE_DISCOUNT_PERCENT', 10)),
-      rewardExpiryDays: this.ruleOverrides.rewardExpiryDays
-        ?? Number(this.config.get('REFERRAL_REWARD_EXPIRY_DAYS', 90)),
-      maxRewardsPerReferrer: this.ruleOverrides.maxRewardsPerReferrer
-        ?? Number(this.config.get('REFERRAL_MAX_REWARDS_PER_REFERRER', 50)),
+      referrerDiscountPercent: Number(
+        this.config.get('REFERRAL_REFERRER_DISCOUNT_PERCENT', 10),
+      ),
+      refereeDiscountPercent: Number(
+        this.config.get('REFERRAL_REFEREE_DISCOUNT_PERCENT', 10),
+      ),
+      rewardExpiryDays: Number(
+        this.config.get('REFERRAL_REWARD_EXPIRY_DAYS', 90),
+      ),
+      maxRewardsPerReferrer: Number(
+        this.config.get('REFERRAL_MAX_REWARDS_PER_REFERRER', 50),
+      ),
     };
   }
 
-  updateRewardRules(dto: UpdateRewardRulesDto): ReferralRewardRules {
-    if (dto.referrerDiscountPercent !== undefined) {
-      this.ruleOverrides.referrerDiscountPercent = dto.referrerDiscountPercent;
+  private toRules(row: {
+    referrerDiscountPercent: number;
+    refereeDiscountPercent: number;
+    rewardExpiryDays: number;
+    maxRewardsPerReferrer: number;
+  }): ReferralRewardRules {
+    return {
+      referrerDiscountPercent: Number(row.referrerDiscountPercent),
+      refereeDiscountPercent: Number(row.refereeDiscountPercent),
+      rewardExpiryDays: Number(row.rewardExpiryDays),
+      maxRewardsPerReferrer: Number(row.maxRewardsPerReferrer),
+    };
+  }
+
+  async getRewardRules(): Promise<ReferralRewardRules> {
+    try {
+      const row = await this.prisma.referralRewardRule.findUnique({
+        where: { id: ReferralsService.REWARD_RULES_ID },
+      });
+      if (!row) return this.getDefaultRules();
+      return this.toRules(row);
+    } catch (error) {
+      this.logger.warn(
+        `Falling back to .env referral reward rules: ${(error as Error)?.message}`,
+      );
+      return this.getDefaultRules();
     }
-    if (dto.refereeDiscountPercent !== undefined) {
-      this.ruleOverrides.refereeDiscountPercent = dto.refereeDiscountPercent;
-    }
-    if (dto.rewardExpiryDays !== undefined) {
-      this.ruleOverrides.rewardExpiryDays = dto.rewardExpiryDays;
-    }
-    if (dto.maxRewardsPerReferrer !== undefined) {
-      this.ruleOverrides.maxRewardsPerReferrer = dto.maxRewardsPerReferrer;
-    }
-    this.logger.log(`Referral reward rules updated: ${JSON.stringify(this.getRewardRules())}`);
-    return this.getRewardRules();
+  }
+
+  async updateRewardRules(
+    dto: UpdateRewardRulesDto,
+  ): Promise<ReferralRewardRules> {
+    const current = await this.getRewardRules();
+    const data = {
+      referrerDiscountPercent:
+        dto.referrerDiscountPercent ?? current.referrerDiscountPercent,
+      refereeDiscountPercent:
+        dto.refereeDiscountPercent ?? current.refereeDiscountPercent,
+      rewardExpiryDays: dto.rewardExpiryDays ?? current.rewardExpiryDays,
+      maxRewardsPerReferrer:
+        dto.maxRewardsPerReferrer ?? current.maxRewardsPerReferrer,
+    };
+    const row = await this.prisma.referralRewardRule.upsert({
+      where: { id: ReferralsService.REWARD_RULES_ID },
+      create: { id: ReferralsService.REWARD_RULES_ID, ...data },
+      update: data,
+    });
+    const rules = this.toRules(row);
+    this.logger.log(`Referral reward rules updated: ${JSON.stringify(rules)}`);
+    return rules;
   }
 
   // ----------------------------------------------------------
@@ -121,7 +160,7 @@ export class ReferralsService {
       throw new BadRequestException('You cannot use your own referral code');
     }
 
-    const rules = this.getRewardRules();
+    const rules = await this.getRewardRules();
 
     return {
       valid: true,
@@ -167,7 +206,7 @@ export class ReferralsService {
       throw new BadRequestException('You cannot use your own referral code');
     }
 
-    const rules = this.getRewardRules();
+    const rules = await this.getRewardRules();
     const expiresAt = this.expiryDate(rules.rewardExpiryDays);
 
     const referral = await this.prisma.$transaction(async (tx) => {
@@ -232,7 +271,7 @@ export class ReferralsService {
       return referral;
     }
 
-    const rules = this.getRewardRules();
+    const rules = await this.getRewardRules();
 
     const referrerRewardCount = await this.prisma.referralReward.count({
       where: {
@@ -307,7 +346,7 @@ export class ReferralsService {
 
   async getPerformanceStatus(userId: string) {
     const referralCode = await this.getOrCreateCode(userId);
-    const rules = this.getRewardRules();
+    const rules = await this.getRewardRules();
 
     const [signups, conversions, rewards, recentReferrals] = await Promise.all([
       this.prisma.referral.count({ where: { referrerId: userId } }),

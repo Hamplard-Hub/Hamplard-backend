@@ -6,28 +6,12 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { v4 as uuidv4 } from 'uuid';
+import { QuizSessionStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { QuizAttemptsService, QuizAttemptResult } from './quiz-attempts.service';
 import { StartQuizSessionDto, SubmitSessionAnswersDto } from './dto/quiz-sessions.dto';
 
-export enum QuizSessionStatus {
-  IN_PROGRESS = 'IN_PROGRESS',
-  COMPLETED = 'COMPLETED',
-  EXPIRED = 'EXPIRED',
-}
-
-export interface QuizSessionData {
-  id: string;
-  lessonId: string;
-  userId: string;
-  startTime: Date;
-  durationSeconds: number;
-  expiresAt: Date;
-  status: QuizSessionStatus;
-  result?: QuizAttemptResult;
-  autoSubmitted?: boolean;
-}
+export { QuizSessionStatus };
 
 export interface QuizSessionStatusResponse {
   sessionId: string;
@@ -43,10 +27,21 @@ export interface QuizSessionStatusResponse {
   result?: QuizAttemptResult;
 }
 
+type QuizSessionRow = {
+  id: string;
+  lessonId: string;
+  userId: string;
+  startTime: Date;
+  durationSeconds: number;
+  expiresAt: Date;
+  status: QuizSessionStatus;
+  result: unknown;
+  autoSubmitted: boolean;
+};
+
 @Injectable()
 export class QuizSessionsService {
   private readonly logger = new Logger(QuizSessionsService.name);
-  private readonly sessions = new Map<string, QuizSessionData>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -54,7 +49,8 @@ export class QuizSessionsService {
   ) {}
 
   /**
-   * Starts a timed quiz session for a student.
+   * Starts a timed quiz session for a student (persisted so any instance
+   * can query, submit, or auto-expire it).
    */
   async startSession(
     lessonId: string,
@@ -81,20 +77,19 @@ export class QuizSessionsService {
     const durationSeconds = durationMinutes * 60;
     const startTime = new Date();
     const expiresAt = new Date(startTime.getTime() + durationSeconds * 1000);
-    const id = uuidv4();
 
-    const session: QuizSessionData = {
-      id,
-      lessonId,
-      userId,
-      startTime,
-      durationSeconds,
-      expiresAt,
-      status: QuizSessionStatus.IN_PROGRESS,
-    };
+    const session = (await this.prisma.quizSession.create({
+      data: {
+        lessonId,
+        userId,
+        startTime,
+        durationSeconds,
+        expiresAt,
+        status: QuizSessionStatus.IN_PROGRESS,
+      },
+    })) as unknown as QuizSessionRow;
 
-    this.sessions.set(id, session);
-    this.logger.log(`Started quiz session ${id} for user ${userId} on lesson ${lessonId}`);
+    this.logger.log(`Started quiz session ${session.id} for user ${userId} on lesson ${lessonId}`);
 
     return this.buildStatusResponse(session);
   }
@@ -106,19 +101,9 @@ export class QuizSessionsService {
     sessionId: string,
     userId: string,
   ): Promise<QuizSessionStatusResponse> {
-    const session = this.sessions.get(sessionId);
-
-    if (!session) {
-      throw new NotFoundException('Quiz session not found');
-    }
-
-    if (session.userId !== userId) {
-      throw new ForbiddenException('You do not have access to this quiz session');
-    }
-
-    this.checkAndUpdateExpiration(session);
-
-    return this.buildStatusResponse(session);
+    const session = await this.loadOwnedSession(sessionId, userId);
+    const current = await this.persistExpirationIfElapsed(session);
+    return this.buildStatusResponse(current);
   }
 
   /**
@@ -129,28 +114,19 @@ export class QuizSessionsService {
     userId: string,
     dto: SubmitSessionAnswersDto,
   ): Promise<QuizSessionStatusResponse> {
-    const session = this.sessions.get(sessionId);
+    const session = await this.loadOwnedSession(sessionId, userId);
+    const current = await this.persistExpirationIfElapsed(session);
 
-    if (!session) {
-      throw new NotFoundException('Quiz session not found');
-    }
-
-    if (session.userId !== userId) {
-      throw new ForbiddenException('You do not have access to this quiz session');
-    }
-
-    this.checkAndUpdateExpiration(session);
-
-    if (session.status === QuizSessionStatus.EXPIRED) {
+    if (current.status === QuizSessionStatus.EXPIRED) {
       throw new BadRequestException('Quiz session has expired and cannot accept new submissions');
     }
 
-    if (session.status === QuizSessionStatus.COMPLETED) {
+    if (current.status === QuizSessionStatus.COMPLETED) {
       throw new BadRequestException('Quiz session has already been completed');
     }
 
     const result = await this.quizAttemptsService.submitQuizAttempt(
-      session.lessonId,
+      current.lessonId,
       {
         answers: dto.answers,
         passThreshold: dto.passThreshold,
@@ -158,12 +134,17 @@ export class QuizSessionsService {
       userId,
     );
 
-    session.status = QuizSessionStatus.COMPLETED;
-    session.result = result;
+    const updated = (await this.prisma.quizSession.update({
+      where: { id: sessionId },
+      data: {
+        status: QuizSessionStatus.COMPLETED,
+        result: result as any,
+      },
+    })) as unknown as QuizSessionRow;
 
     this.logger.log(`Session ${sessionId} completed by user ${userId} with score ${result.scorePercentage}%`);
 
-    return this.buildStatusResponse(session);
+    return this.buildStatusResponse(updated);
   }
 
   /**
@@ -174,15 +155,7 @@ export class QuizSessionsService {
     userId: string,
     dto?: SubmitSessionAnswersDto,
   ): Promise<QuizSessionStatusResponse> {
-    const session = this.sessions.get(sessionId);
-
-    if (!session) {
-      throw new NotFoundException('Quiz session not found');
-    }
-
-    if (session.userId !== userId) {
-      throw new ForbiddenException('You do not have access to this quiz session');
-    }
+    const session = await this.loadOwnedSession(sessionId, userId);
 
     if (session.status === QuizSessionStatus.COMPLETED) {
       return this.buildStatusResponse(session);
@@ -200,42 +173,77 @@ export class QuizSessionsService {
       userId,
     );
 
-    session.status = QuizSessionStatus.EXPIRED;
-    session.autoSubmitted = true;
-    session.result = result;
+    const updated = (await this.prisma.quizSession.update({
+      where: { id: sessionId },
+      data: {
+        status: QuizSessionStatus.EXPIRED,
+        autoSubmitted: true,
+        result: result as any,
+      },
+    })) as unknown as QuizSessionRow;
 
     this.logger.log(`Session ${sessionId} auto-submitted due to timeout for user ${userId}`);
 
-    return this.buildStatusResponse(session);
+    return this.buildStatusResponse(updated);
   }
 
   /**
-   * Cron task running every minute to process expired sessions automatically.
+   * Cron task running every minute to auto-submit expired sessions.
+   * Queries only IN_PROGRESS, expired rows so any instance can expire
+   * sessions started elsewhere.
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async handleAutoSubmitOnTimeout(): Promise<void> {
-    const now = new Date();
-    for (const [sessionId, session] of this.sessions.entries()) {
-      if (session.status === QuizSessionStatus.IN_PROGRESS && now >= session.expiresAt) {
-        try {
-          await this.autoSubmitSession(sessionId, session.userId);
-        } catch (error) {
-          this.logger.error(`Failed to auto-submit expired session ${sessionId}`, error);
-        }
+    const expired = (await this.prisma.quizSession.findMany({
+      where: {
+        status: QuizSessionStatus.IN_PROGRESS,
+        expiresAt: { lte: new Date() },
+      },
+      take: 100,
+    })) as unknown as QuizSessionRow[];
+
+    for (const session of expired) {
+      try {
+        await this.autoSubmitSession(session.id, session.userId);
+      } catch (error) {
+        this.logger.error(`Failed to auto-submit expired session ${session.id}`, error as Error);
       }
     }
   }
 
-  private checkAndUpdateExpiration(session: QuizSessionData): void {
-    if (session.status === QuizSessionStatus.IN_PROGRESS) {
-      const now = new Date();
-      if (now >= session.expiresAt) {
-        session.status = QuizSessionStatus.EXPIRED;
-      }
+  private async loadOwnedSession(
+    sessionId: string,
+    userId: string,
+  ): Promise<QuizSessionRow> {
+    const session = (await this.prisma.quizSession.findUnique({
+      where: { id: sessionId },
+    })) as unknown as QuizSessionRow | null;
+
+    if (!session) {
+      throw new NotFoundException('Quiz session not found');
     }
+
+    if (session.userId !== userId) {
+      throw new ForbiddenException('You do not have access to this quiz session');
+    }
+
+    return session;
   }
 
-  private buildStatusResponse(session: QuizSessionData): QuizSessionStatusResponse {
+  private async persistExpirationIfElapsed(
+    session: QuizSessionRow,
+  ): Promise<QuizSessionRow> {
+    if (session.status === QuizSessionStatus.IN_PROGRESS && new Date() >= session.expiresAt) {
+      const updated = (await this.prisma.quizSession.update({
+        where: { id: session.id },
+        data: { status: QuizSessionStatus.EXPIRED },
+      })) as unknown as QuizSessionRow;
+      return updated;
+    }
+    return session;
+  }
+
+  private buildStatusResponse(session: QuizSessionRow): QuizSessionStatusResponse {
     const now = new Date();
     const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - session.startTime.getTime()) / 1000));
     const remainingSeconds = Math.max(0, Math.floor((session.expiresAt.getTime() - now.getTime()) / 1000));
@@ -252,7 +260,7 @@ export class QuizSessionsService {
       elapsedSeconds,
       remainingSeconds,
       isExpired,
-      result: session.result,
+      result: (session.result as QuizAttemptResult | null) ?? undefined,
     };
   }
 }

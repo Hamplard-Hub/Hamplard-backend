@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
   Param,
   UseGuards,
@@ -31,5 +32,16 @@ export class QuizAttemptsController {
     @CurrentUser('id') userId: string,
   ) {
     return this.quizAttemptsService.submitQuizAttempt(lessonId, dto, userId);
+  }
+
+  @Get('lessons/:lessonId/attempts/history')
+  @ApiOperation({
+    summary: "Get the current student's quiz attempt history for a lesson",
+  })
+  getAttemptHistory(
+    @Param('lessonId') lessonId: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.quizAttemptsService.getAttemptHistory(userId, lessonId);
   }
 }
