@@ -21,9 +21,29 @@ export class CouponsService {
   async create(userId: string, dto: CreateCouponDto) {
     const code = dto.code.toUpperCase().trim();
 
+    // Validate discountValue is positive
+    if (dto.discountValue <= 0) {
+      throw new BadRequestException('Discount value must be greater than 0');
+    }
+
     // Validate PERCENTAGE value is within bounds
     if (dto.discountType === DiscountType.PERCENTAGE && dto.discountValue > 100) {
       throw new BadRequestException('Percentage discount value cannot exceed 100');
+    }
+
+    // Validate minOrderAmount is non-negative
+    if (dto.minOrderAmount !== undefined && dto.minOrderAmount !== null && dto.minOrderAmount < 0) {
+      throw new BadRequestException('Minimum order amount cannot be negative');
+    }
+
+    // Validate maxRedemptions is non-negative
+    if (dto.maxRedemptions !== undefined && dto.maxRedemptions !== null && dto.maxRedemptions < 0) {
+      throw new BadRequestException('Maximum redemptions cannot be negative');
+    }
+
+    // Validate expiresAt is in the future
+    if (dto.expiresAt && new Date(dto.expiresAt).getTime() <= Date.now()) {
+      throw new BadRequestException('Expiration date must be in the future');
     }
 
     // Ensure coupon code is unique
@@ -110,7 +130,35 @@ export class CouponsService {
   // ----------------------------------------------------------
 
   async update(id: string, dto: UpdateCouponDto) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
+
+    const discountType = dto.discountType ?? existing.discountType;
+    const discountValue = dto.discountValue ?? Number(existing.discountValue);
+    const minOrderAmount = dto.minOrderAmount !== undefined
+      ? dto.minOrderAmount
+      : (existing.minOrderAmount ? Number(existing.minOrderAmount) : null);
+    const maxRedemptions = dto.maxRedemptions !== undefined ? dto.maxRedemptions : existing.maxRedemptions;
+
+    if (discountValue <= 0) {
+      throw new BadRequestException('Discount value must be greater than 0');
+    }
+
+    if (discountType === DiscountType.PERCENTAGE && discountValue > 100) {
+      throw new BadRequestException('Percentage discount value cannot exceed 100');
+    }
+
+    if (minOrderAmount !== null && minOrderAmount < 0) {
+      throw new BadRequestException('Minimum order amount cannot be negative');
+    }
+
+    if (maxRedemptions !== null && maxRedemptions < 0) {
+      throw new BadRequestException('Maximum redemptions cannot be negative');
+    }
+
+    if (dto.expiresAt !== undefined && dto.expiresAt !== null && new Date(dto.expiresAt).getTime() <= Date.now()) {
+      throw new BadRequestException('Expiration date must be in the future');
+    }
+
     return this.prisma.coupon.update({
       where: { id },
       data: { ...dto },

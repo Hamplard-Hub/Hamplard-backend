@@ -32,7 +32,7 @@ export class CreateCouponDto {
   })
   @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(0)
   maxRedemptions?: number;
 
   @ApiProperty({
