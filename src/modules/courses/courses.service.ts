@@ -106,7 +106,12 @@ export class CoursesService {
 
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.ACTIVE, approvedAt: new Date() },
+      data: {
+        status: CourseStatus.ACTIVE,
+        approvedAt: new Date(),
+        rejectionReason: null,
+        rejectedAt: null,
+      },
     });
 
     // Index the approved course into the search engine
@@ -139,7 +144,11 @@ export class CoursesService {
 
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.DRAFT },
+      data: {
+        status: CourseStatus.DRAFT,
+        rejectionReason: reason,
+        rejectedAt: new Date(),
+      },
     });
 
     const instructor = await this.prisma.user.findUnique({

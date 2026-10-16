@@ -66,6 +66,28 @@ export class CoursesController {
   // INSTRUCTOR ROUTES
   // ----------------------------------------------------------
 
+  @Get('instructor/mine')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List all courses created by the authenticated instructor' })
+  @ApiQuery({ name: 'status', required: false, enum: CourseStatus })
+  @ApiQuery({ name: 'page',   required: false, type: Number })
+  @ApiQuery({ name: 'limit',  required: false, type: Number })
+  getMyCourses(
+    @CurrentUser('stellarAddress') instructorAddress: string,
+    @Query('status') status?: CourseStatus,
+    @Query('page')   page?: number,
+    @Query('limit')  limit?: number,
+  ) {
+    return this.coursesService.findAll({
+      instructorAddress,
+      status,
+      page,
+      limit,
+    });
+  }
+
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)

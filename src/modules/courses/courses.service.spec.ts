@@ -4,6 +4,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService } from '../search/search.service';
+import { CacheService } from '../../common/cache/cache.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CourseStatus } from '@prisma/client';
 
@@ -37,6 +38,10 @@ const mockSearchService = {
   }),
 };
 
+const mockCacheService = {
+  invalidateNamespace: jest.fn().mockResolvedValue(undefined),
+};
+
 const MOCK_COURSE = {
   id:                'COURSE-TAILORING-001',
   instructorAddress: 'GABC',
@@ -48,6 +53,8 @@ const MOCK_COURSE = {
   status:            CourseStatus.ACTIVE,
   totalEnrollments:  0,
   totalRevenue:      0,
+  rejectionReason:   null,
+  rejectedAt:        null,
   createdAt:         new Date(),
   updatedAt:         new Date(),
 };
@@ -61,7 +68,8 @@ describe('CoursesService', () => {
         CoursesService,
         { provide: PrismaService,       useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotifications },
-        { provide: SearchService, useValue: mockSearchService },
+        { provide: SearchService,        useValue: mockSearchService },
+        { provide: CacheService,         useValue: mockCacheService },
         FeeCalculatorService,
       ],
     }).compile();
@@ -116,12 +124,61 @@ describe('CoursesService', () => {
         instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
       };
       mockPrisma.course.findUnique.mockResolvedValue(pendingCourse);
-      mockPrisma.course.update.mockResolvedValue({ ...pendingCourse, status: CourseStatus.ACTIVE });
+      mockPrisma.course.update.mockResolvedValue({
+        ...pendingCourse,
+        status: CourseStatus.ACTIVE,
+        rejectionReason: null,
+        rejectedAt: null,
+      });
       mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'instructor@test.com' });
 
       const result = await service.approve('COURSE-TAILORING-001', 'admin-id');
       expect(result.status).toBe(CourseStatus.ACTIVE);
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'COURSE-TAILORING-001' },
+        data: {
+          status: CourseStatus.ACTIVE,
+          approvedAt: expect.any(Date),
+          rejectionReason: null,
+          rejectedAt: null,
+        },
+      });
       expect(mockNotifications.notifyUser).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears stored rejectionReason and rejectedAt when re-approving a previously rejected course', async () => {
+      const previouslyRejectedPendingCourse = {
+        ...MOCK_COURSE,
+        status: CourseStatus.PENDING,
+        rejectionReason: 'Missing intro video',
+        rejectedAt: new Date('2026-08-20T10:00:00Z'),
+        modules: [],
+        _count: { enrollments: 0 },
+        instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
+      };
+      mockPrisma.course.findUnique.mockResolvedValue(previouslyRejectedPendingCourse);
+      mockPrisma.course.update.mockResolvedValue({
+        ...previouslyRejectedPendingCourse,
+        status: CourseStatus.ACTIVE,
+        approvedAt: new Date(),
+        rejectionReason: null,
+        rejectedAt: null,
+      });
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'instructor@test.com' });
+
+      const result = await service.approve('COURSE-TAILORING-001', 'admin-id');
+      expect(result.status).toBe(CourseStatus.ACTIVE);
+      expect(result.rejectionReason).toBeNull();
+      expect(result.rejectedAt).toBeNull();
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'COURSE-TAILORING-001' },
+        data: {
+          status: CourseStatus.ACTIVE,
+          approvedAt: expect.any(Date),
+          rejectionReason: null,
+          rejectedAt: null,
+        },
+      });
     });
 
     it('throws ForbiddenException if course is not pending', async () => {
@@ -143,7 +200,7 @@ describe('CoursesService', () => {
   // ----------------------------------------------------------
 
   describe('reject()', () => {
-    it('rejects a pending course and reverts to DRAFT', async () => {
+    it('rejects a pending course, persists rejectionReason and rejectedAt, and reverts to DRAFT', async () => {
       const pendingCourse = {
         ...MOCK_COURSE,
         status: CourseStatus.PENDING,
@@ -151,12 +208,28 @@ describe('CoursesService', () => {
         _count: { enrollments: 0 },
         instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
       };
+      const rejectedAt = new Date();
       mockPrisma.course.findUnique.mockResolvedValue(pendingCourse);
-      mockPrisma.course.update.mockResolvedValue({ ...pendingCourse, status: CourseStatus.DRAFT });
+      mockPrisma.course.update.mockResolvedValue({
+        ...pendingCourse,
+        status: CourseStatus.DRAFT,
+        rejectionReason: 'Missing intro video',
+        rejectedAt,
+      });
       mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'inst@test.com' });
 
       const result = await service.reject('COURSE-TAILORING-001', 'admin-id', 'Missing intro video');
       expect(result.status).toBe(CourseStatus.DRAFT);
+      expect(result.rejectionReason).toBe('Missing intro video');
+      expect(result.rejectedAt).toBe(rejectedAt);
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'COURSE-TAILORING-001' },
+        data: {
+          status: CourseStatus.DRAFT,
+          rejectionReason: 'Missing intro video',
+          rejectedAt: expect.any(Date),
+        },
+      });
       expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
         'user-1',
         'COURSE_REJECTED',
@@ -172,9 +245,12 @@ describe('CoursesService', () => {
   // ----------------------------------------------------------
 
   describe('findOne()', () => {
-    it('returns course when found', async () => {
+    it('returns course when found (including rejectionReason)', async () => {
       mockPrisma.course.findUnique.mockResolvedValue({
         ...MOCK_COURSE,
+        status: CourseStatus.DRAFT,
+        rejectionReason: 'Audio quality is too low in Module 2',
+        rejectedAt: new Date('2026-08-20T12:00:00Z'),
         modules: [],
         _count: { enrollments: 5 },
         instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
@@ -183,6 +259,7 @@ describe('CoursesService', () => {
       const result = await service.findOne('COURSE-TAILORING-001');
       expect(result.id).toBe('COURSE-TAILORING-001');
       expect(result._count.enrollments).toBe(5);
+      expect(result.rejectionReason).toBe('Audio quality is too low in Module 2');
     });
 
     it('throws NotFoundException when course not found', async () => {
@@ -232,6 +309,36 @@ describe('CoursesService', () => {
         'COURSE-TAILORING-001', 'instructor-id', 'tx-hash-abc',
       );
       expect(result.status).toBe(CourseStatus.PENDING);
+    });
+
+    it('preserves rejectionReason and rejectedAt across submitForReview until approved', async () => {
+      const rejectedAt = new Date('2026-08-20T10:00:00Z');
+      const rejectedDraftCourse = {
+        ...MOCK_COURSE,
+        status: CourseStatus.DRAFT,
+        rejectionReason: 'Needs better lesson descriptions',
+        rejectedAt,
+        modules: [],
+        _count: { enrollments: 0 },
+        instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
+      };
+      mockPrisma.course.findUnique.mockResolvedValue(rejectedDraftCourse);
+      mockPrisma.course.update.mockImplementation(async ({ data }) => ({
+        ...rejectedDraftCourse,
+        ...data,
+      }));
+
+      const submitted = await service.submitForReview(
+        'COURSE-TAILORING-001', 'instructor-id', 'tx-hash-resubmit',
+      );
+
+      expect(submitted.status).toBe(CourseStatus.PENDING);
+      expect(submitted.rejectionReason).toBe('Needs better lesson descriptions');
+      expect(submitted.rejectedAt).toEqual(rejectedAt);
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'COURSE-TAILORING-001' },
+        data: { status: CourseStatus.PENDING, txHash: 'tx-hash-resubmit' },
+      });
     });
 
     it('throws ForbiddenException if course is not a DRAFT', async () => {

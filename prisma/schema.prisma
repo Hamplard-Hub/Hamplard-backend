@@ -420,6 +420,8 @@ model Course {
   totalReviews        Int          @default(0)
   txHash              String?      // on-chain registration tx
   approvedAt          DateTime?
+  rejectionReason     String?
+  rejectedAt          DateTime?
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
 
@@ -554,7 +556,7 @@ model QuizSession {
   result          Json?
   autoSubmitted   Boolean           @default(false)
   createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  updatedAt       DateTime          @default(now())
 
   lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -935,7 +937,7 @@ model LiveSession {
   status            LiveSessionStatus @default(SCHEDULED)
   reminderSent      Boolean           @default(false)
   createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  updatedAt         DateTime          @default(now())
 
   course            Course            @relation(fields: [courseId], references: [id])
 
@@ -1236,7 +1238,7 @@ model DiscussionComment {
   reviewStatus    CommentReviewStatus  @default(PENDING)
   moderationNotes String?
   createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
+  updatedAt       DateTime             @default(now())
 
   // Relations
   author User @relation(fields: [authorId], references: [id])
@@ -1307,7 +1309,7 @@ model Bundle {
   thumbnailUrl      String?
   isActive          Boolean  @default(true)
   createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  updatedAt         DateTime @default(now())
 
   // Relations
   instructor  User               @relation("InstructorBundles", fields: [instructorAddress], references: [stellarAddress])
@@ -1459,7 +1461,7 @@ model Tag {
   label      String            // display label, e.g. "Web Design"
   usageCount Int      @default(0)
   createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  updatedAt  DateTime @default(now())
 
   // Relations
   courses CourseTag[]
@@ -1688,7 +1690,7 @@ model CourseDraft {
   version           Int      @default(1)
   lastSavedAt       DateTime @default(now())
   createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  updatedAt         DateTime @default(now())
 
   instructor User @relation("InstructorCourseDrafts", fields: [instructorId], references: [id], onDelete: Cascade)
 
@@ -1718,7 +1720,7 @@ model LearningPath {
   createdById  String
   publishedAt  DateTime?
   createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  updatedAt    DateTime           @default(now())
 
   // Relations
   createdBy User                 @relation("LearningPathCreator", fields: [createdById], references: [id])
@@ -1812,7 +1814,7 @@ model TaxRate {
   description String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @default(now())
 
   @@map("tax_rates")
 }
