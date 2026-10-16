@@ -5,7 +5,8 @@ import * as ffmpeg from 'fluent-ffmpeg';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ConfigService } from '@nestjs/config';
-import { CdnService, UploadResult } from './cdn.service';
+import { CdnService } from './cdn.service';
+import { UploadResult } from './uploads.service';
 
 export interface TranscodeJobData {
   videoId: string;

@@ -39,6 +39,27 @@ describe('UploadsService (CDN integration)', () => {
           },
         },
         {
+          provide: require('./video-transcode.service').VideoTranscodeService,
+          useValue: {
+            validateVideoFormat: jest.fn(),
+            addTranscodeJob: jest.fn().mockResolvedValue('job-1'),
+            getJobStatus: jest.fn(),
+          },
+        },
+        {
+          provide: require('./video-thumbnail.service').VideoThumbnailService,
+          useValue: {
+            extractThumbnail: jest.fn().mockResolvedValue({}),
+          },
+        },
+        {
+          provide: require('../../common/prisma/prisma.service').PrismaService,
+          useValue: {
+            cdnInvalidationRequest: { create: jest.fn(), update: jest.fn(), findUnique: jest.fn(), findMany: jest.fn() },
+            fileScanResult: { upsert: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
+          },
+        },
+        {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string, defaultValue?: unknown) => {

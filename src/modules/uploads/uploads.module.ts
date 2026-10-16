@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { UploadsService } from './uploads.service';
+import { UploadsController } from './uploads.controller';
 import { CdnService } from './cdn.service';
 import { CdnController } from './cdn.controller';
 import { VirusScanService } from './virus-scan.service';
@@ -13,7 +14,7 @@ import { VideoThumbnailService } from './video-thumbnail.service';
       name: TRANSCODE_QUEUE,
     }),
   ],
-  controllers: [CdnController],
+  controllers: [CdnController, UploadsController],
   providers: [
     UploadsService,
     CdnService,

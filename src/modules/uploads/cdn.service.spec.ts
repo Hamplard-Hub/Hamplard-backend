@@ -17,7 +17,36 @@ describe('CdnService', () => {
     CDN_SIGNED_URL_TTL_SECONDS: 3600,
   };
 
+  let mockPrisma: any;
+  let records: any[];
+
   beforeEach(async () => {
+    records = [];
+    mockPrisma = {
+      cdnInvalidationRequest: {
+        create: jest.fn().mockImplementation(({ data }) => {
+          const rec = { ...data };
+          records.push(rec);
+          return Promise.resolve(rec);
+        }),
+        update: jest.fn().mockImplementation(({ where, data }) => {
+          const idx = records.findIndex((r) => r.id === where.id);
+          if (idx !== -1) {
+            records[idx] = { ...records[idx], ...data };
+            return Promise.resolve(records[idx]);
+          }
+          return Promise.resolve(data);
+        }),
+        findUnique: jest.fn().mockImplementation(({ where }) => {
+          const rec = records.find((r) => r.id === where.id);
+          return Promise.resolve(rec || null);
+        }),
+        findMany: jest.fn().mockImplementation(() => {
+          return Promise.resolve([...records].sort((a, b) => b.requestedAt.getTime() - a.requestedAt.getTime()));
+        }),
+      },
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CdnService,
@@ -28,6 +57,10 @@ describe('CdnService', () => {
               configMap[key] !== undefined ? configMap[key] : defaultValue,
             ),
           },
+        },
+        {
+          provide: require('../../common/prisma/prisma.service').PrismaService,
+          useValue: mockPrisma,
         },
       ],
     }).compile();
@@ -117,15 +150,14 @@ describe('CdnService', () => {
         '/uploads/videos/a.mp4',
         '/uploads/thumbs/b.jpg',
       ]);
-      expect(service.getInvalidationRequest(request.id)).toEqual(request);
-      expect(service.listInvalidationRequests()).toHaveLength(1);
+      expect(await service.getInvalidationRequest(request.id)).toEqual(request);
+      expect(await service.listInvalidationRequests()).toHaveLength(1);
     });
 
     it('tracks failed invalidation when purge endpoint errors', async () => {
       configMap.CDN_PURGE_URL = 'https://cdn.hamplard.com/api/purge';
       mockedAxios.post.mockRejectedValueOnce(new Error('purge down'));
 
-      // Rebuild service so ConfigService sees purge URL
       const module: TestingModule = await Test.createTestingModule({
         providers: [
           CdnService,
@@ -136,6 +168,10 @@ describe('CdnService', () => {
                 configMap[key] !== undefined ? configMap[key] : defaultValue,
               ),
             },
+          },
+          {
+            provide: require('../../common/prisma/prisma.service').PrismaService,
+            useValue: mockPrisma,
           },
         ],
       }).compile();

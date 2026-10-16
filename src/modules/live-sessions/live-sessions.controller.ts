@@ -41,6 +41,18 @@ export class LiveSessionsController {
     return this.liveSessionsService.cancelSession(req.user, id);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/rsvp')
+  async rsvpToSession(@Req() req: any, @Param('id') id: string) {
+    return this.liveSessionsService.rsvpToSession(req.user, id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id/rsvp')
+  async cancelRsvp(@Req() req: any, @Param('id') id: string) {
+    return this.liveSessionsService.cancelRsvp(req.user, id);
+  }
+
   @Get('upcoming')
   async getUpcomingSessions(
     @Query('courseId') courseId?: string,

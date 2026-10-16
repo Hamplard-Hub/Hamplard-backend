@@ -8,6 +8,8 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
+import { PrismaService } from '../../common/prisma/prisma.service';
+
 export type CdnAssetVisibility = 'public' | 'private';
 
 export interface CdnUrlOptions {
@@ -52,9 +54,11 @@ export class CdnService {
   private readonly originBaseUrl: string;
   private readonly signingSecret: string;
   private readonly defaultSignedTtl: number;
-  private readonly invalidations = new Map<string, CacheInvalidationRequest>();
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
     this.cdnBaseUrl = this.stripTrailingSlash(
       this.config.get<string>('CDN_BASE_URL', 'https://cdn.hamplard.com'),
     );
@@ -196,13 +200,21 @@ export class CdnService {
     }
 
     const normalized = paths.map((p) => this.normalizePath(p));
-    const request: CacheInvalidationRequest = {
-      id: crypto.randomUUID(),
-      paths: normalized,
-      status: 'pending',
-      requestedAt: new Date(),
-    };
-    this.invalidations.set(request.id, request);
+    const id = crypto.randomUUID();
+    const requestedAt = new Date();
+
+    const record = await this.prisma.cdnInvalidationRequest.create({
+      data: {
+        id,
+        paths: JSON.stringify(normalized),
+        status: 'pending',
+        requestedAt,
+      },
+    });
+
+    let status: 'completed' | 'failed' = 'completed';
+    let completedAt: Date | undefined = new Date();
+    let errorMsg: string | undefined = undefined;
 
     try {
       const purgeUrl = this.config.get<string>('CDN_PURGE_URL');
@@ -219,32 +231,64 @@ export class CdnService {
         );
       }
 
-      request.status = 'completed';
-      request.completedAt = new Date();
       this.logger.log(
-        `CDN cache invalidation completed: ${request.id} (${normalized.length} paths)`,
+        `CDN cache invalidation completed: ${id} (${normalized.length} paths)`,
       );
     } catch (error) {
-      request.status = 'failed';
-      request.completedAt = new Date();
-      request.error = error?.message ?? 'Unknown purge error';
+      status = 'failed';
+      completedAt = new Date();
+      errorMsg = error?.message ?? 'Unknown purge error';
       this.logger.warn(
-        `CDN cache invalidation failed: ${request.id} — ${request.error}`,
+        `CDN cache invalidation failed: ${id} — ${errorMsg}`,
       );
     }
 
-    this.invalidations.set(request.id, request);
-    return request;
+    const updated = await this.prisma.cdnInvalidationRequest.update({
+      where: { id },
+      data: {
+        status,
+        completedAt,
+        error: errorMsg,
+      },
+    });
+
+    return {
+      id: updated.id,
+      paths: JSON.parse(updated.paths),
+      status: updated.status as 'pending' | 'completed' | 'failed',
+      requestedAt: updated.requestedAt,
+      completedAt: updated.completedAt ?? undefined,
+      error: updated.error ?? undefined,
+    };
   }
 
-  getInvalidationRequest(id: string): CacheInvalidationRequest | undefined {
-    return this.invalidations.get(id);
+  async getInvalidationRequest(id: string): Promise<CacheInvalidationRequest | undefined> {
+    const record = await this.prisma.cdnInvalidationRequest.findUnique({
+      where: { id },
+    });
+    if (!record) return undefined;
+    return {
+      id: record.id,
+      paths: JSON.parse(record.paths),
+      status: record.status as 'pending' | 'completed' | 'failed',
+      requestedAt: record.requestedAt,
+      completedAt: record.completedAt ?? undefined,
+      error: record.error ?? undefined,
+    };
   }
 
-  listInvalidationRequests(): CacheInvalidationRequest[] {
-    return Array.from(this.invalidations.values()).sort(
-      (a, b) => b.requestedAt.getTime() - a.requestedAt.getTime(),
-    );
+  async listInvalidationRequests(): Promise<CacheInvalidationRequest[]> {
+    const records = await this.prisma.cdnInvalidationRequest.findMany({
+      orderBy: { requestedAt: 'desc' },
+    });
+    return records.map((record) => ({
+      id: record.id,
+      paths: JSON.parse(record.paths),
+      status: record.status as 'pending' | 'completed' | 'failed',
+      requestedAt: record.requestedAt,
+      completedAt: record.completedAt ?? undefined,
+      error: record.error ?? undefined,
+    }));
   }
 
   /**

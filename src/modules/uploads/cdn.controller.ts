@@ -59,14 +59,14 @@ export class CdnController {
 
   @Get('invalidations')
   @ApiOperation({ summary: 'List tracked CDN cache invalidation requests' })
-  listInvalidations() {
+  async listInvalidations() {
     return this.cdnService.listInvalidationRequests();
   }
 
   @Get('invalidations/:id')
   @ApiOperation({ summary: 'Get a CDN cache invalidation request by id' })
-  getInvalidation(@Param('id') id: string) {
-    const request = this.cdnService.getInvalidationRequest(id);
+  async getInvalidation(@Param('id') id: string) {
+    const request = await this.cdnService.getInvalidationRequest(id);
     if (!request) {
       throw new NotFoundException(`Invalidation request ${id} not found`);
     }

@@ -75,7 +75,11 @@ export class LiveSessionsService {
   async updateSession(user: any, sessionId: string, dto: UpdateSessionDto) {
     const session = await this.prisma.liveSession.findUnique({
       where: { id: sessionId },
-      include: { course: true },
+      include: {
+        course: {
+          include: { instructor: true },
+        },
+      },
     });
 
     if (!session) {
@@ -84,8 +88,7 @@ export class LiveSessionsService {
 
     if (
       session.course.instructorAddress !== user.stellarAddress &&
-      session.instructorAddress !== user.stellarAddress &&
-      session.course.instructorAddress !== user.id
+      session.course.instructor.id !== user.id
     ) {
       throw new ForbiddenException('Only the session instructor can update session details');
     }
@@ -130,6 +133,87 @@ export class LiveSessionsService {
   async cancelSession(user: any, sessionId: string) {
     return this.updateSession(user, sessionId, {
       status: LiveSessionStatus.CANCELLED,
+    });
+  }
+
+  /**
+   * RSVP to a live session.
+   */
+  async rsvpToSession(user: any, sessionId: string) {
+    const session = await this.prisma.liveSession.findUnique({
+      where: { id: sessionId },
+      include: {
+        rsvps: true,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Live session not found');
+    }
+
+    // Verify enrollment
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: {
+        studentId_courseId: {
+          studentId: user.id,
+          courseId: session.courseId,
+        },
+      },
+    });
+
+    if (!enrollment) {
+      throw new ForbiddenException('Only enrolled students can RSVP to live sessions');
+    }
+
+    // Check capacity
+    const rsvpCount = await this.prisma.liveSessionRsvp.count({
+      where: { sessionId },
+    });
+
+    if (rsvpCount >= session.capacity) {
+      throw new ConflictException('Live session is full');
+    }
+
+    return this.prisma.liveSessionRsvp.create({
+      data: {
+        sessionId,
+        studentId: user.id,
+      },
+    });
+  }
+
+  /**
+   * Cancel an RSVP to a live session.
+   */
+  async cancelRsvp(user: any, sessionId: string) {
+    const session = await this.prisma.liveSession.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Live session not found');
+    }
+
+    const rsvp = await this.prisma.liveSessionRsvp.findUnique({
+      where: {
+        sessionId_studentId: {
+          sessionId,
+          studentId: user.id,
+        },
+      },
+    });
+
+    if (!rsvp) {
+      throw new NotFoundException('RSVP not found');
+    }
+
+    return this.prisma.liveSessionRsvp.delete({
+      where: {
+        sessionId_studentId: {
+          sessionId,
+          studentId: user.id,
+        },
+      },
     });
   }
 

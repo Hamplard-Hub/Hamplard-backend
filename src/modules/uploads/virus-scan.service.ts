@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../../common/prisma/prisma.service';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const NodeClam = require('clamscan');
@@ -24,10 +25,12 @@ export interface ScanResult {
 export class VirusScanService implements OnModuleInit {
   private readonly logger = new Logger(VirusScanService.name);
   private clamscan: any;
-  private readonly results = new Map<string, ScanResult>();
   private isEnabled = true;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   async onModuleInit() {
     this.isEnabled = this.config.get<boolean>('VIRUS_SCAN_ENABLED', true);
@@ -55,45 +58,72 @@ export class VirusScanService implements OnModuleInit {
   async scanFile(fileId: string, buffer: Buffer): Promise<void> {
     const maxRetries = this.config.get<number>('VIRUS_SCAN_MAX_RETRIES', 3);
 
-    const result: ScanResult = {
-      fileId,
-      status: 'pending',
-      startedAt: new Date(),
-      attempts: 0,
-    };
-    this.results.set(fileId, result);
+    await this.prisma.fileScanResult.upsert({
+      where: { fileId },
+      update: {
+        status: 'pending',
+        startedAt: new Date(),
+        completedAt: null,
+        details: null,
+        attempts: 0,
+      },
+      create: {
+        fileId,
+        status: 'pending',
+        startedAt: new Date(),
+        attempts: 0,
+      },
+    });
 
     if (!this.isEnabled || !this.clamscan) {
       this.logger.warn(`Skipping scan for ${fileId}: scanner unavailable`);
-      result.status = 'clean';
-      result.completedAt = new Date();
-      result.details = 'Scanner bypassed';
-      this.results.set(fileId, result);
+      await this.prisma.fileScanResult.update({
+        where: { fileId },
+        data: {
+          status: 'clean',
+          completedAt: new Date(),
+          details: 'Scanner bypassed',
+        },
+      });
       return;
     }
 
-    result.status = 'scanning';
-    this.results.set(fileId, result);
+    await this.prisma.fileScanResult.update({
+      where: { fileId },
+      data: { status: 'scanning' },
+    });
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        result.attempts = attempt;
+        await this.prisma.fileScanResult.update({
+          where: { fileId },
+          data: { attempts: attempt },
+        });
 
         const { isInfected, viruses } = await this.clamscan.scanBuffer(buffer);
 
         if (isInfected) {
-          result.status = 'infected';
-          result.completedAt = new Date();
-          result.details = viruses.join(', ');
-          this.results.set(fileId, result);
+          const details = viruses.join(', ');
+          await this.prisma.fileScanResult.update({
+            where: { fileId },
+            data: {
+              status: 'infected',
+              completedAt: new Date(),
+              details,
+            },
+          });
 
-          this.logger.warn(`Malware detected in file ${fileId}: ${result.details}`);
+          this.logger.warn(`Malware detected in file ${fileId}: ${details}`);
           throw new BadRequestException('Malware detected in uploaded file');
         }
 
-        result.status = 'clean';
-        result.completedAt = new Date();
-        this.results.set(fileId, result);
+        await this.prisma.fileScanResult.update({
+          where: { fileId },
+          data: {
+            status: 'clean',
+            completedAt: new Date(),
+          },
+        });
         this.logger.log(`File ${fileId} scanned: clean`);
         return;
       } catch (error) {
@@ -104,10 +134,14 @@ export class VirusScanService implements OnModuleInit {
         this.logger.warn(`Scan attempt ${attempt} failed for ${fileId}: ${error.message}`);
 
         if (attempt === maxRetries) {
-          result.status = 'error';
-          result.completedAt = new Date();
-          result.details = error.message;
-          this.results.set(fileId, result);
+          await this.prisma.fileScanResult.update({
+            where: { fileId },
+            data: {
+              status: 'error',
+              completedAt: new Date(),
+              details: error.message,
+            },
+          });
           this.logger.error(`Exhausted retries scanning ${fileId}`);
           throw new BadRequestException('File scanning failed due to safety timeout');
         }
@@ -117,7 +151,18 @@ export class VirusScanService implements OnModuleInit {
     }
   }
 
-  getScanStatus(fileId: string): ScanResult | undefined {
-    return this.results.get(fileId);
+  async getScanStatus(fileId: string): Promise<ScanResult | undefined> {
+    const record = await this.prisma.fileScanResult.findUnique({
+      where: { fileId },
+    });
+    if (!record) return undefined;
+    return {
+      fileId: record.fileId,
+      status: record.status as ScanStatus,
+      startedAt: record.startedAt,
+      completedAt: record.completedAt ?? undefined,
+      details: record.details ?? undefined,
+      attempts: record.attempts,
+    };
   }
 }
