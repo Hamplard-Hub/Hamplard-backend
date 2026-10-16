@@ -28,8 +28,38 @@ describe('VirusScanService', () => {
     return configMap[key] !== undefined ? configMap[key] : defaultValue;
   });
 
+  let mockPrisma: any;
+  let scanRecords: any[];
+
   beforeEach(async () => {
     mockScanBuffer = jest.fn();
+    scanRecords = [];
+    mockPrisma = {
+      fileScanResult: {
+        upsert: jest.fn().mockImplementation(({ where, update, create }) => {
+          const idx = scanRecords.findIndex((r) => r.fileId === where.fileId);
+          if (idx !== -1) {
+            scanRecords[idx] = { ...scanRecords[idx], ...update };
+            return Promise.resolve(scanRecords[idx]);
+          }
+          const rec = { ...create };
+          scanRecords.push(rec);
+          return Promise.resolve(rec);
+        }),
+        update: jest.fn().mockImplementation(({ where, data }) => {
+          const idx = scanRecords.findIndex((r) => r.fileId === where.fileId);
+          if (idx !== -1) {
+            scanRecords[idx] = { ...scanRecords[idx], ...data };
+            return Promise.resolve(scanRecords[idx]);
+          }
+          return Promise.resolve(data);
+        }),
+        findUnique: jest.fn().mockImplementation(({ where }) => {
+          const rec = scanRecords.find((r) => r.fileId === where.fileId);
+          return Promise.resolve(rec || null);
+        }),
+      },
+    };
 
     NodeClam.mockImplementation(() => ({
       init: jest.fn().mockResolvedValue({
@@ -43,6 +73,10 @@ describe('VirusScanService', () => {
         {
           provide: ConfigService,
           useValue: { get: mockConfigGet },
+        },
+        {
+          provide: require('../../common/prisma/prisma.service').PrismaService,
+          useValue: mockPrisma,
         },
       ],
     }).compile();
@@ -59,7 +93,7 @@ describe('VirusScanService', () => {
     const buffer = Buffer.from('test data');
     await service.scanFile('file-1', buffer);
 
-    const status = service.getScanStatus('file-1');
+    const status = await service.getScanStatus('file-1');
     expect(status?.status).toBe('clean');
     expect(status?.details).toBe('Scanner bypassed');
   });
@@ -69,7 +103,7 @@ describe('VirusScanService', () => {
 
     await service.scanFile('file-2', Buffer.from('safe content'));
 
-    const status = service.getScanStatus('file-2');
+    const status = await service.getScanStatus('file-2');
     expect(status?.status).toBe('clean');
     expect(status?.attempts).toBe(1);
   });
@@ -84,7 +118,7 @@ describe('VirusScanService', () => {
       BadRequestException,
     );
 
-    const status = service.getScanStatus('file-3');
+    const status = await service.getScanStatus('file-3');
     expect(status?.status).toBe('infected');
     expect(status?.details).toContain('EICAR-Test-Signature');
   });
@@ -96,7 +130,7 @@ describe('VirusScanService', () => {
       BadRequestException,
     );
 
-    const status = service.getScanStatus('file-4');
+    const status = await service.getScanStatus('file-4');
     expect(status?.status).toBe('error');
     expect(status?.attempts).toBe(2);
   });
@@ -108,7 +142,7 @@ describe('VirusScanService', () => {
 
     await service.scanFile('file-5', Buffer.from('data'));
 
-    const status = service.getScanStatus('file-5');
+    const status = await service.getScanStatus('file-5');
     expect(status?.status).toBe('clean');
     expect(status?.attempts).toBe(2);
   });

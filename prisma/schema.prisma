@@ -333,6 +333,7 @@ model User {
   dataExportJobs      DataExportJob[]       @relation("DataExportRequester")
   courseBackups       CourseBackup[]        @relation("CourseBackupRequester")
   leaderboardSnapshots LeaderboardSnapshot[]
+  liveSessionRsvps     LiveSessionRsvp[]     @relation("UserLiveSessionRsvps")
 
   @@map("users")
 }
@@ -938,6 +939,7 @@ model LiveSession {
   updatedAt         DateTime          @updatedAt
 
   course            Course            @relation(fields: [courseId], references: [id])
+  rsvps             LiveSessionRsvp[]
 
   @@index([courseId])
   @@index([instructorAddress])
@@ -1836,4 +1838,55 @@ model LeaderboardSnapshot {
   @@index([scope, courseId])
   @@index([userId])
   @@map("leaderboard_snapshots")
+}
+
+// ============================================================
+// LIVE SESSIONS — RSVPs
+// ============================================================
+
+model LiveSessionRsvp {
+  id        String      @id @default(uuid())
+  sessionId String
+  studentId String
+  rsvpedAt  DateTime    @default(now())
+
+  // Relations
+  session   LiveSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student   User        @relation("UserLiveSessionRsvps", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, studentId])
+  @@index([sessionId])
+  @@index([studentId])
+  @@map("live_session_rsvps")
+}
+
+// ============================================================
+// UPLOADS & CDN — Persistence for Invalidation & Virus Scanning
+// ============================================================
+
+model CdnInvalidationRequest {
+  id          String    @id @default(uuid())
+  paths       String    // JSON stringified array of paths
+  status      String    @default("pending") // pending | completed | failed
+  requestedAt DateTime  @default(now())
+  completedAt DateTime?
+  error       String?
+
+  @@index([status])
+  @@index([requestedAt])
+  @@map("cdn_invalidation_requests")
+}
+
+model FileScanResult {
+  id          String    @id @default(uuid())
+  fileId      String    @unique
+  status      String    @default("pending") // pending | scanning | clean | infected | error
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  details     String?
+  attempts    Int       @default(1)
+
+  @@index([fileId])
+  @@index([status])
+  @@map("file_scan_results")
 }

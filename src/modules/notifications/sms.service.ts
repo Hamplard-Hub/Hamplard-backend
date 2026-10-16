@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as crypto from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { SmsStatus, SmsTemplateKey } from '@prisma/client';
 
@@ -142,6 +143,35 @@ export class SmsService {
 
   async getDeliveryStatus(messageId: string) {
     return this.prisma.smsMessage.findUnique({ where: { id: messageId } });
+  }
+
+  /**
+   * Verify HMAC signature of the incoming webhook callback request against SMS_WEBHOOK_SECRET.
+   */
+  verifyWebhookSignature(signature: string | undefined, payload: any): boolean {
+    const secret = this.config.get<string>('SMS_WEBHOOK_SECRET');
+    if (!secret || !signature) {
+      return false;
+    }
+
+    try {
+      const dataToSign = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(dataToSign)
+        .digest('hex');
+
+      const expectedBuf = Buffer.from(expectedSignature, 'utf8');
+      const sigBuf = Buffer.from(signature, 'utf8');
+
+      if (expectedBuf.length !== sigBuf.length) {
+        return false;
+      }
+
+      return crypto.timingSafeEqual(expectedBuf, sigBuf);
+    } catch {
+      return false;
+    }
   }
 
   /** Invoked by the SMS gateway's delivery report (DLR) webhook to update final delivery status. */

@@ -178,7 +178,7 @@ export class UploadsService {
     };
   }
 
-  private validateFile(file: Express.Multer.File) {
+  validateFile(file: Express.Multer.File) {
     if (!file) throw new BadRequestException('No file provided');
 
     if (file.size > MAX_FILE_SIZE_BYTES) {

@@ -1,5 +1,5 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, Post, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiHeader } from '@nestjs/swagger';
 import { SmsService } from './sms.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -38,7 +38,15 @@ export class SmsController {
   @Post('callback')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Delivery status callback invoked by the SMS gateway' })
-  handleCallback(@Body() payload: { id: string; status: string; phoneNumber?: string }) {
+  @ApiHeader({ name: 'X-Webhook-Signature', required: true, description: 'HMAC-SHA256 signature of request payload' })
+  handleCallback(
+    @Headers('x-webhook-signature') signature: string,
+    @Body() payload: { id: string; status: string; phoneNumber?: string },
+  ) {
+    const isValid = this.smsService.verifyWebhookSignature(signature, payload);
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid or missing webhook signature');
+    }
     return this.smsService.handleDeliveryCallback(payload);
   }
 }
