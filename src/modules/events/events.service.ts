@@ -13,6 +13,8 @@ export const EVENT_POLLER_CHECKPOINT_KEY = 'stellar-event-poller';
 /** Number of ledgers to rewind behind the chain tip on a cold start. */
 const COLD_START_LOOKBACK = 10;
 
+/** Max length of the persisted handler error string. */
+const MAX_HANDLER_ERROR_LENGTH = 500;
 /** SchedulerRegistry name of the poll interval (issue #229). */
 export const EVENT_POLLER_INTERVAL_NAME = 'stellar-event-poller';
 
@@ -172,6 +174,13 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
         );
         const events = page.events ?? [];
         for (const event of events) {
+          const isNew = await this.processEvent(event);
+          // Only advance the checkpoint past an event once it has been
+          // durably recorded; a duplicate (already-seen) event is safe to
+          // skip past since its row already exists.
+          if (isNew) {
+            this.lastProcessedLedger = Math.max(this.lastProcessedLedger, event.ledger + 1);
+          }
           if (!event.pagingToken || event.pagingToken === this.lastProcessedCursor) {
             throw new Error('RPC event has no advancing paging token');
           }
@@ -297,23 +306,42 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private async processEvent(event: any) {
+  /**
+   * Persist the raw event and, if it is new, run its handler.
+   *
+   * Returns true when the event was newly inserted (handler was run), false
+   * when it was a duplicate that was skipped.
+   */
+  private async processEvent(event: any): Promise<boolean> {
     const eventName = this.extractEventName(event);
     const payload   = this.extractPayload(event);
 
-    await this.saveRawEvent(eventName, event, payload);
-
-    switch (eventName) {
-      case 'course_registered':    return this.handleCourseRegistered(payload);
-      case 'course_approved':      return this.handleCourseApproved(payload);
-      case 'course_paused':        return this.handleCoursePaused(payload);
-      case 'course_archived':      return this.handleCourseArchived(payload);
-      case 'student_enrolled':     return this.handleStudentEnrolled(payload);
-      case 'course_completed':     return this.handleCourseCompleted(payload);
-      case 'certificate_issued':   return this.handleCertificateIssued(payload);
-      case 'certificate_revoked':  return this.handleCertificateRevoked(payload);
-      default: this.logger.warn(`Unknown event: ${eventName}`);
+    const chainEventId = await this.saveRawEvent(eventName, event, payload);
+    if (chainEventId === null) {
+      // Duplicate event — already ingested and handled on a previous run.
+      return false;
     }
+
+    try {
+      switch (eventName) {
+        case 'course_registered':    await this.handleCourseRegistered(payload); break;
+        case 'course_approved':      await this.handleCourseApproved(payload); break;
+        case 'course_paused':        await this.handleCoursePaused(payload); break;
+        case 'course_archived':      await this.handleCourseArchived(payload); break;
+        case 'student_enrolled':     await this.handleStudentEnrolled(payload); break;
+        case 'course_completed':     await this.handleCourseCompleted(payload); break;
+        case 'certificate_issued':   await this.handleCertificateIssued(payload); break;
+        case 'certificate_revoked':  await this.handleCertificateRevoked(payload); break;
+        default: this.logger.warn(`Unknown event: ${eventName}`);
+      }
+      await this.markEventProcessed(chainEventId, true, null);
+    } catch (error) {
+      const message = error?.message ?? String(error);
+      this.logger.error(`Handler for ${eventName} failed: ${message}`);
+      await this.markEventProcessed(chainEventId, false, message);
+    }
+
+    return true;
   }
 
   // ----------------------------------------------------------
@@ -470,23 +498,94 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     catch { return null; }
   }
 
-  private async saveRawEvent(eventName: string, event: any, payload: any) {
+  /**
+   * Insert the raw event, skipping if it has already been seen.
+   *
+   * Returns the created ChainEvent id, or null when the event was a duplicate
+   * (unique constraint on eventId / txHash+eventIndex).
+   */
+  private async saveRawEvent(
+    eventName: string,
+    event: any,
+    payload: any,
+  ): Promise<string | null> {
     try {
       const courseId = typeof payload === 'string' ? payload :
         Array.isArray(payload) && typeof payload[0] === 'string' ? payload[0] : null;
 
-      await this.prisma.chainEvent.create({
+      const eventId = this.extractEventId(event);
+      const txHash = event.txHash ?? '';
+      const eventIndex = this.extractEventIndex(event);
+
+      const created = await this.prisma.chainEvent.create({
         data: {
           eventName,
           ledger:   event.ledger ?? 0,
-          txHash:   event.txHash ?? '',
+          txHash,
+          eventId,
+          eventIndex,
           payload:  payload ?? {},
           courseId: courseId || undefined,
         },
       });
+      return created.id;
     } catch (error) {
+      // P2002 = unique constraint violation → duplicate event, skip it.
+      if (error?.code === 'P2002') {
+        this.logger.debug(
+          `Skipping duplicate chain event ${this.extractEventId(event)} ` +
+            `(txHash=${event.txHash ?? ''})`,
+        );
+        return null;
+      }
       this.logger.error('Failed to save raw event', error.message);
+      return null;
     }
+  }
+
+  /** Record handler outcome on the raw event row. */
+  private async markEventProcessed(
+    id: string,
+    processed: boolean,
+    handlerError: string | null,
+  ): Promise<void> {
+    try {
+      await this.prisma.chainEvent.update({
+        where: { id },
+        data: {
+          processed,
+          handlerError: handlerError
+            ? handlerError.slice(0, MAX_HANDLER_ERROR_LENGTH)
+            : null,
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to update processed flag for chain event ${id}`,
+        error.message,
+      );
+    }
+  }
+
+  /**
+   * Stable identifier for an RPC event. Prefers the RPC-provided id; falls
+   * back to txHash + event index so older payloads still dedupe.
+   */
+  private extractEventId(event: any): string {
+    if (event?.id) return String(event.id);
+    const txHash = event?.txHash ?? '';
+    const index = this.extractEventIndex(event);
+    return `${txHash}:${index}`;
+  }
+
+  private extractEventIndex(event: any): number {
+    if (typeof event?.eventIndex === 'number') return event.eventIndex;
+    if (typeof event?.index === 'number') return event.index;
+    if (typeof event?.pagingToken === 'string') {
+      const parsed = Number(event.pagingToken);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
   }
 
   async findAll(courseId?: string, page = 1, limit = 20) {

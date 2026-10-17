@@ -39,6 +39,9 @@ describe('EventsService — ledger checkpoint (Issue #80)', () => {
     },
     chainEvent: {
       create: jest.fn(),
+      upsert: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
     },
   };
 
@@ -68,6 +71,9 @@ describe('EventsService — ledger checkpoint (Issue #80)', () => {
     mockPrisma.eventPollerCheckpoint.upsert.mockResolvedValue({});
     mockPrisma.eventPollerCheckpoint.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.chainEvent.create.mockResolvedValue({});
+    mockPrisma.chainEvent.upsert.mockResolvedValue({});
+    mockPrisma.chainEvent.update.mockResolvedValue({});
+    mockPrisma.chainEvent.updateMany.mockResolvedValue({ count: 1 });
   });
 
   describe('onModuleInit — resume from checkpoint', () => {
@@ -124,6 +130,9 @@ describe('EventsService — ledger checkpoint (Issue #80)', () => {
       jest.clearAllMocks();
       mockPrisma.eventPollerCheckpoint.upsert.mockResolvedValue({});
       mockPrisma.chainEvent.create.mockResolvedValue({});
+      mockPrisma.chainEvent.upsert.mockResolvedValue({});
+      mockPrisma.chainEvent.update.mockResolvedValue({});
+      mockPrisma.chainEvent.updateMany.mockResolvedValue({ count: 1 });
     });
 
     it('advances and persists the ledger after processing events', async () => {
@@ -234,6 +243,9 @@ describe('EventsService — ledger checkpoint (Issue #80)', () => {
       await service.onModuleInit();
       jest.clearAllMocks();
       mockPrisma.chainEvent.create.mockResolvedValue({});
+      mockPrisma.chainEvent.upsert.mockResolvedValue({});
+      mockPrisma.chainEvent.update.mockResolvedValue({});
+      mockPrisma.chainEvent.updateMany.mockResolvedValue({ count: 1 });
     });
 
     it('swallows the write error, records the failure and keeps advancing in memory', async () => {
@@ -268,6 +280,58 @@ describe('EventsService — ledger checkpoint (Issue #80)', () => {
       const status = await service.getCheckpointStatus();
       expect(status.consecutiveWriteFailures).toBe(0);
       expect(status.healthy).toBe(true);
+    });
+  });
+
+  describe('pollEvents — idempotent ingestion', () => {
+    beforeEach(async () => {
+      mockPrisma.eventPollerCheckpoint.findUnique.mockResolvedValue(null);
+      mockStellar.getLatestLedger.mockResolvedValue(100);
+      await service.onModuleInit();
+      jest.clearAllMocks();
+      mockPrisma.eventPollerCheckpoint.upsert.mockResolvedValue({});
+      mockPrisma.chainEvent.upsert.mockResolvedValue({});
+      mockPrisma.chainEvent.update.mockResolvedValue({});
+      mockPrisma.chainEvent.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it('upserts events by unique event id instead of always inserting', async () => {
+      mockStellar.fetchContractEvents.mockResolvedValue([
+        { ledger: 105, topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
+      ]);
+
+      await service.pollEvents();
+
+      expect(mockPrisma.chainEvent.create).not.toHaveBeenCalled();
+      expect(mockPrisma.chainEvent.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { eventId: 'evt-1' },
+        }),
+      );
+    });
+
+    it('marks processed after a handler succeeds', async () => {
+      mockStellar.fetchContractEvents.mockResolvedValue([
+        { ledger: 105, topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
+      ]);
+
+      await service.pollEvents();
+
+      expect(mockPrisma.chainEvent.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { eventId: 'evt-1' },
+          data: expect.objectContaining({ processed: true }),
+        }),
+      );
+    });
+
+    it('records handler errors without marking the event processed', async () => {
+      mockStellar.fetchContractEvents.mockResolvedValue([
+        { ledger: 105, topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
+      ]);
+      mockPrisma.chainEvent.update.mockRejectedValueOnce(new Error('handler failed'));
+
+      await expect(service.pollEvents()).resolves.not.toThrow();
     });
   });
 

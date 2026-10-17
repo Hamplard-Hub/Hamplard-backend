@@ -771,8 +771,12 @@ model ChainEvent {
   eventName  String
   ledger     Int
   txHash     String
+  eventIndex Int      @default(0)
+  eventId    String   @unique
   payload    Json
   processed  Boolean  @default(false)
+  processedAt DateTime?
+  handlerError String?
   createdAt  DateTime @default(now())
 
   // Relations
@@ -781,6 +785,7 @@ model ChainEvent {
   @@index([courseId])
   @@index([eventName])
   @@index([processed])
+  @@unique([txHash, eventIndex])
   @@map("chain_events")
 }
 
