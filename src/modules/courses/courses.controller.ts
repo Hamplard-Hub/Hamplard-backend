@@ -10,6 +10,7 @@ import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
 import { CourseStatus, UserRole } from '@prisma/client';
 import { Cacheable } from '../../common/cache/cache.decorator';
 import { HttpCacheInterceptor } from '../../common/cache/cache.interceptor';
@@ -19,9 +20,9 @@ import { HttpCacheInterceptor } from '../../common/cache/cache.interceptor';
 export class CoursesController {
   constructor(private readonly coursesService: CoursesService) {}
 
-  // ----------------------------------------------------------
+  // -------------------------------------------------------
   // PUBLIC ROUTES — no auth needed for browsing
-  // ----------------------------------------------------------
+  // --------------------------------------------------------
 
   @Get()
   @UseInterceptors(HttpCacheInterceptor)
@@ -52,8 +53,16 @@ export class CoursesController {
   getCategories() { return this.coursesService.getCategories(); }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get full course detail including modules and lessons' })
-  findOne(@Param('id') id: string) { return this.coursesService.findOne(id); }
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get course detail (curriculum outline for non-enrolled, full for owner/admin)' })
+  findOne(
+    @Param('id') id: string,
+    @CurrentUser('id') userId?: string,
+    @CurrentUser('role') role?: UserRole,
+  ) {
+    return this.coursesService.findOneForViewer(id, userId, role);
+  }
 
   @Get(':id/checkout')
   @ApiOperation({ summary: 'Get platform fee + regional tax breakdown for checkout' })
@@ -62,9 +71,9 @@ export class CoursesController {
     return this.coursesService.getCheckoutBreakdown(id, region);
   }
 
-  // ----------------------------------------------------------
+  // -------------------------------------------------------
   // INSTRUCTOR ROUTES
-  // ----------------------------------------------------------
+  // --------------------------------------------------------
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -107,9 +116,9 @@ export class CoursesController {
     return this.coursesService.submitForReview(id, userId, body.txHash);
   }
 
-  // ----------------------------------------------------------
+  // --------------------------------------------------------
   // ADMIN ROUTES
-  // ----------------------------------------------------------
+  // --------------------------------------------------------
 
   @Get('admin/pending')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -144,14 +153,14 @@ export class CoursesController {
     return this.coursesService.reject(id, adminId, body.reason);
   }
 
-  // ----------------------------------------------------------
+  // -------------------------------------------------------
   // COURSE PREREQUISITES (issue #24)
-  // ----------------------------------------------------------
+  // --------------------------------------------------------
 
   @Get(':id/prerequisites')
   @ApiOperation({
     summary: 'List the prerequisite courses of a course',
-    description: 'Public read — used by catalog cards and enrollment feedback.',
+    description: 'Public read — used by catalog cards an enrollment feedback.',
   })
   getPrerequisites(@Param('id') id: string) {
     return this.coursesService.getPrerequisites(id);

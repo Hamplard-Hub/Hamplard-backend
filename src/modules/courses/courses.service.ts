@@ -32,13 +32,13 @@ export class CoursesService {
     ]);
   }
 
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
   // CREATE
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
 
   /**
    * Instructor creates a course draft in the backend DB.
-   * The course starts as DRAFT until the instructor submits it for review.
+   * The course starts as Draft until the instructor submits it for review.
    * On submission, status becomes PENDING and admin is notified.
    *
    * Does NOT index into search — only ACTIVE courses are searchable.
@@ -69,16 +69,16 @@ export class CoursesService {
     return course;
   }
 
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
   // SUBMIT FOR REVIEW
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
 
   /**
    * Instructor submits a DRAFT course for admin review → PENDING.
    * Called after the instructor has also registered the course on-chain.
    */
   async submitForReview(courseId: string, instructorId: string, txHash?: string) {
-    const course = await this.findOne(courseId);
+    const course = await this.findOne(courseId, { isAdmin: true });
 
     if (course.status !== CourseStatus.DRAFT) {
       throw new ForbiddenException('Only DRAFT courses can be submitted for review');
@@ -94,12 +94,12 @@ export class CoursesService {
     return updated;
   }
 
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
   // APPROVE / REJECT (admin)
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
 
   async approve(courseId: string, adminId: string) {
-    const course = await this.findOne(courseId);
+    const course = await this.findOne(courseId, { isAdmin: true });
     if (course.status !== CourseStatus.PENDING) {
       throw new ForbiddenException('Only PENDING courses can be approved');
     }
@@ -132,7 +132,7 @@ export class CoursesService {
   }
 
   async reject(courseId: string, adminId: string, reason: string) {
-    const course = await this.findOne(courseId);
+    const course = await this.findOne(courseId, { isAdmin: true });
     if (course.status !== CourseStatus.PENDING) {
       throw new ForbiddenException('Only PENDING courses can be rejected');
     }
@@ -159,9 +159,9 @@ export class CoursesService {
     return updated;
   }
 
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
   // READ
-  // ----------------------------------------------------------
+  // -----------------------------------------------------
 
   async findAll(filters: {
     category?: string;
@@ -203,7 +203,19 @@ export class CoursesService {
     return { data: courses, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
   }
 
-  async findOne(id: string) {
+  /**
+   * Public course detail view.
+   *
+   * - Non-ACTIVE courses are hidden (404) unless the caller is the owner or an admin.
+   * - Owners/admins receive the full course with all lesson content.
+   * - Enrolled students receive the full curriculum.
+   * - Anonymous/non-enrolled callers receive a curriculum outline only
+   *   (title, type, duration, isFree) and content only for isFree lessons.
+   */
+  async findOne(
+    id: string,
+    viewer?: { userId?: string; stellarAddress?: string; isAdmin?: boolean },
+  ) {
     const course = await this.prisma.course.findUnique({
       where: { id },
       include: {
@@ -218,7 +230,80 @@ export class CoursesService {
       },
     });
     if (!course) throw new NotFoundException(`Course ${id} not found`);
-    return course;
+
+    const isOwner =
+      !!viewer?.stellarAddress && viewer.stellarAddress === course.instructorAddress;
+    const isAdmin = !!viewer?.isAdmin;
+
+    // Hide non-ACTIVE courses from everyone except the owner and admins.
+    if (course.status !== CourseStatus.ACTIVE && !isOwner && !isAdmin) {
+      throw new NotFoundException(`Course ${id} not found`);
+    }
+
+    // Owners and admins always get the full view.
+    if (isOwner || isAdmin) {
+      return course;
+    }
+
+    // Enrolled students get the full curriculum.
+    const isEnrolled = await this.isEnrolled(course.id, viewer);
+    if (isEnrolled) {
+      return course;
+    }
+
+    // Anonymous / non-enrolled callers: return a curriculum outline.
+    return this.toPublicOutline(course);
+  }
+
+  /** Returns true when the viewer has an active enrollment in the course. */
+  private async isEnrolled(
+    courseId: string,
+    viewer?: { userId?: string; stellarAddress?: string },
+  ): Promise<boolean> {
+    if (!viewer?.userId && !viewer?.stellarAddress) return false;
+    const enrollment = await this.prisma.enrollment.findFirst({
+      where: {
+        courseId,
+        ...(viewer.userId
+          ? { userId: viewer.userId }
+          : { user: { stellarAddress: viewer.stellarAddress } }),
+      },
+      select: { id: true },
+    });
+    return !!enrollment;
+  }
+
+  /**
+   * Strips paid lesson content from a course, keeping only the outline
+   * fields (title, type, duration, isFree) plus content for free lessons.
+   */
+  private toPublicOutline(course: any) {
+    return {
+      ...course,
+      modules: course.modules.map((module: any) => ({
+        ...module,
+        lessons: module.lessons.map((lesson: any) => {
+          const base = {
+            id: lesson.id,
+            moduleId: lesson.moduleId,
+            title: lesson.title,
+            type: lesson.type,
+            duration: lesson.duration,
+            position: lesson.position,
+            isFree: lesson.isFree,
+          };
+          if (lesson.isFree) {
+            return {
+              ...base,
+              videoUrl: lesson.videoUrl,
+              content: lesson.content,
+              resourceUrl: lesson.resourceUrl,
+            };
+          }
+          return base;
+        }),
+      })),
+    };
   }
 
   async getCategories() {
@@ -232,7 +317,7 @@ export class CoursesService {
   }
 
   async update(courseId: string, instructorId: string, dto: UpdateCourseDto) {
-    const course = await this.findOne(courseId);
+    const course = await this.findOne(courseId, { isAdmin: true });
     if (course.status === CourseStatus.ARCHIVED) {
       throw new ForbiddenException('Cannot update an archived course');
     }
@@ -241,250 +326,44 @@ export class CoursesService {
 
     // Re-index if the course is active (search index should reflect changes)
     if (updated.status === CourseStatus.ACTIVE) {
-      await this.indexCourseForSearch(courseId);
+      await this.indexCourseForSearch(updated.id);
     }
 
     await this.invalidateCourseCaches();
-
     return updated;
   }
 
-  // ----------------------------------------------------------
-  // CHECKOUT
-  // ----------------------------------------------------------
-
-  /** Computes the platform fee + regional tax breakdown for checkout. */
-  async getCheckoutBreakdown(courseId: string, region?: string) {
+  private async indexCourseForSearch(courseId: string): Promise<void> {
     const course = await this.prisma.course.findUnique({
       where: { id: courseId },
-      select: { id: true, title: true, price: true, platformFeePercent: true },
+      include: { instructor: { select: { name: true } } },
     });
+    if (!course) return;
+    const doc: CourseSearchDocument = {
+      id: course.id,
+      title: course.title,
+      description: course.description,
+      category: course.category,
+      level: course.level,
+      instructorName: course.instructor?.name,
+    };
+    await this.searchService.indexCourse(doc);
+  }
+
+  async setPrerequisites(courseId: string, instructorId: string, dto: SetPrerequisitesDto) {
+    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
     if (!course) throw new NotFoundException(`Course ${courseId} not found`);
 
-    return {
-      courseId: course.id,
-      courseTitle: course.title,
-      ...(await this.feeCalculator.computeBreakdown({
-        coursePrice: Number(course.price),
-        platformFeePercent: course.platformFeePercent,
-        region,
-      })),
-    };
-  }
-
-  async updateStats(courseId: string, delta: { enrollments?: number; revenue?: number }) {
-    const course = await this.findOne(courseId);
-    return this.prisma.course.update({
-      where: { id: courseId },
-      data: {
-        totalEnrollments: { increment: delta.enrollments ?? 0 },
-        totalRevenue:     { increment: delta.revenue ?? 0 },
-      },
-    });
-  }
-
-  // ----------------------------------------------------------
-  // SEARCH INDEX HELPERS
-  // ----------------------------------------------------------
-
-  /**
-   * Builds a search document from the course in the database and
-   * syncs it to the Meilisearch index.
-   */
-  private async indexCourseForSearch(courseId: string): Promise<void> {
-    try {
-      const course = await this.prisma.course.findUnique({
-        where: { id: courseId },
-        include: {
-          instructor: { select: { name: true } },
-        },
+    await this.prisma.coursePrerequisite.deleteMany({ where: { courseId } });
+    if (dto.prerequisiteCourseIds.length > 0) {
+      await this.prisma.coursePrerequisite.createMany({
+        data: dto.prerequisiteCourseIds.map((prerequisiteCourseId) => ({
+          courseId,
+          prerequisiteCourseId,
+        })),
       });
-
-      if (!course) {
-        this.logger.warn(`Cannot index course ${courseId}: not found`);
-        return;
-      }
-
-      const doc: CourseSearchDocument = {
-        id: course.id,
-        title: course.title,
-        description: course.description ?? '',
-        category: course.category,
-        level: course.level,
-        language: course.language,
-        instructorAddress: course.instructorAddress,
-        instructorName: course.instructor?.name ?? '',
-        price: Number(course.price),
-        avgRating: course.avgRating,
-        totalEnrollments: course.totalEnrollments,
-        totalReviews: course.totalReviews,
-        thumbnailUrl: course.thumbnailUrl ?? '',
-        status: course.status,
-        lastIndexedAt: 0, // will be set by searchService.indexCourse
-      };
-
-      await this.searchService.indexCourse(doc);
-    } catch (err) {
-      this.logger.error(
-        `Failed to index course ${courseId} for search: ${(err as Error).message}`,
-      );
-    }
-  }
-
-  // ----------------------------------------------------------
-  // COURSE PREREQUISITES (issue #24)
-  // ----------------------------------------------------------
-
-  /**
-   * Lists the prerequisites configured for a course — public read used by
-   * the catalog and by the enrollment pre-check feedback endpoint.
-   */
-  async getPrerequisites(courseId: string) {
-    await this.findOne(courseId);
-    const rows = await this.prisma.coursePrerequisite.findMany({
-      where: { courseId },
-      orderBy: { prerequisiteId: 'asc' },
-      include: {
-        prerequisite: {
-          select: {
-            id: true, title: true, category: true, level: true,
-            thumbnailUrl: true, status: true, totalLessons: true,
-          },
-        },
-      },
-    });
-    return rows.map((r) => r.prerequisite);
-  }
-
-  /**
-   * Replaces the full prerequisite list of a course (PUT semantics).
-   * Guards against self-reference, unknown IDs and cycles so that multiple
-   * chains can coexist while the overall graph stays acyclic.
-   */
-  async setPrerequisites(courseId: string, dto: SetPrerequisitesDto) {
-    await this.findOne(courseId);
-
-    const uniqueIds = [...new Set(dto.prerequisiteIds)];
-    if (uniqueIds.includes(courseId)) {
-      throw new ConflictException('A course cannot be its own prerequisite');
     }
 
-    if (uniqueIds.length) {
-      const courses = await this.prisma.course.findMany({
-        where: { id: { in: uniqueIds } },
-        select: { id: true, title: true },
-      });
-      const missing = uniqueIds.filter((id) => !courses.some((c) => c.id === id));
-      if (missing.length) {
-        throw new NotFoundException(`Unknown prerequisite course ID(s): ${missing.join(', ')}`);
-      }
-    }
-
-    // Simulate the FULL edge set after the replacement.
-    const existing = await this.prisma.coursePrerequisite.findMany({
-      select: { courseId: true, prerequisiteId: true },
-    });
-    const finalEdges = [
-      ...existing.filter((e) => e.courseId !== courseId),
-      ...uniqueIds.map((prerequisiteId) => ({ courseId, prerequisiteId })),
-    ];
-
-    const cycle = this.findCycle(finalEdges);
-    if (cycle) {
-      throw new ConflictException(
-        `Setting these prerequisites would create a circular chain: ${cycle.join(' → ')}`,
-      );
-    }
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.coursePrerequisite.deleteMany({ where: { courseId } });
-      if (uniqueIds.length) {
-        await tx.coursePrerequisite.createMany({
-          data: uniqueIds.map((prerequisiteId) => ({ courseId, prerequisiteId })),
-        });
-      }
-    });
-
-    this.logger.log(
-      `Prerequisites for course ${courseId} replaced: [${uniqueIds.join(', ') || 'none'}]`,
-    );
-    return this.getPrerequisites(courseId);
-  }
-
-  async removePrerequisite(courseId: string, prerequisiteId: string) {
-    const link = await this.prisma.coursePrerequisite.findUnique({
-      where: {
-        courseId_prerequisiteId: { courseId, prerequisiteId },
-      },
-    });
-    if (!link) {
-      throw new NotFoundException(
-        `Course ${courseId} has no prerequisite ${prerequisiteId}`,
-      );
-    }
-    await this.prisma.coursePrerequisite.delete({ where: { id: link.id } });
-    this.logger.log(`Prerequisite removed: ${prerequisiteId} ↛ ${courseId}`);
-    return { message: 'Prerequisite removed successfully' };
-  }
-
-  /**
-   * Detects a directed cycle in the "course requires prerequisite" graph
-   * using an iterative DFS with coloring. Returns the cycle path or null.
-   */
-  private findCycle(
-    edges: Array<{ courseId: string; prerequisiteId: string }>,
-  ): string[] | null {
-    const adjacency = new Map<string, string[]>();
-    for (const e of edges) {
-      if (!adjacency.has(e.courseId)) adjacency.set(e.courseId, []);
-      adjacency.get(e.courseId)!.push(e.prerequisiteId);
-    }
-
-    const WHITE = 0;
-    const GRAY = 1;
-    const BLACK = 2;
-    const color = new Map<string, number>();
-
-    for (const start of adjacency.keys()) {
-      if ((color.get(start) ?? WHITE) !== WHITE) continue;
-
-      // stack holds nodes plus their current path index for backtracking
-      const stack: Array<{ node: string; pathIndex: number }> = [{ node: start, pathIndex: 0 }];
-      const path: string[] = [];
-
-      while (stack.length) {
-        const frame = stack[stack.length - 1];
-        const neighbors = adjacency.get(frame.node) ?? [];
-
-        if (frame.pathIndex === 0) {
-          path.push(frame.node);
-          color.set(frame.node, GRAY);
-        }
-
-        let advanced = false;
-        while (frame.pathIndex < neighbors.length) {
-          const next = neighbors[frame.pathIndex];
-          frame.pathIndex += 1;
-          const nextColor = color.get(next) ?? WHITE;
-
-          if (nextColor === GRAY) {
-            const from = path.indexOf(next);
-            return [...path.slice(from), next];
-          }
-          if (nextColor === WHITE) {
-            stack.push({ node: next, pathIndex: 0 });
-            advanced = true;
-            break;
-          }
-        }
-
-        if (!advanced && frame.pathIndex >= neighbors.length) {
-          color.set(frame.node, BLACK);
-          path.pop();
-          stack.pop();
-        }
-      }
-    }
-    return null;
+    return this.prisma.coursePrerequisite.findMany({ where: { courseId } });
   }
 }
