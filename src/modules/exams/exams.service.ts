@@ -8,7 +8,14 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateExamDto } from './dto/create-exam.dto';
 import { SubmitExamDto } from './dto/submit-exam.dto';
-import { UserRole } from '@prisma/client';
+import { EnrollmentStatus, Prisma, UserRole } from '@prisma/client';
+
+/** Authenticated caller requesting an exam. */
+export interface ExamViewer {
+  id: string;
+  stellarAddress?: string | null;
+  role: UserRole;
+}
 
 @Injectable()
 export class ExamsService {
@@ -63,16 +70,50 @@ export class ExamsService {
   }
 
   /**
-   * Get exam by courseId or examId.
+   * Get exam by courseId (issue #235).
+   * Course owner / ADMIN get the full answer key; everyone else must be
+   * enrolled and receives questions without correctAnswer/explanation.
    */
-  async getExamByCourse(courseId: string) {
+  async getExamByCourse(courseId: string, user: ExamViewer) {
     const exam = await this.prisma.exam.findUnique({
       where: { courseId },
+      include: { course: { select: { instructorAddress: true } } },
     });
     if (!exam) {
       throw new NotFoundException('Exam not found for this course');
     }
-    return exam;
+
+    const { course, ...examData } = exam;
+    const isAdmin = user.role === UserRole.ADMIN;
+    const isOwner =
+      (!!user.stellarAddress && course?.instructorAddress === user.stellarAddress) ||
+      course?.instructorAddress === user.id;
+
+    if (isAdmin || isOwner) {
+      return examData;
+    }
+
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { studentId_courseId: { studentId: user.id, courseId } },
+      select: { status: true },
+    });
+    if (!enrollment || enrollment.status === EnrollmentStatus.REFUNDED) {
+      throw new ForbiddenException('You must be enrolled in this course to view its exam');
+    }
+
+    return { ...examData, questions: this.sanitizeQuestions(examData.questions) };
+  }
+
+  /** Removes answer-key fields from the stored exam questions JSON. */
+  private sanitizeQuestions(questions: Prisma.JsonValue): Prisma.JsonValue {
+    if (!Array.isArray(questions)) return [];
+    return questions.map((q) => {
+      if (!q || typeof q !== 'object' || Array.isArray(q)) return q;
+      const sanitized = { ...(q as Prisma.JsonObject) };
+      delete sanitized.correctAnswer;
+      delete sanitized.explanation;
+      return sanitized;
+    });
   }
 
   async getExamById(examId: string) {

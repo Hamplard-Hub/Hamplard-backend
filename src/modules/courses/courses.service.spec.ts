@@ -6,7 +6,7 @@ import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { CourseStatus } from '@prisma/client';
+import { CourseStatus, UserRole } from '@prisma/client';
 
 const mockPrisma = {
   course: {
@@ -21,8 +21,20 @@ const mockPrisma = {
   user: {
     findUnique: jest.fn(),
   },
+  coursePrerequisite: {
+    findMany:   jest.fn(),
+    findUnique: jest.fn(),
+    delete:     jest.fn(),
+    deleteMany: jest.fn(),
+    createMany: jest.fn(),
+  },
   $transaction: jest.fn(),
 };
+
+// Request users as attached by JwtStrategy (issue #241)
+const OWNER    = { id: 'instructor-id', stellarAddress: 'GABC',  role: UserRole.INSTRUCTOR };
+const NON_OWNER = { id: 'intruder-id',  stellarAddress: 'GXYZ',  role: UserRole.INSTRUCTOR };
+const ADMIN    = { id: 'admin-id',      stellarAddress: 'GADMIN', role: UserRole.ADMIN };
 
 const mockNotifications = {
   notifyUser: jest.fn().mockResolvedValue({}),
@@ -240,7 +252,7 @@ describe('CoursesService', () => {
       mockPrisma.course.update.mockResolvedValue({ ...draftCourse, status: CourseStatus.PENDING });
 
       const result = await service.submitForReview(
-        'COURSE-TAILORING-001', 'instructor-id', 'tx-hash-abc',
+        'COURSE-TAILORING-001', OWNER, 'tx-hash-abc',
       );
       expect(result.status).toBe(CourseStatus.PENDING);
     });
@@ -254,7 +266,7 @@ describe('CoursesService', () => {
         instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
       };
       mockPrisma.course.findUnique.mockResolvedValue(pendingCourse);
-      await expect(service.submitForReview('COURSE-TAILORING-001', 'instructor-id'))
+      await expect(service.submitForReview('COURSE-TAILORING-001', OWNER))
         .rejects.toThrow(ForbiddenException);
     });
   });
@@ -274,6 +286,122 @@ describe('CoursesService', () => {
       const result = await service.getCategories();
       expect(result).toHaveLength(3);
       expect(result[0]).toEqual({ name: 'Tailoring', count: 5 });
+    });
+  });
+
+  // ----------------------------------------------------------
+  // COURSE OWNERSHIP (issue #241)
+  // ----------------------------------------------------------
+
+  describe('course ownership enforcement', () => {
+    const fullCourse = (status: CourseStatus) => ({
+      ...MOCK_COURSE,
+      status,
+      modules: [],
+      _count: { enrollments: 0 },
+      instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
+    });
+
+    describe('assertCourseOwner()', () => {
+      it('allows the instructor whose stellarAddress matches', () => {
+        expect(() => service.assertCourseOwner(MOCK_COURSE, OWNER)).not.toThrow();
+      });
+
+      it('allows an ADMIN who does not own the course', () => {
+        expect(() => service.assertCourseOwner(MOCK_COURSE, ADMIN)).not.toThrow();
+      });
+
+      it('throws ForbiddenException for a non-owner instructor', () => {
+        expect(() => service.assertCourseOwner(MOCK_COURSE, NON_OWNER))
+          .toThrow(ForbiddenException);
+      });
+
+      it('does not treat a missing stellarAddress as a match', () => {
+        const noWallet = { id: 'someone', stellarAddress: null, role: UserRole.INSTRUCTOR };
+        expect(() => service.assertCourseOwner({ instructorAddress: '' }, noWallet))
+          .toThrow(ForbiddenException);
+      });
+    });
+
+    describe('update()', () => {
+      beforeEach(() => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.DRAFT));
+        mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, status: CourseStatus.DRAFT });
+      });
+
+      it('returns 403 for a non-owner instructor and does not write', async () => {
+        await expect(service.update(MOCK_COURSE.id, NON_OWNER, { title: 'Hijacked' } as any))
+          .rejects.toThrow(ForbiddenException);
+        expect(mockPrisma.course.update).not.toHaveBeenCalled();
+      });
+
+      it.each([['owner', OWNER], ['admin', ADMIN]])('succeeds for the %s', async (_label, user) => {
+        await service.update(MOCK_COURSE.id, user, { title: 'New title' } as any);
+        expect(mockPrisma.course.update).toHaveBeenCalledWith({
+          where: { id: MOCK_COURSE.id },
+          data: { title: 'New title' },
+        });
+      });
+    });
+
+    describe('submitForReview()', () => {
+      beforeEach(() => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.DRAFT));
+        mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, status: CourseStatus.PENDING });
+      });
+
+      it('returns 403 for a non-owner instructor and does not write', async () => {
+        await expect(service.submitForReview(MOCK_COURSE.id, NON_OWNER))
+          .rejects.toThrow(ForbiddenException);
+        expect(mockPrisma.course.update).not.toHaveBeenCalled();
+      });
+
+      it.each([['owner', OWNER], ['admin', ADMIN]])('succeeds for the %s', async (_label, user) => {
+        const result = await service.submitForReview(MOCK_COURSE.id, user);
+        expect(result.status).toBe(CourseStatus.PENDING);
+      });
+    });
+
+    describe('setPrerequisites()', () => {
+      beforeEach(() => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
+        mockPrisma.coursePrerequisite.findMany.mockResolvedValue([]);
+        mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
+      });
+
+      it('returns 403 for a non-owner instructor and does not write', async () => {
+        await expect(service.setPrerequisites(MOCK_COURSE.id, NON_OWNER, { prerequisiteIds: [] }))
+          .rejects.toThrow(ForbiddenException);
+        expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it.each([['owner', OWNER], ['admin', ADMIN]])('succeeds for the %s', async (_label, user) => {
+        await expect(service.setPrerequisites(MOCK_COURSE.id, user, { prerequisiteIds: [] }))
+          .resolves.toEqual([]);
+        expect(mockPrisma.coursePrerequisite.deleteMany).toHaveBeenCalledWith({
+          where: { courseId: MOCK_COURSE.id },
+        });
+      });
+    });
+
+    describe('removePrerequisite()', () => {
+      beforeEach(() => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
+        mockPrisma.coursePrerequisite.findUnique.mockResolvedValue({ id: 'link-1' });
+        mockPrisma.coursePrerequisite.delete.mockResolvedValue({ id: 'link-1' });
+      });
+
+      it('returns 403 for a non-owner instructor and does not delete', async () => {
+        await expect(service.removePrerequisite(MOCK_COURSE.id, NON_OWNER, 'PREREQ-1'))
+          .rejects.toThrow(ForbiddenException);
+        expect(mockPrisma.coursePrerequisite.delete).not.toHaveBeenCalled();
+      });
+
+      it.each([['owner', OWNER], ['admin', ADMIN]])('succeeds for the %s', async (_label, user) => {
+        await expect(service.removePrerequisite(MOCK_COURSE.id, user, 'PREREQ-1'))
+          .resolves.toEqual({ message: 'Prerequisite removed successfully' });
+        expect(mockPrisma.coursePrerequisite.delete).toHaveBeenCalledWith({ where: { id: 'link-1' } });
+      });
     });
   });
 });

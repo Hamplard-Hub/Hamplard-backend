@@ -1,15 +1,6 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsArray,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Min,
-  Max,
-  ValidateNested,
-} from 'class-validator';
+import { IsArray, IsNotEmpty, IsString, ValidateNested } from 'class-validator';
 
 export class SingleAnswerDto {
   @ApiProperty({ description: 'The ID of the quiz question' })
@@ -34,15 +25,7 @@ export class SubmitQuizAttemptDto {
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => SingleAnswerDto)
+  // No passThreshold here (#236): the pass mark is read from the lesson record
+  // and the global ValidationPipe (forbidNonWhitelisted) rejects it if sent.
   answers: SingleAnswerDto[];
-
-  @ApiPropertyOptional({
-    description: 'Optional custom passing percentage threshold (0-100). Defaults to 70%.',
-    default: 70,
-  })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Max(100)
-  passThreshold?: number;
 }

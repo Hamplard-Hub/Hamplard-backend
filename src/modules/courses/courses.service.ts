@@ -7,10 +7,17 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
-import { CourseStatus, NotificationType } from '@prisma/client';
+import { CourseStatus, NotificationType, UserRole } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
+
+/** Authenticated caller as attached to the request by JwtStrategy. */
+export interface CourseActor {
+  id: string;
+  stellarAddress?: string | null;
+  role: UserRole;
+}
 
 @Injectable()
 export class CoursesService {
@@ -30,6 +37,22 @@ export class CoursesService {
       this.cache.invalidateNamespace('courses:list'),
       this.cache.invalidateNamespace('courses:categories'),
     ]);
+  }
+
+  /**
+   * Issue #241 — only the course's instructor (matched by stellarAddress or id
+   * against `instructorAddress`) or an ADMIN may mutate a course.
+   */
+  assertCourseOwner(course: { instructorAddress: string }, user: CourseActor): void {
+    if (user.role === UserRole.ADMIN) return;
+
+    const isOwner =
+      (!!user.stellarAddress && user.stellarAddress === course.instructorAddress) ||
+      user.id === course.instructorAddress;
+
+    if (!isOwner) {
+      throw new ForbiddenException('Only the course instructor or an admin can modify this course');
+    }
   }
 
   // ----------------------------------------------------------
@@ -77,8 +100,9 @@ export class CoursesService {
    * Instructor submits a DRAFT course for admin review → PENDING.
    * Called after the instructor has also registered the course on-chain.
    */
-  async submitForReview(courseId: string, instructorId: string, txHash?: string) {
+  async submitForReview(courseId: string, user: CourseActor, txHash?: string) {
     const course = await this.findOne(courseId);
+    this.assertCourseOwner(course, user);
 
     if (course.status !== CourseStatus.DRAFT) {
       throw new ForbiddenException('Only DRAFT courses can be submitted for review');
@@ -231,8 +255,9 @@ export class CoursesService {
     return categories.map((c) => ({ name: c.category, count: c._count.category }));
   }
 
-  async update(courseId: string, instructorId: string, dto: UpdateCourseDto) {
+  async update(courseId: string, user: CourseActor, dto: UpdateCourseDto) {
     const course = await this.findOne(courseId);
+    this.assertCourseOwner(course, user);
     if (course.status === CourseStatus.ARCHIVED) {
       throw new ForbiddenException('Cannot update an archived course');
     }
@@ -361,8 +386,9 @@ export class CoursesService {
    * Guards against self-reference, unknown IDs and cycles so that multiple
    * chains can coexist while the overall graph stays acyclic.
    */
-  async setPrerequisites(courseId: string, dto: SetPrerequisitesDto) {
-    await this.findOne(courseId);
+  async setPrerequisites(courseId: string, user: CourseActor, dto: SetPrerequisitesDto) {
+    const course = await this.findOne(courseId);
+    this.assertCourseOwner(course, user);
 
     const uniqueIds = [...new Set(dto.prerequisiteIds)];
     if (uniqueIds.includes(courseId)) {
@@ -411,7 +437,10 @@ export class CoursesService {
     return this.getPrerequisites(courseId);
   }
 
-  async removePrerequisite(courseId: string, prerequisiteId: string) {
+  async removePrerequisite(courseId: string, user: CourseActor, prerequisiteId: string) {
+    const course = await this.findOne(courseId);
+    this.assertCourseOwner(course, user);
+
     const link = await this.prisma.coursePrerequisite.findUnique({
       where: {
         courseId_prerequisiteId: { courseId, prerequisiteId },

@@ -489,6 +489,10 @@ model Lesson {
   resourceUrl  String?     // downloadable resource
   position     Int         // ordering within the module
   isFree       Boolean     @default(false) // preview lesson
+  // Quiz grading & attempt policy (#236, #238) — enforced server-side only
+  passThreshold          Int  @default(70) // pass percentage (0-100)
+  maxAttempts            Int? // null = unlimited attempts
+  attemptCooldownMinutes Int  @default(0)  // wait between attempts, 0 = none
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 

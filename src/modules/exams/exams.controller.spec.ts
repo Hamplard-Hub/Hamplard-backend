@@ -5,7 +5,14 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Reflector } from '@nestjs/core';
 import { UserRole } from '@prisma/client';
-import { ForbiddenException } from '@nestjs/common';
+import {
+  ExecutionContext,
+  ForbiddenException,
+  INestApplication,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import * as request from 'supertest';
 
 describe('ExamsController', () => {
   let controller: ExamsController;
@@ -96,6 +103,75 @@ describe('ExamsController', () => {
           role: UserRole.INSTRUCTOR,
         }),
       ).rejects.toThrow(ForbiddenException);
+    });
+  });
+});
+
+// ----------------------------------------------------------
+// Issue #235 — GET /exams/course/:courseId requires authentication
+// ----------------------------------------------------------
+
+describe('ExamsController GET /exams/course/:courseId (auth)', () => {
+  let app: INestApplication;
+
+  const mockExamsService = { getExamByCourse: jest.fn() };
+
+  // Stand-in for JwtAuthGuard: no bearer token → 401, otherwise attach a user.
+  const mockJwtGuard = {
+    canActivate: jest.fn((context: ExecutionContext) => {
+      const req = context.switchToHttp().getRequest();
+      if (!req.headers.authorization) throw new UnauthorizedException();
+      req.user = { id: 'student-1', stellarAddress: 'GSTUDENT', role: UserRole.STUDENT };
+      return true;
+    }),
+  };
+
+  beforeAll(async () => {
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      controllers: [ExamsController],
+      providers: [{ provide: ExamsService, useValue: mockExamsService }, Reflector],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue(mockJwtGuard)
+      .compile();
+
+    app = moduleRef.createNestApplication();
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('applies JwtAuthGuard to the handler', () => {
+    const guards = Reflect.getMetadata(
+      GUARDS_METADATA,
+      ExamsController.prototype.getExamByCourse,
+    );
+    expect(guards).toContain(JwtAuthGuard);
+  });
+
+  it('returns 401 for anonymous requests without calling the service', async () => {
+    await request(app.getHttpServer()).get('/exams/course/course-1').expect(401);
+    expect(mockExamsService.getExamByCourse).not.toHaveBeenCalled();
+  });
+
+  it('passes the authenticated user to the service', async () => {
+    mockExamsService.getExamByCourse.mockResolvedValue({ id: 'exam-1', questions: [] });
+
+    await request(app.getHttpServer())
+      .get('/exams/course/course-1')
+      .set('Authorization', 'Bearer token')
+      .expect(200);
+
+    expect(mockExamsService.getExamByCourse).toHaveBeenCalledWith('course-1', {
+      id: 'student-1',
+      stellarAddress: 'GSTUDENT',
+      role: UserRole.STUDENT,
     });
   });
 });

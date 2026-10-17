@@ -57,13 +57,8 @@ export class QuizSessionsService {
     userId: string,
     dto: StartQuizSessionDto,
   ): Promise<QuizSessionStatusResponse> {
-    const lesson = await this.prisma.lesson.findUnique({
-      where: { id: lessonId },
-    });
-
-    if (!lesson) {
-      throw new NotFoundException('Lesson not found');
-    }
+    // Issue #238 — same enrollment / attempt-limit / cooldown gate as direct attempts.
+    await this.quizAttemptsService.assertCanAttempt(lessonId, userId);
 
     const questionCount = await this.prisma.quizQuestion.count({
       where: { lessonId },
@@ -127,10 +122,7 @@ export class QuizSessionsService {
 
     const result = await this.quizAttemptsService.submitQuizAttempt(
       current.lessonId,
-      {
-        answers: dto.answers,
-        passThreshold: dto.passThreshold,
-      },
+      { answers: dto.answers },
       userId,
     );
 
@@ -162,16 +154,25 @@ export class QuizSessionsService {
     }
 
     const answers = dto?.answers ?? [];
-    const passThreshold = dto?.passThreshold ?? 70;
 
-    const result = await this.quizAttemptsService.submitQuizAttempt(
-      session.lessonId,
-      {
-        answers,
-        passThreshold,
-      },
-      userId,
-    );
+    let result: QuizAttemptResult;
+    try {
+      result = await this.quizAttemptsService.submitQuizAttempt(
+        session.lessonId,
+        { answers },
+        userId,
+      );
+    } catch (error) {
+      // Access revoked or attempt limit hit since the session started:
+      // close the session without grading so the sweep doesn't retry forever.
+      if (!(error instanceof ForbiddenException)) throw error;
+      const closed = (await this.prisma.quizSession.update({
+        where: { id: sessionId },
+        data: { status: QuizSessionStatus.EXPIRED, autoSubmitted: true },
+      })) as unknown as QuizSessionRow;
+      this.logger.warn(`Session ${sessionId} expired without grading: ${error.message}`);
+      return this.buildStatusResponse(closed);
+    }
 
     const updated = (await this.prisma.quizSession.update({
       where: { id: sessionId },

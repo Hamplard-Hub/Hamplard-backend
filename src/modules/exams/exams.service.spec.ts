@@ -193,4 +193,91 @@ describe('ExamsService', () => {
       ).rejects.toThrow(NotFoundException);
     });
   });
+
+  // ----------------------------------------------------------
+  // Issue #235 — answer key protection
+  // ----------------------------------------------------------
+
+  describe('getExamByCourse', () => {
+    const storedExam = {
+      id: 'exam-1',
+      courseId: 'course-1',
+      title: 'Certification Exam',
+      passingScore: 70,
+      cooldownHours: 24,
+      questions: [
+        { id: 'q1', question: 'Pick one', options: ['A', 'B'], points: 1, correctAnswer: [0], explanation: 'A is right' },
+        { id: 'q2', question: 'Pick two', options: ['A', 'B', 'C'], points: 2, correctAnswer: [1, 2] },
+      ],
+      course: { instructorAddress: 'GOWNER' },
+    };
+
+    const student = { id: 'student-1', stellarAddress: 'GSTUDENT', role: UserRole.STUDENT };
+    const owner = { id: 'instructor-1', stellarAddress: 'GOWNER', role: UserRole.INSTRUCTOR };
+    const otherInstructor = { id: 'instructor-2', stellarAddress: 'GOTHER', role: UserRole.INSTRUCTOR };
+    const admin = { id: 'admin-1', stellarAddress: null, role: UserRole.ADMIN };
+
+    beforeEach(() => {
+      mockPrisma.exam.findUnique.mockResolvedValue(storedExam);
+    });
+
+    it('strips correctAnswer and explanation for an enrolled student', async () => {
+      mockPrisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
+
+      const exam: any = await service.getExamByCourse('course-1', student);
+
+      expect(exam.questions).toEqual([
+        { id: 'q1', question: 'Pick one', options: ['A', 'B'], points: 1 },
+        { id: 'q2', question: 'Pick two', options: ['A', 'B', 'C'], points: 2 },
+      ]);
+      expect(exam).not.toHaveProperty('course');
+      expect(JSON.stringify(exam)).not.toContain('correctAnswer');
+      expect(mockPrisma.enrollment.findUnique).toHaveBeenCalledWith({
+        where: { studentId_courseId: { studentId: 'student-1', courseId: 'course-1' } },
+        select: { status: true },
+      });
+    });
+
+    it('rejects a student who is not enrolled with 403', async () => {
+      mockPrisma.enrollment.findUnique.mockResolvedValue(null);
+
+      await expect(service.getExamByCourse('course-1', student)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects a refunded enrollment with 403', async () => {
+      mockPrisma.enrollment.findUnique.mockResolvedValue({ status: 'REFUNDED' });
+
+      await expect(service.getExamByCourse('course-1', student)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('treats a non-owner instructor like a student (403 when not enrolled)', async () => {
+      mockPrisma.enrollment.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.getExamByCourse('course-1', otherInstructor),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('returns the full answer key to the course owner', async () => {
+      const exam: any = await service.getExamByCourse('course-1', owner);
+
+      expect(exam.questions[0]).toEqual(
+        expect.objectContaining({ correctAnswer: [0], explanation: 'A is right' }),
+      );
+      expect(mockPrisma.enrollment.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns the full answer key to an admin', async () => {
+      const exam: any = await service.getExamByCourse('course-1', admin);
+
+      expect(exam.questions[1]).toHaveProperty('correctAnswer', [1, 2]);
+      expect(mockPrisma.enrollment.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the course has no exam', async () => {
+      mockPrisma.exam.findUnique.mockResolvedValue(null);
+
+      await expect(service.getExamByCourse('course-1', student)).rejects.toThrow(NotFoundException);
+    });
+  });
 });
