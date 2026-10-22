@@ -19,6 +19,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { createHash } from 'crypto';
 import { Prisma, DataExportJobStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { QueueService } from '../../common/queue/queue.service';
 
 /** A completed export is downloadable for 7 days before it is destroyed. */
 const EXPORT_RETENTION_DAYS = 7;
@@ -102,7 +103,10 @@ type ExportSectionKey = keyof typeof EXPORT_SECTIONS;
 export class DataExportService {
   private readonly logger = new Logger(DataExportService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly queueService: QueueService,
+  ) {}
 
   // ----------------------------------------------------------
   // REQUEST AN EXPORT
@@ -115,6 +119,9 @@ export class DataExportService {
    * request body), then re-checked against the database so a user deleted
    * mid-session cannot enqueue an orphan export. Only one export may be
    * requested per cooldown window.
+   *
+   * The export job is enqueued to BullMQ and processed asynchronously in a
+   * worker. The caller receives a 202 ACCEPTED response with the job status.
    */
   async requestExport(userId: string) {
     if (!userId) {
@@ -170,24 +177,14 @@ export class DataExportService {
 
     this.logger.log(`Data export requested: job=${job.id} user=${userId}`);
 
-    // Compilation runs inline; the job record tracks progress so the client
-    // can poll for status. Failures are captured on the job itself.
-    const completed = await this.processExport(job.id).catch((error) => {
-      this.logger.error(
-        `Data export job ${job.id} failed: ${error?.message ?? error}`,
-      );
-      return null;
-    });
+    // Enqueue the export job for asynchronous processing. The job is tracked
+    // via the DataExportJob record, and status can be polled via getExportStatus.
+    await this.queueService.enqueueDataExport(job.id, userId);
 
-    // Never echo the full payload back on the request response — it is
-    // retrieved through the dedicated download endpoint.
-    if (completed && 'payload' in completed) {
-      const { payload, ...jobWithoutPayload } = completed;
-      void payload;
-      return jobWithoutPayload;
-    }
-
-    return completed ?? job;
+    // Return the job record without the payload (never echo full exports)
+    const { payload, ...jobWithoutPayload } = job;
+    void payload;
+    return jobWithoutPayload;
   }
 
   // ----------------------------------------------------------
@@ -308,8 +305,10 @@ export class DataExportService {
   /**
    * Compile the user's personal data across all modules, persist the result
    * on the job record, and mark the job COMPLETED (or FAILED).
+   *
+   * Called by the data export worker (BullMQ job processor).
    */
-  private async processExport(jobId: string) {
+  async processExport(jobId: string) {
     const job = await this.prisma.dataExportJob.findUnique({ where: { id: jobId } });
     if (!job) {
       throw new NotFoundException('Export request not found');
