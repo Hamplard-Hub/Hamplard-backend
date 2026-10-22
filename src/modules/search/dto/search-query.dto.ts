@@ -1,7 +1,8 @@
-import { IsString, IsOptional, IsInt, Min, Max } from 'class-validator';
+import { IsString, IsOptional } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { PaginationQueryDto } from '../../../common/dto/pagination.dto';
 
-export class SearchQueryDto {
+export class SearchQueryDto extends PaginationQueryDto {
   @ApiProperty({ description: 'Full-text search query' })
   @IsString()
   query: string;
@@ -20,17 +21,4 @@ export class SearchQueryDto {
   @IsOptional()
   @IsString()
   language?: string;
-
-  @ApiProperty({ required: false, default: 1 })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  page?: number = 1;
-
-  @ApiProperty({ required: false, default: 20 })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100)
-  limit?: number = 20;
 }

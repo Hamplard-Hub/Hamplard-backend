@@ -26,6 +26,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole, FraudFlagStatus, FraudRiskLevel } from '@prisma/client';
+import { QueryFraudQueueDto } from './dto/query-fraud-queue.dto';
 
 @ApiTags('fraud-review')
 @ApiBearerAuth()
@@ -46,17 +47,12 @@ export class FraudController {
       'Returns all enrollment fraud flags filtered by status and/or risk level. ' +
       'Sorted by risk score descending so the most dangerous cases appear first.',
   })
-  @ApiQuery({ name: 'status',    required: false, enum: FraudFlagStatus })
-  @ApiQuery({ name: 'riskLevel', required: false, enum: FraudRiskLevel })
-  @ApiQuery({ name: 'page',      required: false, type: Number })
-  @ApiQuery({ name: 'limit',     required: false, type: Number })
-  getQueue(
-    @Query('status')    status?: FraudFlagStatus,
-    @Query('riskLevel') riskLevel?: FraudRiskLevel,
-    @Query('page')      page?: number,
-    @Query('limit')     limit?: number,
-  ) {
-    return this.fraudDetection.getFraudReviewQueue({ status, riskLevel }, page, limit);
+  getQueue(@Query() query: QueryFraudQueueDto) {
+    return this.fraudDetection.getFraudReviewQueue(
+      { status: query.status, riskLevel: query.riskLevel },
+      query.page,
+      query.limit,
+    );
   }
 
   // -------------------------------------------------------------------------

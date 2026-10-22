@@ -120,7 +120,9 @@ describe('OtpService', () => {
       userId: 'user-123',
       phoneNumber: '+254712345678',
       countryCode: 'KE',
-      otp: '123456',
+      get otp() {
+        return (service as any).hashOtp('123456');
+      },
       attemptCount: 0,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes from now
       verifiedAt: null,

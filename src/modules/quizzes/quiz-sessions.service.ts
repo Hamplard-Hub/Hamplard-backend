@@ -67,7 +67,15 @@ export class QuizSessionsService {
       throw new BadRequestException('This lesson has no quiz questions in the bank');
     }
 
-    const durationMinutes = lesson.quizDurationMinutes;
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      select: { quizDurationMinutes: true },
+    });
+    if (!lesson) {
+      throw new NotFoundException(`Lesson ${lessonId} not found`);
+    }
+
+    const durationMinutes = lesson.quizDurationMinutes ?? 15;
     const durationSeconds = durationMinutes * 60;
     const startTime = new Date();
     const expiresAt = new Date(startTime.getTime() + durationSeconds * 1000);
@@ -154,13 +162,11 @@ export class QuizSessionsService {
       return this.buildStatusResponse(session);
     }
 
-    const answers = dto?.answers ?? [];
-
     let result: QuizAttemptResult;
     try {
       result = await this.quizAttemptsService.submitQuizAttempt(
         session.lessonId,
-        { answers },
+        { answers: [] },
         userId,
       );
     } catch (error) {
@@ -174,13 +180,6 @@ export class QuizSessionsService {
       this.logger.warn(`Session ${sessionId} expired without grading: ${error.message}`);
       return this.buildStatusResponse(closed);
     }
-    const result = await this.quizAttemptsService.submitQuizAttempt(
-      session.lessonId,
-      {
-        answers: [],
-      },
-      userId,
-    );
 
     const updated = (await this.prisma.quizSession.update({
       where: { id: sessionId },

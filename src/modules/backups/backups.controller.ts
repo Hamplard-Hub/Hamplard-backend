@@ -21,6 +21,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles, RolesGuard } from "../../common/guards/roles.guard";
 import { BackupsService, UserContext } from "./backups.service";
 import { QueryCourseBackupsDto } from "./dto/course-backup.dto";
+import { PaginationQueryDto } from "../../common/dto/pagination.dto";
 
 @ApiTags("backups")
 @ApiBearerAuth()
@@ -45,19 +46,19 @@ export class BackupsController {
 
   @Get(":courseId/versions")
   @ApiOperation({ summary: "Track backup file versions for a course" })
-  @ApiQuery({ name: "page", required: false, type: Number })
-  @ApiQuery({ name: "limit", required: false, type: Number })
   getCourseBackupVersions(
     @Param("courseId") courseId: string,
     @CurrentUser() user: UserContext,
-    @Query("page") page?: number,
-    @Query("limit") limit?: number,
+    @Query() pagination?: PaginationQueryDto | number,
+    limit?: number,
   ) {
+    const pageNum = typeof pagination === "number" ? pagination : (pagination?.page ?? 1);
+    const limitNum = typeof pagination === "number" ? (limit ?? 20) : (pagination?.limit ?? 20);
     return this.backupsService.getCourseBackupVersions(
       courseId,
       user,
-      page ? Number(page) : 1,
-      limit ? Number(limit) : 20,
+      pageNum,
+      limitNum,
     );
   }
 

@@ -168,7 +168,7 @@ describe('QuizSessionsService', () => {
     );
 
     await expect(
-      service.startSession('lesson-1', 'user-1', { durationMinutes: 15 }),
+      service.startSession('lesson-1', 'user-1'),
     ).rejects.toThrow(ForbiddenException);
     expect(mockQuizAttempts.assertCanAttempt).toHaveBeenCalledWith('lesson-1', 'user-1');
     expect(mockPrisma.quizSession.create).not.toHaveBeenCalled();
@@ -180,13 +180,13 @@ describe('QuizSessionsService', () => {
     );
 
     await expect(
-      service.startSession('lesson-1', 'user-1', {}),
+      service.startSession('lesson-1', 'user-1'),
     ).rejects.toThrow(/Maximum number of attempts/);
     expect(mockPrisma.quizSession.create).not.toHaveBeenCalled();
   });
 
   it('closes an expired session without grading when access was lost', async () => {
-    const started = await service.startSession('lesson-1', 'user-1', {});
+    const started = await service.startSession('lesson-1', 'user-1');
     store.get(started.sessionId).expiresAt = new Date(Date.now() - 1000);
     mockQuizAttempts.submitQuizAttempt.mockRejectedValue(
       new ForbiddenException('Maximum number of attempts (1) reached for this quiz'),
@@ -205,7 +205,7 @@ describe('QuizSessionsService', () => {
   // ----------------------------------------------------------
 
   it('submits session answers without forwarding any client passThreshold', async () => {
-    const started = await service.startSession('lesson-1', 'user-1', {});
+    const started = await service.startSession('lesson-1', 'user-1');
 
     await service.submitSession(started.sessionId, 'user-1', {
       answers: [],
@@ -218,32 +218,7 @@ describe('QuizSessionsService', () => {
       'user-1',
     );
   });
-});
 
-describe('Quiz DTO validation (#236)', () => {
-  // Mirrors the global ValidationPipe options in main.ts.
-  const validateLikeApp = (cls: any, body: object) =>
-    validate(plainToInstance(cls, body), { whitelist: true, forbidNonWhitelisted: true });
-
-  it.each([
-    ['SubmitQuizAttemptDto', SubmitQuizAttemptDto],
-    ['SubmitSessionAnswersDto', SubmitSessionAnswersDto],
-  ])('%s rejects a client-supplied passThreshold', async (_name, dtoClass) => {
-    const errors = await validateLikeApp(dtoClass, { answers: [], passThreshold: 0 });
-
-    expect(errors).toHaveLength(1);
-    expect(errors[0].property).toBe('passThreshold');
-    expect(errors[0].constraints).toHaveProperty('whitelistValidation');
-  });
-
-  it.each([
-    ['SubmitQuizAttemptDto', SubmitQuizAttemptDto],
-    ['SubmitSessionAnswersDto', SubmitSessionAnswersDto],
-  ])('%s accepts a payload with answers only', async (_name, dtoClass) => {
-    const errors = await validateLikeApp(dtoClass, {
-      answers: [{ questionId: 'q-1', answer: [0] }],
-    });
-    expect(errors).toHaveLength(0);
   it('uses the instructor-configured duration instead of a student-supplied duration', async () => {
     mockPrisma.lesson.findUnique.mockResolvedValue({
       id: 'lesson-1',
@@ -280,5 +255,32 @@ describe('Quiz DTO validation (#236)', () => {
     ).rejects.toThrow('Quiz session has expired');
 
     expect(mockQuizAttempts.submitQuizAttempt).not.toHaveBeenCalled();
+  });
+});
+
+describe('Quiz DTO validation (#236)', () => {
+  // Mirrors the global ValidationPipe options in main.ts.
+  const validateLikeApp = (cls: any, body: object) =>
+    validate(plainToInstance(cls, body), { whitelist: true, forbidNonWhitelisted: true });
+
+  it.each([
+    ['SubmitQuizAttemptDto', SubmitQuizAttemptDto],
+    ['SubmitSessionAnswersDto', SubmitSessionAnswersDto],
+  ])('%s rejects a client-supplied passThreshold', async (_name, dtoClass) => {
+    const errors = await validateLikeApp(dtoClass, { answers: [], passThreshold: 0 });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].property).toBe('passThreshold');
+    expect(errors[0].constraints).toHaveProperty('whitelistValidation');
+  });
+
+  it.each([
+    ['SubmitQuizAttemptDto', SubmitQuizAttemptDto],
+    ['SubmitSessionAnswersDto', SubmitSessionAnswersDto],
+  ])('%s accepts a payload with answers only', async (_name, dtoClass) => {
+    const errors = await validateLikeApp(dtoClass, {
+      answers: [{ questionId: 'q-1', answer: [0] }],
+    });
+    expect(errors).toHaveLength(0);
   });
 });

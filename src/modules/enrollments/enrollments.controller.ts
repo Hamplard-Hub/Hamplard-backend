@@ -5,6 +5,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { EnrollmentsService } from './enrollments.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
 @ApiTags('enrollments')
 @ApiBearerAuth()
@@ -33,10 +34,9 @@ export class EnrollmentsController {
   @ApiOperation({ summary: 'Get all courses the authenticated student is enrolled in' })
   findMy(
     @CurrentUser('id') studentId: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query() pagination: PaginationQueryDto,
   ) {
-    return this.enrollmentsService.findByStudent(studentId, page, limit);
+    return this.enrollmentsService.findByStudent(studentId, pagination.page, pagination.limit);
   }
 
   @Get(':courseId')

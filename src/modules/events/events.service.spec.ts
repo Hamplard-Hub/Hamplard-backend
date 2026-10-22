@@ -305,40 +305,51 @@ describe('EventsService — ledger checkpoint (Issue #80)', () => {
       mockPrisma.chainEvent.updateMany.mockResolvedValue({ count: 1 });
     });
 
-    it('upserts events by unique event id instead of always inserting', async () => {
-      mockStellar.fetchContractEvents.mockResolvedValue([
-        { ledger: 105, topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
-      ]);
+    it('creates events by unique event id', async () => {
+      mockStellar.fetchContractEvents.mockResolvedValue({
+        latestLedger: 110,
+        events: [
+          { ledger: 105, pagingToken: '105-0', topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
+        ],
+      });
+      mockPrisma.chainEvent.create.mockResolvedValue({ id: 'evt-1' });
 
       await service.pollEvents();
 
-      expect(mockPrisma.chainEvent.create).not.toHaveBeenCalled();
-      expect(mockPrisma.chainEvent.upsert).toHaveBeenCalledWith(
+      expect(mockPrisma.chainEvent.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { eventId: 'evt-1' },
+          data: expect.objectContaining({ eventId: 'evt-1' }),
         }),
       );
     });
 
     it('marks processed after a handler succeeds', async () => {
-      mockStellar.fetchContractEvents.mockResolvedValue([
-        { ledger: 105, topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
-      ]);
+      mockStellar.fetchContractEvents.mockResolvedValue({
+        latestLedger: 110,
+        events: [
+          { ledger: 105, pagingToken: '105-0', topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
+        ],
+      });
+      mockPrisma.chainEvent.create.mockResolvedValue({ id: 'evt-1' });
 
       await service.pollEvents();
 
       expect(mockPrisma.chainEvent.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { eventId: 'evt-1' },
+          where: { id: 'evt-1' },
           data: expect.objectContaining({ processed: true }),
         }),
       );
     });
 
     it('records handler errors without marking the event processed', async () => {
-      mockStellar.fetchContractEvents.mockResolvedValue([
-        { ledger: 105, topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
-      ]);
+      mockStellar.fetchContractEvents.mockResolvedValue({
+        latestLedger: 110,
+        events: [
+          { ledger: 105, pagingToken: '105-0', topic: ['course_registered'], value: 'COURSE-1', txHash: 'a', id: 'evt-1' },
+        ],
+      });
+      mockPrisma.chainEvent.create.mockResolvedValue({ id: 'evt-1' });
       mockPrisma.chainEvent.update.mockRejectedValueOnce(new Error('handler failed'));
 
       await expect(service.pollEvents()).resolves.not.toThrow();
@@ -529,7 +540,7 @@ describe('EventsService — course status sync via CoursesService (Issue #232)',
   it('course_approved swallows sync failures so polling continues', async () => {
     mockCourses.approveCourse.mockRejectedValueOnce(new Error('db down'));
 
-    await expect(emit('course_approved', 'C-1')).resolves.toBeUndefined();
+    await expect(emit('course_approved', 'C-1')).resolves.toBe(true);
   });
 });
 

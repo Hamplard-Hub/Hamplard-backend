@@ -2,7 +2,7 @@ import {
   Controller, Get, Post, Patch, Delete, Body, Param,
   UseGuards, HttpCode, HttpStatus, Query,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { CouponsService, CouponActor } from './coupons.service';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
@@ -12,6 +12,7 @@ import { RedeemCouponDto } from './dto/redeem-coupon.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { UserRole } from '@prisma/client';
 
 @ApiTags('coupons')
@@ -43,20 +44,12 @@ export class CouponsController {
   @Get()
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.INSTRUCTOR)
-  @ApiOperation({ summary: 'List all coupons (admin or instructor)' })
-  findAll(@Query() query: QueryCouponsDto) {
-    return this.couponsService.findAll(query.page, query.limit, query.isActive);
   @ApiOperation({ summary: 'List coupons (admins see all, instructors see their own)' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiQuery({ name: 'isActive', required: false, type: Boolean })
   findAll(
     @CurrentUser() user: CouponActor,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('isActive') isActive?: boolean,
+    @Query() query: QueryCouponsDto,
   ) {
-    return this.couponsService.findAll(user, page, limit, isActive);
+    return this.couponsService.findAll(user, query.page, query.limit, query.isActive);
   }
 
   @Get(':id')
@@ -92,15 +85,12 @@ export class CouponsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.INSTRUCTOR)
   @ApiOperation({ summary: 'List all redemptions for a coupon' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   getRedemptions(
     @Param('id') id: string,
     @CurrentUser() user: CouponActor,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query() pagination: PaginationQueryDto,
   ) {
-    return this.couponsService.getRedemptions(id, user, page, limit);
+    return this.couponsService.getRedemptions(id, user, pagination.page, pagination.limit);
   }
 
   // ----------------------------------------------------------

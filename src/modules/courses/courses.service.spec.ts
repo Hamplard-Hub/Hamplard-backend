@@ -6,6 +6,7 @@ import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { CourseStatus, UserRole } from '@prisma/client';
 
 const mockPrisma = {
@@ -41,15 +42,15 @@ const NON_OWNER = { id: 'intruder-id',  stellarAddress: 'GXYZ',  role: UserRole.
 const ADMIN    = { id: 'admin-id',      stellarAddress: 'GADMIN', role: UserRole.ADMIN };
 
 const mockNotifications = {
-  notifyUser: jest.fn().mockResolved({}),
+  notifyUser: jest.fn().mockResolvedValue({}),
 };
 
 const mockSearchService = {
-  indexCourse: jest.fn().mockResolved(undefined),
-  removeCourse: jest.fn().mockResolved(undefined),
-  bulkIndexCourses: jest.fn().mockResolved(undefined),
-  getIndexFreshness: jest.fn().mockResolved(0),
-  search: jest.fn().mockResolved({
+  indexCourse: jest.fn().mockResolvedValue(undefined),
+  removeCourse: jest.fn().mockResolvedValue(undefined),
+  bulkIndexCourses: jest.fn().mockResolvedValue(undefined),
+  getIndexFreshness: jest.fn().mockResolvedValue(0),
+  search: jest.fn().mockResolvedValue({
     hits: [], estimatedTotalHits: 0, page: 1, limit: 20, totalPages: 0, query: '', processingTimeMs: 0,
   }),
 };
@@ -57,10 +58,10 @@ const mockSearchService = {
 // In-memory stand-in so the spec never opens a Redis connection.
 const mockCache = {
   buildKey: jest.fn((ns: string) => `cache:${ns} `),
-  get: jest.fn().mockResolved(null),
-  set: jest.fn().mockResolved(undefined),
-  del: jest.fn().mockResolved(undefined),
-  invalidateNamespace: jest.fn().mockResolved(undefined),
+  get: jest.fn().mockResolvedValue(null),
+  set: jest.fn().mockResolvedValue(undefined),
+  del: jest.fn().mockResolvedValue(undefined),
+  invalidateNamespace: jest.fn().mockResolvedValue(undefined),
 };
 
 const MOCK_COURSE = {
@@ -116,6 +117,7 @@ describe('CoursesService', () => {
         { provide: NotificationsService, useValue: mockNotifications },
         { provide: SearchService, useValue: mockSearchService },
         { provide: CacheService, useValue: mockCache },
+        { provide: ConfigService, useValue: { get: jest.fn(() => 20) } },
         FeeCalculatorService,
       ],
     }).compile();
@@ -138,8 +140,8 @@ describe('CoursesService', () => {
     };
 
     it('creates a course draft successfully', async () => {
-      mockPrisma.course.findUnique.mockResolved(null);
-      mockPrisma.course.create.mockResolved({
+      mockPrisma.course.findUnique.mockResolvedValue(null);
+      mockPrisma.course.create.mockResolvedValue({
         ...MOCK_COURSE,
         status: CourseStatus.DRAFT,
       });
@@ -150,7 +152,7 @@ describe('CoursesService', () => {
     });
 
     it('throws ConflictException if course ID already exists', async () => {
-      mockPrisma.course.findUnique.mockResolved(MOCK_COURSE);
+      mockPrisma.course.findUnique.mockResolvedValue(MOCK_COURSE);
       await expect(service.create('instructor-id', 'GABC', dto as any))
         .rejects.toThrow(ConflictException);
     });
@@ -169,9 +171,9 @@ describe('CoursesService', () => {
         _count: { enrollments: 0 },
         instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
       };
-      mockPrisma.course.findUnique.mockResolved(pendingCourse);
-      mockPrisma.course.update.mockResolved({ ...pendingCourse, status: CourseStatus.ACTIVE });
-      mockPrisma.user.findUnique.mockResolved({ id: 'user-1', email: 'instructor@test.com' });
+      mockPrisma.course.findUnique.mockResolvedValue(pendingCourse);
+      mockPrisma.course.update.mockResolvedValue({ ...pendingCourse, status: CourseStatus.ACTIVE });
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'instructor@test.com' });
 
       const result = await service.approve('COURSE-TAILORING-001', 'admin-id');
       expect(result.status).toBe(CourseStatus.ACTIVE);
@@ -186,7 +188,7 @@ describe('CoursesService', () => {
         _count: { enrollments: 0 },
         instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
       };
-      mockPrisma.course.findUnique.mockResolved(activeCourse);
+      mockPrisma.course.findUnique.mockResolvedValue(activeCourse);
       await expect(service.approve('COURSE-TAILORING-001', 'admin-id'))
         .rejects.toThrow(ForbiddenException);
     });
@@ -205,9 +207,9 @@ describe('CoursesService', () => {
         _count: { enrollments: 0 },
         instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
       };
-      mockPrisma.course.findUnique.mockResolved(pendingCourse);
-      mockPrisma.course.update.mockResolved({ ...pendingCourse, status: CourseStatus.DRAFT });
-      mockPrisma.user.findUnique.mockResolved({ id: 'user-1', email: 'inst@test.com' });
+      mockPrisma.course.findUnique.mockResolvedValue(pendingCourse);
+      mockPrisma.course.update.mockResolvedValue({ ...pendingCourse, status: CourseStatus.DRAFT });
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'inst@test.com' });
 
       const result = await service.reject('COURSE-TAILORING-001', 'admin-id', 'Missing intro video');
       expect(result.status).toBe(CourseStatus.DRAFT);
@@ -241,7 +243,7 @@ describe('CoursesService', () => {
   });
 
   it('returns course when found for owner', async () => {
-    mockPrisma.course.findUnique.mockResolved(activeCourseWithCurriculum());
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
 
     const result = await service.findOne('COURSE-TAILORING-001', {
       userId: 'instructor-id',
@@ -256,7 +258,7 @@ describe('CoursesService', () => {
   });
 
   it('returns full view for admins', async () => {
-    mockPrisma.course.findUnique.mockResolved(activeCourseWithCurriculum());
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
 
     const result = await service.findOne('COURSE-TAILORING-001', {
       userId: 'admin-id',
@@ -267,7 +269,7 @@ describe('CoursesService', () => {
   });
 
   it('strips paid content for anonymous callers but keeps free content', async () => {
-    mockPrisma.course.findUnique.mockResolved(activeCourseWithCurriculum());
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
 
     const result = await service.findOne('COURSE-TAILORING-001');
     const lessons = result.modules[0].lessons as any[];
@@ -287,8 +289,8 @@ describe('CoursesService', () => {
   });
 
   it('returns full content for enrolled callers', async () => {
-    mockPrisma.course.findUnique.mockResolved(activeCourseWithCurriculum());
-    mockPrisma.enrollment.findFirst.mockResolved({ studentId: 'student-1' });
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
+    mockPrisma.enrollment.findFirst.mockResolvedValue({ studentId: 'student-1' });
 
     const result = await service.findOne('COURSE-TAILORING-001', {
       userId: 'student-1',
@@ -300,12 +302,12 @@ describe('CoursesService', () => {
   });
 
   it('throws NotFoundException when course not found', async () => {
-    mockPrisma.course.findUnique.mockResolved(null);
+    mockPrisma.course.findUnique.mockResolvedValue(null);
     await expect(service.findOne('MISSING')).rejects.toThrow(NotFoundException);
   });
 
   it('throws NotFoundException for DRAFT courses to anonymous callers', async () => {
-    mockPrisma.course.findUnique.mockResolved({
+    mockPrisma.course.findUnique.mockResolvedValue({
       ...activeCourseWithCurriculum(),
       status: CourseStatus.DRAFT,
     });
@@ -313,7 +315,7 @@ describe('CoursesService', () => {
   });
 
   it('throws NotFoundException for PENDING courses to non-owners', async () => {
-    mockPrisma.course.findUnique.mockResolved({
+    mockPrisma.course.findUnique.mockResolvedValue({
       ...activeCourseWithCurriculum(),
       status: CourseStatus.PENDING,
     });
@@ -324,7 +326,7 @@ describe('CoursesService', () => {
   });
 
   it('returns full view for the owner of a non-ACTIVe course', async () => {
-    mockPrisma.course.findUnique.mockResolved({
+    mockPrisma.course.findUnique.mockResolvedValue({
       ...activeCourseWithCurriculum(),
       status: CourseStatus.DRAFT,
     });
@@ -343,7 +345,7 @@ describe('CoursesService', () => {
   describe('findAll()', () => {
     it('returns paginated active courses', async () => {
       const mockCourses = [MOCK_COURSE];
-      mockPrisma.$transaction.mockResolved([mockCourses, 1]);
+      mockPrisma.$transaction.mockResolvedValue([mockCourses, 1]);
 
       const result = await service.findAll({ status: CourseStatus.ACTIVE });
       expect(result.data).toHaveLength(1);
@@ -351,7 +353,7 @@ describe('CoursesService', () => {
     });
 
     it('applies category filter', async () => {
-      mockPrisma.$transaction.mockResolved([[MOCK_COURSE], 1]);
+      mockPrisma.$transaction.mockResolvedValue([[MOCK_COURSE], 1]);
 
       const result = await service.findAll({ category: 'Tailoring' });
       expect(result.data).toHaveLength(1);
@@ -398,8 +400,6 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       await expect(service.approveCourse(MOCK_COURSE.id)).resolves.toBe(true);
 
-      const result = await service.submitForReview(
-        'COURSE-TAILORING-001', OWNER, 'tx-hash-abc',
       expect(mockPrisma.course.updateMany).toHaveBeenCalledWith({
         where: { id: MOCK_COURSE.id },
         data: expect.objectContaining({ status: CourseStatus.ACTIVE, approvedAt: expect.any(Date) }),
@@ -411,17 +411,6 @@ describe('CoursesService status transitions (issue #232)', () => {
       expectCachesInvalidated();
     });
 
-    it('throws ForbiddenException if course is not a DRAFT', async () => {
-      const pendingCourse = {
-        ...MOCK_COURSE,
-        status: CourseStatus.PENDING,
-        modules: [],
-        _count: { enrollments: 0 },
-        instructor: { name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
-      };
-      mockPrisma.course.findUnique.mockResolvedValue(pendingCourse);
-      await expect(service.submitForReview('COURSE-TAILORING-001', OWNER))
-        .rejects.toThrow(ForbiddenException);
     it('returns false and touches neither search nor cache when the course is unknown', async () => {
       mockPrisma.course.updateMany.mockResolvedValue({ count: 0 });
 

@@ -38,14 +38,24 @@ describe('AuthService', () => {
     verifyLoginCode: jest.fn(),
   };
 
+  const config = { get: jest.fn(() => null) };
+  const cacheMap = new Map<string, any>();
+  const cache = {
+    get: jest.fn(async (key: string) => cacheMap.get(key)),
+    set: jest.fn(async (key: string, val: any) => cacheMap.set(key, val)),
+    del: jest.fn(async (key: string) => cacheMap.delete(key)),
+  };
+
   const buildService = () =>
     new AuthService(
       prisma as any,
       jwt as any,
+      config as any,
       referrals as any,
       sessions as any,
       refreshTokens as any,
       twoFactor as any,
+      cache as any,
     );
 
   beforeEach(() => {
@@ -70,7 +80,7 @@ describe('AuthService', () => {
     prisma.user.upsert.mockResolvedValue(user);
 
     const service = buildService();
-    const nonce = service.generateNonce(stellarAddress);
+    const nonce = await service.generateNonce(stellarAddress);
     const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
 
     const result = await service.login({
@@ -97,7 +107,7 @@ describe('AuthService', () => {
     const stellarAddress = keypair.publicKey();
 
     const service = buildService();
-    const nonce = service.generateNonce(stellarAddress);
+    const nonce = await service.generateNonce(stellarAddress);
     const wrongSignature = wrongKeypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
 
     await expect(
@@ -116,7 +126,7 @@ describe('AuthService', () => {
     const stellarAddress = keypair.publicKey();
 
     const service = buildService();
-    const nonce = service.generateNonce(stellarAddress);
+    const nonce = await service.generateNonce(stellarAddress);
     const tamperedNonce = nonce + '_tampered';
     const signature = keypair.sign(Buffer.from(tamperedNonce, 'utf-8')).toString('base64');
 
@@ -159,9 +169,9 @@ describe('AuthService', () => {
     expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
   });
   describe('two-factor authentication on login', () => {
-    const signedLoginPayload = (service: AuthService, keypair: Keypair) => {
+    const signedLoginPayload = async (service: AuthService, keypair: Keypair) => {
       const stellarAddress = keypair.publicKey();
-      const nonce = service.generateNonce(stellarAddress);
+      const nonce = await service.generateNonce(stellarAddress);
       const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
       return { stellarAddress, signedNonce: nonce, signature };
     };
@@ -177,7 +187,7 @@ describe('AuthService', () => {
     it('returns 401 when 2FA is enabled and no totpCode is supplied', async () => {
       const keypair = Keypair.random();
       const service = buildService();
-      const payload = signedLoginPayload(service, keypair);
+      const payload = await signedLoginPayload(service, keypair);
       prisma.user.findUnique.mockResolvedValue(twoFactorUser(payload.stellarAddress));
 
       await expect(service.login(payload)).rejects.toBeInstanceOf(UnauthorizedException);
@@ -189,7 +199,7 @@ describe('AuthService', () => {
     it('returns 401 when the supplied totpCode is invalid', async () => {
       const keypair = Keypair.random();
       const service = buildService();
-      const payload = signedLoginPayload(service, keypair);
+      const payload = await signedLoginPayload(service, keypair);
       prisma.user.findUnique.mockResolvedValue(twoFactorUser(payload.stellarAddress));
       twoFactor.verifyLoginCode.mockResolvedValue(false);
 
@@ -203,7 +213,7 @@ describe('AuthService', () => {
     it('issues tokens when the supplied totpCode is valid', async () => {
       const keypair = Keypair.random();
       const service = buildService();
-      const payload = signedLoginPayload(service, keypair);
+      const payload = await signedLoginPayload(service, keypair);
       const user = twoFactorUser(payload.stellarAddress);
       prisma.user.findUnique.mockResolvedValue(user);
       prisma.user.upsert.mockResolvedValue(user);
@@ -218,7 +228,7 @@ describe('AuthService', () => {
     it('never returns the TOTP secret or recovery-code hashes in the login payload (issue #234)', async () => {
       const keypair = Keypair.random();
       const service = buildService();
-      const payload = signedLoginPayload(service, keypair);
+      const payload = await signedLoginPayload(service, keypair);
       const user = {
         ...twoFactorUser(payload.stellarAddress),
         twoFactorSecret: 'JBSWY3DPEHPK3PXP',

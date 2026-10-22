@@ -93,7 +93,12 @@ describe('HealthController (Issue #80 — checkpoint via health endpoint)', () =
     mockEvents.getCheckpointStatus.mockResolvedValue(healthyStatus);
     mockVirusScan.getScannerStatus.mockReturnValue({ enabled: true, available: false });
 
-    const result = await controller.check();
+    let result: any;
+    try {
+      result = await controller.check();
+    } catch (err: any) {
+      result = typeof err.getResponse === 'function' ? err.getResponse() : err;
+    }
 
     expect(result.status).toBe('error');
     expect(result.error?.virus_scanner).toEqual({

@@ -18,6 +18,8 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
 
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+
 @ApiTags('lesson-qa')
 @Controller()
 export class QuestionsController {
@@ -43,17 +45,14 @@ export class QuestionsController {
 
   @Get('lessons/:lessonId/questions')
   @ApiOperation({ summary: 'List questions for a lesson (paginated)' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   async getQuestions(
     @Param('lessonId') lessonId: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query() pagination: PaginationQueryDto,
   ) {
     return this.questionsService.getQuestionsByLesson(
       lessonId,
-      page ? Number(page) : 1,
-      limit ? Number(limit) : 20,
+      pagination.page,
+      pagination.limit,
     );
   }
 

@@ -231,8 +231,9 @@ export class StellarService implements OnModuleInit {
 
       // Look for 'student_enrolled' event with matching txHash
       for (const event of events.events) {
-        if (event.type === 'contract' && event.event.type === 'contract') {
-          const eventData = event.event;
+        const anyEvent = event as any;
+        if (anyEvent.type === 'contract' && anyEvent.event?.type === 'contract') {
+          const eventData = anyEvent.event;
           // Extract event topics and data — structure depends on contract implementation
           // Placeholder: assumes events emit (studentAddress, courseId, amountPaid) as topics/data
           // This will be validated by the event poller in detail.
