@@ -107,6 +107,19 @@ describe('PayoutsService', () => {
       expect(mockPrisma.payout.create).not.toHaveBeenCalled();
     });
 
+    it('should reject payout creation after KYC verification is revoked', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'instructor-1' });
+      mockKyc.getVerificationStatus.mockResolvedValue({
+        isVerified: false,
+        status: 'REVOKED',
+        adminNotes: 'Fraudulent document',
+        reviewedAt: new Date(),
+      });
+
+      await expect(service.createPayout(dto)).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.payout.create).not.toHaveBeenCalled();
+    });
+
     it('should reject payout creation when no KYC submission exists', async () => {
       mockPrisma.user.findUnique.mockResolvedValue({ id: 'instructor-1' });
       mockKyc.getVerificationStatus.mockResolvedValue({
