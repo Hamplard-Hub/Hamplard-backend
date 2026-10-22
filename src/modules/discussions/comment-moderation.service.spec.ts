@@ -17,6 +17,7 @@ describe('CommentModerationService (Issue #286)', () => {
       count: jest.fn(),
       update: jest.fn(),
     },
+    $transaction: jest.fn(),
   };
 
   const baseComment = {
@@ -42,6 +43,7 @@ describe('CommentModerationService (Issue #286)', () => {
 
     service = module.get<CommentModerationService>(CommentModerationService);
     jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation((promises: any[]) => Promise.all(promises));
     mockPrisma.discussionComment.create.mockImplementation(async ({ data }: any) => data);
   });
 
@@ -160,6 +162,182 @@ describe('CommentModerationService (Issue #286)', () => {
       expect(result.flaggedCount).toBe(1);
       expect(result.hidden).toBe(true);
       expect(result.reviewStatus).toBe(CommentReviewStatus.PENDING);
+    });
+  });
+
+  describe('findCommentsForDiscussion pagination (Issue #147)', () => {
+    it('applies default pagination (page=1, limit=20)', async () => {
+      const mockComments = [baseComment];
+      mockPrisma.discussionComment.findMany.mockResolvedValue(mockComments);
+      mockPrisma.discussionComment.count.mockResolvedValue(1);
+
+      const result = await service.findCommentsForDiscussion('course-1');
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith({
+        where: {
+          discussionId: 'course-1',
+          hidden: false,
+          reviewStatus: { not: CommentReviewStatus.REJECTED },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: 0,
+        take: 20,
+      });
+      expect(mockPrisma.discussionComment.count).toHaveBeenCalledWith({
+        where: {
+          discussionId: 'course-1',
+          hidden: false,
+          reviewStatus: { not: CommentReviewStatus.REJECTED },
+        },
+      });
+      expect(result).toEqual({
+        data: mockComments,
+        meta: { total: 1, page: 1, limit: 20 },
+      });
+    });
+
+    it('paginates correctly on boundary page=2, limit=20', async () => {
+      const page2Comments = [{ ...baseComment, id: 'comment-21' }];
+      mockPrisma.discussionComment.findMany.mockResolvedValue(page2Comments);
+      mockPrisma.discussionComment.count.mockResolvedValue(25);
+
+      const result = await service.findCommentsForDiscussion('course-1', 2, 20);
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith({
+        where: {
+          discussionId: 'course-1',
+          hidden: false,
+          reviewStatus: { not: CommentReviewStatus.REJECTED },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: 20,
+        take: 20,
+      });
+      expect(result).toEqual({
+        data: page2Comments,
+        meta: { total: 25, page: 2, limit: 20 },
+      });
+    });
+
+    it('returns empty array when page exceeds total count', async () => {
+      mockPrisma.discussionComment.findMany.mockResolvedValue([]);
+      mockPrisma.discussionComment.count.mockResolvedValue(25);
+
+      const result = await service.findCommentsForDiscussion('course-1', 3, 20);
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith({
+        where: {
+          discussionId: 'course-1',
+          hidden: false,
+          reviewStatus: { not: CommentReviewStatus.REJECTED },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: 40,
+        take: 20,
+      });
+      expect(result).toEqual({
+        data: [],
+        meta: { total: 25, page: 3, limit: 20 },
+      });
+    });
+
+    it('normalizes non-positive page and limit to default values', async () => {
+      mockPrisma.discussionComment.findMany.mockResolvedValue([]);
+      mockPrisma.discussionComment.count.mockResolvedValue(0);
+
+      const result = await service.findCommentsForDiscussion('course-1', 0, -10);
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 0,
+          take: 20,
+        }),
+      );
+      expect(result.meta).toEqual({ total: 0, page: 1, limit: 20 });
+    });
+  });
+
+  describe('findFlaggedComments pagination (Issue #147)', () => {
+    it('applies default pagination (page=1, limit=20)', async () => {
+      const flagged = [{ ...baseComment, flaggedCount: 1 }];
+      mockPrisma.discussionComment.findMany.mockResolvedValue(flagged);
+      mockPrisma.discussionComment.count.mockResolvedValue(1);
+
+      const result = await service.findFlaggedComments();
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith({
+        where: {
+          flaggedCount: { gt: 0 },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: 0,
+        take: 20,
+      });
+      expect(mockPrisma.discussionComment.count).toHaveBeenCalledWith({
+        where: {
+          flaggedCount: { gt: 0 },
+        },
+      });
+      expect(result).toEqual({
+        data: flagged,
+        meta: { total: 1, page: 1, limit: 20 },
+      });
+    });
+
+    it('paginates correctly on boundary page=2, limit=20', async () => {
+      const flaggedPage2 = [{ ...baseComment, id: 'comment-flagged-21', flaggedCount: 2 }];
+      mockPrisma.discussionComment.findMany.mockResolvedValue(flaggedPage2);
+      mockPrisma.discussionComment.count.mockResolvedValue(30);
+
+      const result = await service.findFlaggedComments(2, 20);
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith({
+        where: {
+          flaggedCount: { gt: 0 },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: 20,
+        take: 20,
+      });
+      expect(result).toEqual({
+        data: flaggedPage2,
+        meta: { total: 30, page: 2, limit: 20 },
+      });
+    });
+
+    it('returns empty array when requested page exceeds total count', async () => {
+      mockPrisma.discussionComment.findMany.mockResolvedValue([]);
+      mockPrisma.discussionComment.count.mockResolvedValue(10);
+
+      const result = await service.findFlaggedComments(3, 10);
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith({
+        where: {
+          flaggedCount: { gt: 0 },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: 20,
+        take: 10,
+      });
+      expect(result).toEqual({
+        data: [],
+        meta: { total: 10, page: 3, limit: 10 },
+      });
+    });
+
+    it('normalizes non-positive page and limit to default values', async () => {
+      mockPrisma.discussionComment.findMany.mockResolvedValue([]);
+      mockPrisma.discussionComment.count.mockResolvedValue(0);
+
+      const result = await service.findFlaggedComments(-1, 0);
+
+      expect(mockPrisma.discussionComment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 0,
+          take: 20,
+        }),
+      );
+      expect(result.meta).toEqual({ total: 0, page: 1, limit: 20 });
     });
   });
 });

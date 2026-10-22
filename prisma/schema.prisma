@@ -1276,6 +1276,7 @@ model DiscussionComment {
 
   @@index([discussionId])
   @@index([authorId])
+  @@index([flaggedCount])
   @@map("discussion_comments")
 }
 
