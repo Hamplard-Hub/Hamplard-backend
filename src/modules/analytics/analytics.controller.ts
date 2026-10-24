@@ -46,9 +46,9 @@ export class AnalyticsController {
     @Headers('user-agent') userAgent?: string,
   ) {
     return this.analyticsService.trackEvent(dto, {
-      userId: dto.userId ?? userId,
+      userId,
       ipAddress: req.ip,
-      userAgent: dto.userAgent ?? userAgent,
+      userAgent,
     });
   }
 

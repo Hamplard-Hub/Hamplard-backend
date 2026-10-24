@@ -259,11 +259,11 @@ export class AnalyticsService {
   ): Prisma.AnalyticsEventCreateManyInput {
     return {
       eventType: dto.eventType.trim(),
-      userId: dto.userId ?? meta?.userId ?? null,
+      userId: meta?.userId ?? null,
       sessionId: dto.sessionId ?? null,
       path: dto.path ?? null,
       properties: (dto.properties as Prisma.InputJsonValue) ?? Prisma.JsonNull,
-      userAgent: dto.userAgent ?? meta?.userAgent ?? null,
+      userAgent: meta?.userAgent ?? null,
       ipAddress: meta?.ipAddress ?? null,
       occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
     };

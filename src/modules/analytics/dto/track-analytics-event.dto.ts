@@ -40,11 +40,6 @@ export class TrackAnalyticsEventDto {
   @MaxLength(100)
   eventType: string;
 
-  @ApiPropertyOptional({ description: 'Authenticated user id when known' })
-  @IsOptional()
-  @IsUUID()
-  userId?: string;
-
   @ApiPropertyOptional({ example: 'sess_abc123' })
   @IsOptional()
   @IsString()
@@ -68,12 +63,6 @@ export class TrackAnalyticsEventDto {
   @IsOptional()
   @IsDateString()
   occurredAt?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MaxLength(512)
-  userAgent?: string;
 }
 
 export class BatchTrackAnalyticsEventsDto {
