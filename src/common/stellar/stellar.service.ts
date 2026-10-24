@@ -264,16 +264,63 @@ export class StellarService implements OnModuleInit {
 
   /** Convert stroops (i128 as string/bigint) to human-readable USDC */
   stroopsToUsdc(stroops: string | bigint, decimals = 2): string {
-    const v = BigInt(stroops);
-    const whole    = v / 10_000_000n;
-    const fraction = (v % 10_000_000n).toString().padStart(7, '0');
-    return parseFloat(`${whole}.${fraction}`).toFixed(decimals);
+    const raw = typeof stroops === 'bigint' ? stroops.toString() : stroops;
+    if (typeof raw !== 'string' || !/^[+-]?\d+$/.test(raw)) {
+      throw new TypeError('Stroops must be a base-10 integer');
+    }
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 100) {
+      throw new RangeError('USDC decimal places must be an integer between 0 and 100');
+    }
+
+    const value = BigInt(raw);
+    const negative = value < 0n;
+    const absolute = negative ? -value : value;
+
+    if (decimals <= 7) {
+      const divisor = 10n ** BigInt(7 - decimals);
+      const rounded = (absolute + divisor / 2n) / divisor;
+      const scale = 10n ** BigInt(decimals);
+      const roundedWhole = rounded / scale;
+      const roundedFraction = (rounded % scale).toString().padStart(decimals, '0');
+      const formatted = decimals === 0 ? roundedWhole.toString() : `${roundedWhole}.${roundedFraction}`;
+      return negative && value !== 0n ? `-${formatted}` : formatted;
+    }
+
+    const whole = absolute / 10_000_000n;
+    const fraction = (absolute % 10_000_000n).toString().padStart(7, '0') + '0'.repeat(decimals - 7);
+    const formatted = `${whole}.${fraction}`;
+    return negative && value !== 0n ? `-${formatted}` : formatted;
   }
 
   /** Convert human-readable USDC to stroops bigint */
   usdcToStroops(usdc: string | number): bigint {
-    const [whole, fraction = ''] = String(usdc).split('.');
-    const padded = fraction.padEnd(7, '0').slice(0, 7);
-    return BigInt(whole) * 10_000_000n + BigInt(padded);
+    if (typeof usdc === 'number' && !Number.isFinite(usdc)) {
+      throw new TypeError('USDC amount must be a finite number');
+    }
+
+    let input = String(usdc).trim();
+    if (typeof usdc === 'number' && /[eE]/.test(input)) {
+      const scientific = input.match(/^([+-]?)(\d+)(?:\.(\d*))?[eE]([+-]?\d+)$/);
+      if (!scientific) throw new TypeError('USDC amount must be a decimal number');
+      const [, sign, whole, fraction = '', exponentText] = scientific;
+      const digits = whole + fraction;
+      const decimalPosition = whole.length + Number(exponentText);
+      if (decimalPosition <= 0) {
+        input = `${sign}0.${'0'.repeat(-decimalPosition)}${digits}`;
+      } else if (decimalPosition >= digits.length) {
+        input = `${sign}${digits}${'0'.repeat(decimalPosition - digits.length)}`;
+      } else {
+        input = `${sign}${digits.slice(0, decimalPosition)}.${digits.slice(decimalPosition)}`;
+      }
+    }
+
+    const match = input.match(/^([+-]?)(\d+)(?:\.(\d{0,7}))?$/);
+    if (!match) {
+      throw new TypeError('USDC amount must be a base-10 decimal with at most 7 fractional digits');
+    }
+
+    const [, sign, whole, fraction = ''] = match;
+    const stroops = BigInt(whole) * 10_000_000n + BigInt(fraction.padEnd(7, '0') || '0');
+    return sign === '-' ? -stroops : stroops;
   }
 }

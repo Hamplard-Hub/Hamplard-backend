@@ -138,6 +138,16 @@ export class KycService {
   async review(id: string, adminId: string, dto: ReviewKycDto) {
     const submission = await this.findOne(id);
 
+    const acceptedReviewStatuses: KycStatus[] = [
+      KycStatus.PENDING,
+      KycStatus.UNDER_REVIEW,
+      KycStatus.APPROVED,
+      KycStatus.REJECTED,
+    ];
+    if (!acceptedReviewStatuses.includes(dto.status)) {
+      throw new BadRequestException('Use the revoke verification action to revoke an approval');
+    }
+
     const reviewableStatuses: KycStatus[] = [KycStatus.PENDING, KycStatus.UNDER_REVIEW];
     if (!reviewableStatuses.includes(submission.status)) {
       throw new BadRequestException('Only PENDING or UNDER_REVIEW submissions can be reviewed');
@@ -146,23 +156,32 @@ export class KycService {
     const finalStatuses: KycStatus[] = [KycStatus.APPROVED, KycStatus.REJECTED];
     const isTransitioning = !finalStatuses.includes(dto.status as KycStatus);
 
-    const updated = await this.prisma.kycSubmission.update({
-      where: { id },
-      data: {
-        status: dto.status,
-        adminNotes: dto.adminNotes ?? submission.adminNotes,
-        reviewedById: adminId,
-        reviewedAt: isTransitioning ? null : new Date(),
-      },
-    });
-
-    // Mark instructor as verified when KYC is approved
-    if (dto.status === KycStatus.APPROVED) {
-      await this.prisma.user.update({
-        where: { id: submission.instructorId },
-        data: { isVerified: true },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const reviewed = await tx.kycSubmission.update({
+        where: { id },
+        data: {
+          status: dto.status,
+          adminNotes: dto.adminNotes ?? submission.adminNotes,
+          reviewedById: adminId,
+          reviewedAt: isTransitioning ? null : new Date(),
+        },
       });
 
+      // KYC submission status is canonical; keep the user flag as a synchronized projection.
+      const latest = await tx.kycSubmission.findFirst({
+        where: { instructorId: submission.instructorId },
+        orderBy: { createdAt: 'desc' },
+        select: { status: true },
+      });
+      await tx.user.update({
+        where: { id: submission.instructorId },
+        data: { isVerified: latest?.status === KycStatus.APPROVED },
+      });
+
+      return reviewed;
+    });
+
+    if (dto.status === KycStatus.APPROVED) {
       await this.notifications.notifyUser(
         submission.instructorId,
         NotificationType.KYC_APPROVED,
@@ -181,6 +200,50 @@ export class KycService {
     }
 
     this.logger.log(`KYC submission ${id} reviewed as ${dto.status} by admin ${adminId}`);
+    return updated;
+  }
+
+  /** Admin: revoke an instructor's existing approval and block future payouts. */
+  async revoke(id: string, adminId: string, adminNotes?: string) {
+    const submission = await this.findOne(id);
+    if (submission.status !== KycStatus.APPROVED) {
+      throw new BadRequestException('Only an approved KYC submission can be revoked');
+    }
+
+    const revokedAt = new Date();
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Revoke every approval for this instructor so historical duplicate approvals
+      // cannot leave them verified after the current approval is revoked.
+      await tx.kycSubmission.updateMany({
+        where: { instructorId: submission.instructorId, status: KycStatus.APPROVED },
+        data: {
+          status: KycStatus.REVOKED,
+          adminNotes: adminNotes ?? submission.adminNotes,
+          reviewedById: adminId,
+          reviewedAt: revokedAt,
+        },
+      });
+
+      const revokedSubmission = await tx.kycSubmission.findUnique({ where: { id } });
+      if (!revokedSubmission) {
+        throw new NotFoundException(`KYC submission ${id} not found`);
+      }
+      await tx.user.update({
+        where: { id: submission.instructorId },
+        data: { isVerified: false },
+      });
+      return revokedSubmission;
+    });
+
+    await this.notifications.notifyUser(
+      submission.instructorId,
+      NotificationType.KYC_REVOKED,
+      'Identity verification revoked',
+      `Your identity verification has been revoked.${adminNotes ? ` Reason: ${adminNotes}` : ''}`,
+      { submissionId: id },
+    );
+
+    this.logger.log(`KYC verification for instructor ${submission.instructorId} revoked by admin ${adminId}`);
     return updated;
   }
 }
