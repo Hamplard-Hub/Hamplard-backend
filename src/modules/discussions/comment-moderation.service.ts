@@ -10,6 +10,7 @@ import { ReviewCommentDto } from './dto/review-comment.dto';
 import { CommentReviewStatus, EnrollmentStatus, UserRole } from '@prisma/client';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const Filter = require('bad-words');
+import Filter = require('bad-words');
 
 @Injectable()
 export class CommentModerationService {
@@ -108,15 +109,35 @@ export class CommentModerationService {
     });
   }
 
-  async findCommentsForDiscussion(discussionId: string) {
-    return this.prisma.discussionComment.findMany({
-      where: {
-        discussionId,
-        hidden: false,
-        reviewStatus: { not: CommentReviewStatus.REJECTED },
+  async findCommentsForDiscussion(discussionId: string, page = 1, limit = 20) {
+    const pageNum = Number(page) > 0 ? Number(page) : 1;
+    const limitNum = Number(limit) > 0 ? Number(limit) : 20;
+    const skip = (pageNum - 1) * limitNum;
+
+    const where = {
+      discussionId,
+      hidden: false,
+      reviewStatus: { not: CommentReviewStatus.REJECTED },
+    };
+
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.discussionComment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limitNum,
+      }),
+      this.prisma.discussionComment.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
       },
-      orderBy: { createdAt: 'desc' },
-    });
+    };
   }
 
   async findCommentById(id: string, viewerRole?: UserRole | null) {
@@ -138,15 +159,35 @@ export class CommentModerationService {
     return publicComment;
   }
 
-  async findFlaggedComments() {
-    return this.prisma.discussionComment.findMany({
-      where: {
-        flaggedCount: {
-          gt: 0,
-        },
+  async findFlaggedComments(page = 1, limit = 20) {
+    const pageNum = Number(page) > 0 ? Number(page) : 1;
+    const limitNum = Number(limit) > 0 ? Number(limit) : 20;
+    const skip = (pageNum - 1) * limitNum;
+
+    const where = {
+      flaggedCount: {
+        gt: 0,
       },
-      orderBy: { createdAt: 'desc' },
-    });
+    };
+
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.discussionComment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limitNum,
+      }),
+      this.prisma.discussionComment.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+      },
+    };
   }
 
   async getModerationSummary() {

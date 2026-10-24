@@ -4,7 +4,7 @@ import { Queue } from 'bullmq';
 import { plainToInstance } from 'class-transformer';
 import { IsEmail, IsEnum, IsNotEmpty, IsString, MaxLength, validateSync } from 'class-validator';
 import { NotificationType } from '@prisma/client';
-import { NOTIFICATION_EMAIL_JOB, NOTIFICATION_EMAIL_QUEUE } from './queue.constants';
+import { NOTIFICATION_EMAIL_JOB, NOTIFICATION_EMAIL_QUEUE, DATA_EXPORT_JOB, DATA_EXPORT_QUEUE } from './queue.constants';
 
 export class NotificationEmailJobData {
   @IsString()
@@ -32,6 +32,16 @@ export class NotificationEmailJobData {
   type: NotificationType;
 }
 
+export class DataExportJobData {
+  @IsString()
+  @IsNotEmpty()
+  jobId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  userId: string;
+}
+
 export interface QueueJobStatus {
   id: string;
   queue: string;
@@ -47,6 +57,8 @@ export class QueueService {
   constructor(
     @InjectQueue(NOTIFICATION_EMAIL_QUEUE)
     private readonly notificationEmailQueue: Queue<NotificationEmailJobData>,
+    @InjectQueue(DATA_EXPORT_QUEUE)
+    private readonly dataExportQueue: Queue<DataExportJobData>,
   ) {}
 
   async enqueueNotificationEmail(payload: unknown) {
@@ -83,5 +95,14 @@ export class QueueService {
       result: job.returnvalue,
       failedReason: job.failedReason,
     };
+  }
+
+  async enqueueDataExport(jobId: string, userId: string) {
+    const data = new DataExportJobData();
+    data.jobId = jobId;
+    data.userId = userId;
+
+    const job = await this.dataExportQueue.add(DATA_EXPORT_JOB, data);
+    return { id: job.id as string, status: await job.getState() };
   }
 }

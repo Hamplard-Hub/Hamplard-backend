@@ -9,6 +9,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes, ApiBody, ApiQuery } 
 import { KycService } from './kyc.service';
 import { SubmitKycDto } from './dto/submit-kyc.dto';
 import { ReviewKycDto } from './dto/review-kyc.dto';
+import { RevokeKycDto } from './dto/revoke-kyc.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -111,5 +112,18 @@ export class KycController {
     @Body() dto: ReviewKycDto,
   ) {
     return this.kycService.review(id, adminId, dto);
+  }
+
+  @Post(':id/revoke')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Revoke an instructor’s approved identity verification (admin only)' })
+  revoke(
+    @Param('id') id: string,
+    @CurrentUser('id') adminId: string,
+    @Body() dto: RevokeKycDto,
+  ) {
+    return this.kycService.revoke(id, adminId, dto?.adminNotes);
   }
 }

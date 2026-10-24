@@ -4,6 +4,7 @@ import {
   getNumberConfig,
   parseBoolean,
   parseNumber,
+  parseTrustProxy,
 } from './env.util';
 
 describe('env.util', () => {
@@ -63,6 +64,26 @@ describe('env.util', () => {
     it('reads numeric strings as numbers', () => {
       const config = makeConfig({ MAX_FILE_SIZE_MB: '25' });
       expect(getNumberConfig(config, 'MAX_FILE_SIZE_MB', 500)).toBe(25);
+    });
+  });
+
+  describe('parseTrustProxy()', () => {
+    it('defaults to false so forwarded headers are not trusted', () => {
+      expect(parseTrustProxy(undefined)).toBe(false);
+      expect(parseTrustProxy('')).toBe(false);
+      expect(parseTrustProxy('false')).toBe(false);
+    });
+
+    it('maps true-like values to a single hop instead of trusting every proxy', () => {
+      expect(parseTrustProxy(true)).toBe(1);
+      expect(parseTrustProxy('true')).toBe(1);
+    });
+
+    it('accepts hop counts and explicit proxy addresses', () => {
+      expect(parseTrustProxy('1')).toBe(1);
+      expect(parseTrustProxy('2')).toBe(2);
+      expect(parseTrustProxy('127.0.0.1')).toBe('127.0.0.1');
+      expect(parseTrustProxy('10.0.0.1, 10.0.0.2')).toEqual(['10.0.0.1', '10.0.0.2']);
     });
   });
 });

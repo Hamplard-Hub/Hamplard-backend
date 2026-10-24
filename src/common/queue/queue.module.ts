@@ -3,7 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { QueueController } from './queue.controller';
-import { NOTIFICATION_EMAIL_QUEUE } from './queue.constants';
+import { NOTIFICATION_EMAIL_QUEUE, DATA_EXPORT_QUEUE } from './queue.constants';
 import { QueueService } from './queue.service';
 
 @Module({
@@ -37,6 +37,7 @@ import { QueueService } from './queue.service';
       },
     }),
     BullModule.registerQueue({ name: NOTIFICATION_EMAIL_QUEUE }),
+    BullModule.registerQueue({ name: DATA_EXPORT_QUEUE }),
   ],
   controllers: [QueueController],
   providers: [QueueService],

@@ -6,15 +6,15 @@ import { Injectable, Logger, NestMiddleware } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NextFunction, Request, Response } from 'express';
 
-/** Route prefixes whose abuse surface warrants a much tighter budget. */
-const SENSITIVE_PREFIXES = ['/api/v1/auth'];
-
-/** Paths never counted against rate limits (health checks, API docs). */
-const EXEMPT_PREFIXES = ['/api/v1/health', '/docs', '/docs-json'];
-
 interface Bucket {
   count: number;
   resetAt: number;
+}
+
+/** Strip leading/trailing slashes so API_PREFIX variants match request paths. */
+export function normalizeApiPrefix(raw?: string): string {
+  const trimmed = (raw ?? 'api/v1').replace(/^\/+|\/+$/g, '');
+  return trimmed ? `/${trimmed}` : '';
 }
 
 @Injectable()
@@ -26,11 +26,19 @@ export class RateLimitMiddleware implements NestMiddleware {
   private readonly standardMax: number;
   private readonly sensitiveMax: number;
   private readonly exemptIps: Set<string>;
+  private readonly sensitivePrefixes: string[];
+  private readonly exemptPrefixes: string[];
 
   constructor(private readonly config: ConfigService) {
     this.windowMs = this.config.get<number>('RATE_LIMIT_WINDOW_MS', 60000);
     this.standardMax = this.config.get<number>('RATE_LIMIT_STANDARD_MAX', 100);
     this.sensitiveMax = this.config.get<number>('RATE_LIMIT_SENSITIVE_MAX', 10);
+
+    const apiPrefix = normalizeApiPrefix(
+      this.config.get<string>('API_PREFIX', 'api/v1'),
+    );
+    this.sensitivePrefixes = [`${apiPrefix}/auth`];
+    this.exemptPrefixes = [`${apiPrefix}/health`, '/docs', '/docs-json'];
 
     const exemptList =
       this.config.get<string>('RATE_LIMIT_EXEMPT_IPS', '') ?? '';
@@ -46,13 +54,13 @@ export class RateLimitMiddleware implements NestMiddleware {
     const path = req.originalUrl.split('?')[0];
 
     if (
-      EXEMPT_PREFIXES.some((p) => path.startsWith(p)) ||
+      this.exemptPrefixes.some((p) => path.startsWith(p)) ||
       this.exemptIps.has(req.ip ?? '')
     ) {
       return next();
     }
 
-    const sensitive = SENSITIVE_PREFIXES.some((p) => path.startsWith(p));
+    const sensitive = this.sensitivePrefixes.some((p) => path.startsWith(p));
     const max = sensitive ? this.sensitiveMax : this.standardMax;
 
     const key = `${req.ip}:${sensitive ? 'sensitive' : 'standard'}`;

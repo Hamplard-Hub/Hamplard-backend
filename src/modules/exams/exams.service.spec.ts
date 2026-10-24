@@ -22,6 +22,9 @@ describe('ExamsService', () => {
       create: jest.fn(),
       findMany: jest.fn(),
     },
+    $executeRaw: jest.fn(),
+    // Interactive transactions run the callback against the same mock client.
+    $transaction: jest.fn((fn: (tx: any) => unknown) => fn(mockPrisma)),
   };
 
   beforeEach(async () => {
@@ -135,6 +138,72 @@ describe('ExamsService', () => {
 
       expect(res.score).toBe(100);
       expect(res.passed).toBe(true);
+    });
+
+    // ----------------------------------------------------------
+    // Issue #304 — parallel submissions and answer types
+    // ----------------------------------------------------------
+
+    const eligibleStudent = (questions: unknown[]) => {
+      mockPrisma.exam.findUnique.mockResolvedValue({
+        id: 'exam-1',
+        courseId: 'course-1',
+        passingScore: 70,
+        cooldownHours: 24,
+        questions,
+      });
+      mockPrisma.enrollment.findUnique.mockResolvedValue({ progressPercent: 100, status: 'COMPLETED' });
+      mockPrisma.examAttempt.findFirst.mockResolvedValue(null);
+      mockPrisma.examAttempt.create.mockImplementation(({ data }) => Promise.resolve({ id: 'attempt-1', ...data }));
+    };
+
+    it('takes the per-student exam lock before reading the last attempt, in the same transaction', async () => {
+      eligibleStudent([{ id: 'q1', points: 1, correctAnswer: [0] }]);
+
+      await service.submitExam('student-1', 'exam-1', { answers: { q1: [0] } });
+
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+      const [sql, ...params] = mockPrisma.$executeRaw.mock.calls[0];
+      expect(sql.join('?')).toContain('pg_advisory_xact_lock');
+      expect(params).toEqual(['student-1', 'exam-1']);
+      const lockedAt = mockPrisma.$executeRaw.mock.invocationCallOrder[0];
+      expect(lockedAt).toBeLessThan(mockPrisma.examAttempt.findFirst.mock.invocationCallOrder[0]);
+      expect(lockedAt).toBeLessThan(mockPrisma.examAttempt.create.mock.invocationCallOrder[0]);
+    });
+
+    it('rejects a submission that finds an attempt inside the cooldown and records nothing', async () => {
+      eligibleStudent([{ id: 'q1', points: 1, correctAnswer: [0] }]);
+      // What the second of two parallel requests sees once the first has committed.
+      mockPrisma.examAttempt.findFirst.mockResolvedValue({ passed: false, attemptedAt: new Date() });
+
+      await expect(
+        service.submitExam('student-1', 'exam-1', { answers: { q1: [0] } }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.examAttempt.create).not.toHaveBeenCalled();
+    });
+
+    it('grades answers regardless of number/string type, whitespace and order', async () => {
+      eligibleStudent([
+        { id: 'q1', points: 1, correctAnswer: 1 },
+        { id: 'q2', points: 1, correctAnswer: ['a', 'b'] },
+        { id: 'q3', points: 1, correctAnswer: [0, 2] },
+        { id: 'q4', points: 1, correctAnswer: 3 },
+      ]);
+
+      const res = await service.submitExam('student-1', 'exam-1', {
+        answers: { q1: '1', q2: ['b', ' a '], q3: ['2', 0], q4: '4' },
+      });
+
+      expect(res.score).toBe(75);
+      expect(res.passed).toBe(true);
+    });
+
+    it('does not credit a question that has no answer key', async () => {
+      eligibleStudent([{ id: 'q1', points: 1 }]);
+
+      const res = await service.submitExam('student-1', 'exam-1', { answers: { q1: 'undefined' } });
+
+      expect(res.score).toBe(0);
     });
   });
 

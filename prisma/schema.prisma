@@ -80,6 +80,7 @@ enum NotificationType {
   DISPUTE_RESOLVED
   KYC_APPROVED
   KYC_REJECTED
+  KYC_REVOKED
   PAYOUT_PROCESSED
   PAYOUT_SCHEDULED
   REFUND_REQUESTED
@@ -120,6 +121,7 @@ enum KycStatus {
   UNDER_REVIEW
   APPROVED
   REJECTED
+  REVOKED
 }
 
 enum KycDocumentType {
@@ -1276,6 +1278,7 @@ model DiscussionComment {
 
   @@index([discussionId])
   @@index([authorId])
+  @@index([flaggedCount])
   @@map("discussion_comments")
 }
 

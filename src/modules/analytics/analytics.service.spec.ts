@@ -58,6 +58,46 @@ describe('AnalyticsService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
+    it('attributes events to the authenticated meta userId, not a client-supplied id', async () => {
+      mockPrisma.analyticsEvent.create.mockResolvedValue({
+        id: 'evt-2',
+        eventType: 'click',
+      });
+
+      await service.trackEvent(
+        { eventType: 'click', userId: 'other-user' } as any,
+        { userId: 'auth-user', userAgent: 'Jest-Agent/1.0' },
+      );
+
+      expect(mockPrisma.analyticsEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: 'auth-user',
+          userAgent: 'Jest-Agent/1.0',
+        }),
+      });
+      expect(mockPrisma.analyticsEvent.create.mock.calls[0][0].data.userId).not.toBe(
+        'other-user',
+      );
+    });
+
+    it('stores user-agent from request meta rather than the event body', async () => {
+      mockPrisma.analyticsEvent.create.mockResolvedValue({
+        id: 'evt-3',
+        eventType: 'page_view',
+      });
+
+      await service.trackEvent(
+        { eventType: 'page_view', userAgent: 'spoofed-client' } as any,
+        { userId: 'auth-user', userAgent: 'Mozilla/5.0 (real)' },
+      );
+
+      expect(mockPrisma.analyticsEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userAgent: 'Mozilla/5.0 (real)',
+        }),
+      });
+    });
+
     it('rejects non-object properties', async () => {
       await expect(
         service.trackEvent({
