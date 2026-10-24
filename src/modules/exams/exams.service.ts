@@ -128,12 +128,17 @@ export class ExamsService {
 
   /**
    * Check if a student is eligible to take the exam.
+   * `db` lets submitExam run the check inside its locked transaction.
    */
-  async checkEligibility(studentId: string, examId: string) {
+  async checkEligibility(
+    studentId: string,
+    examId: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ) {
     const exam = await this.getExamById(examId);
 
     // Verify course enrollment & completion progress
-    const enrollment = await this.prisma.enrollment.findUnique({
+    const enrollment = await db.enrollment.findUnique({
       where: {
         studentId_courseId: {
           studentId,
@@ -157,7 +162,7 @@ export class ExamsService {
     }
 
     // Check last attempt and retake cooldown
-    const lastAttempt = await this.prisma.examAttempt.findFirst({
+    const lastAttempt = await db.examAttempt.findFirst({
       where: { examId, studentId },
       orderBy: { attemptedAt: 'desc' },
     });
@@ -196,7 +201,21 @@ export class ExamsService {
    * Submit an exam attempt, validate passing score, and track history.
    */
   async submitExam(studentId: string, examId: string, dto: SubmitExamDto) {
-    const eligibility = await this.checkEligibility(studentId, examId);
+    return this.prisma.$transaction(async (tx) => {
+      // Serialise submissions per student and exam: a parallel request waits here,
+      // then sees the attempt recorded by the first one and hits the cooldown.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${studentId}::text), hashtext(${examId}::text))`;
+      return this.recordAttempt(tx, studentId, examId, dto);
+    });
+  }
+
+  private async recordAttempt(
+    tx: Prisma.TransactionClient,
+    studentId: string,
+    examId: string,
+    dto: SubmitExamDto,
+  ) {
+    const eligibility = await this.checkEligibility(studentId, examId, tx);
     if (!eligibility.eligible) {
       throw new ForbiddenException(eligibility.reason);
     }
@@ -216,17 +235,17 @@ export class ExamsService {
       totalPoints += qPoints;
       const studentAnswer = dto.answers[q.id];
 
-      if (studentAnswer !== undefined && studentAnswer !== null) {
-        const correctAnswers = Array.isArray(q.correctAnswer)
-          ? q.correctAnswer
-          : [q.correctAnswer];
-        const answersProvided = Array.isArray(studentAnswer)
-          ? studentAnswer
-          : [studentAnswer];
+      if (studentAnswer !== undefined && studentAnswer !== null && q.correctAnswer != null) {
+        // Compare as trimmed strings and as sets, so "1" matches 1 and the
+        // order of a multi-select answer doesn't matter.
+        const toSet = (v: unknown) =>
+          new Set((Array.isArray(v) ? v : [v]).map((a) => String(a).trim()));
+        const correctAnswers = toSet(q.correctAnswer);
+        const answersProvided = toSet(studentAnswer);
 
         const isCorrect =
-          correctAnswers.length === answersProvided.length &&
-          correctAnswers.every((val) => answersProvided.includes(val));
+          correctAnswers.size === answersProvided.size &&
+          [...correctAnswers].every((val) => answersProvided.has(val));
 
         if (isCorrect) {
           earnedPoints += qPoints;
@@ -237,7 +256,7 @@ export class ExamsService {
     const scorePercentage = Math.round((earnedPoints / (totalPoints || 1)) * 100);
     const passed = scorePercentage >= exam.passingScore;
 
-    const attempt = await this.prisma.examAttempt.create({
+    const attempt = await tx.examAttempt.create({
       data: {
         examId,
         studentId,
