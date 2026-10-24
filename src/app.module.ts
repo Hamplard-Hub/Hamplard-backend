@@ -1,4 +1,4 @@
-import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -122,11 +122,12 @@ export class AppModule implements NestModule {
     consumer.apply(RateLimitMiddleware).forRoutes('*');
 
     // Webhook HMAC-SHA256 signature verification.
-    // Applied only to /webhooks/* routes so legitimate API traffic is unaffected.
-    // Add .exclude({ path: 'webhooks/ping', method: RequestMethod.GET }) for
-    // unsigned health-check endpoints from specific providers.
+    // Exclusions are registered here (guards run after middleware, so a skip
+    // decorator cannot bypass verification). Also mirrored in
+    // WEBHOOK_SIGNATURE_EXCLUDE_PATHS (default webhooks/ping).
     consumer
       .apply(WebhookSignatureMiddleware)
+      .exclude({ path: 'webhooks/ping', method: RequestMethod.ALL })
       .forRoutes('webhooks');
   }
 }
