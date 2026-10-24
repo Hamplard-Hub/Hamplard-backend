@@ -17,6 +17,7 @@ import { CreateCommentDto } from './dto/create-comment.dto';
 import { CreateQuestionDto } from './dto/create-question.dto';
 import { CreateAnswerDto } from './dto/create-answer.dto';
 import { ThreadQueryDto } from './dto/thread-query.dto';
+import { CommentQueryDto } from './dto/comment-query.dto';
 import { ReviewCommentDto } from './dto/review-comment.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
@@ -104,8 +105,15 @@ export class DiscussionsController {
 
   @Get('comments/discussion/:discussionId')
   @ApiOperation({ summary: 'List visible comments for a discussion thread' })
-  findCommentsForDiscussion(@Param('discussionId') discussionId: string) {
-    return this.commentModerationService.findCommentsForDiscussion(discussionId);
+  findCommentsForDiscussion(
+    @Param('discussionId') discussionId: string,
+    @Query() query: CommentQueryDto,
+  ) {
+    return this.commentModerationService.findCommentsForDiscussion(
+      discussionId,
+      query.page,
+      query.limit,
+    );
   }
 
   @Get('comments/:id')
@@ -123,8 +131,8 @@ export class DiscussionsController {
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List flagged discussion comments awaiting moderation' })
-  findFlaggedComments() {
-    return this.commentModerationService.findFlaggedComments();
+  findFlaggedComments(@Query() query: CommentQueryDto) {
+    return this.commentModerationService.findFlaggedComments(query.page, query.limit);
   }
 
   @Get('moderation/summary')
