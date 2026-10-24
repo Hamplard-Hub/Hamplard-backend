@@ -6,6 +6,7 @@ import {
 import { Test, TestingModule } from '@nestjs/testing';
 import { DataExportJobStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { QueueService } from '../../common/queue/queue.service';
 import { DataExportService } from './data-export.service';
 
 describe('DataExportService', () => {
@@ -35,9 +36,17 @@ describe('DataExportService', () => {
     payout: { findMany: jest.fn() },
   };
 
+  const mockQueueService = {
+    enqueueDataExport: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [DataExportService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [
+        DataExportService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: QueueService, useValue: mockQueueService },
+      ],
     }).compile();
 
     service = module.get<DataExportService>(DataExportService);
@@ -109,14 +118,81 @@ describe('DataExportService', () => {
       );
     });
 
-    it('creates a job, compiles cross-module data and completes it', async () => {
+    it('creates a job and enqueues it (asynchronous processing)', async () => {
       stubCrossModuleQueries();
       mockPrisma.dataExportJob.findFirst.mockResolvedValue(null);
       mockPrisma.dataExportJob.create.mockResolvedValue({
         id: 'job-1',
         userId,
         status: DataExportJobStatus.PENDING,
+        payload: null,
       });
+      mockQueueService.enqueueDataExport.mockResolvedValue({
+        id: 'job-1',
+        status: 'pending',
+      });
+
+      const result = await service.requestExport(userId);
+
+      // requestExport returns PENDING immediately
+      expect(result.status).toBe(DataExportJobStatus.PENDING);
+      expect(result.id).toBe('job-1');
+
+      // The job is enqueued for async processing
+      expect(mockQueueService.enqueueDataExport).toHaveBeenCalledWith('job-1', userId);
+      expect(mockPrisma.dataExportJob.create).toHaveBeenCalledWith({
+        data: { userId, status: DataExportJobStatus.PENDING },
+      });
+
+      // Payload is not echoed back in the response
+      expect(result.payload).toBeUndefined();
+    });
+
+    it('marks the job FAILED when processExport throws', async () => {
+      stubCrossModuleQueries();
+      mockPrisma.dataExportJob.findFirst.mockResolvedValue(null);
+      mockPrisma.dataExportJob.create.mockResolvedValue({
+        id: 'job-2',
+        userId,
+        status: DataExportJobStatus.PENDING,
+        payload: null,
+      });
+      mockPrisma.dataExportJob.findUnique.mockResolvedValue({
+        id: 'job-2',
+        userId,
+        status: DataExportJobStatus.PENDING,
+      });
+      mockPrisma.user.findUnique
+        .mockResolvedValueOnce({ id: userId, isBanned: false }) // requestExport guard
+        .mockRejectedValueOnce(new Error('profile fetch failed')); // profile section in processExport
+      mockPrisma.dataExportJob.update.mockResolvedValue({ id: 'job-2' });
+      mockQueueService.enqueueDataExport.mockImplementation(async (jobId) => {
+        // Simulate processExport being called asynchronously and failing
+        try {
+          await service.processExport(jobId);
+        } catch (error) {
+          // Errors are caught and logged by the processor
+        }
+        return { id: jobId, status: 'pending' };
+      });
+
+      const result = await service.requestExport(userId);
+
+      // requestExport returns PENDING immediately; failures are handled async
+      expect(result.status).toBe(DataExportJobStatus.PENDING);
+
+      // processExport is eventually called and handles the error
+      const failureCall = mockPrisma.dataExportJob.update.mock.calls.find(
+        (call) => call[0].data?.status === DataExportJobStatus.FAILED,
+      );
+      expect(failureCall).toBeDefined();
+      expect(failureCall[0].data.errorMessage).toContain('profile fetch failed');
+    });
+  });
+
+  describe('processExport()', () => {
+    it('compiles cross-module data and marks the job COMPLETED', async () => {
+      stubCrossModuleQueries();
       mockPrisma.dataExportJob.findUnique.mockResolvedValue({
         id: 'job-1',
         userId,
@@ -135,12 +211,9 @@ describe('DataExportService', () => {
         { id: 'enr-1', courseId: 'course-1', status: 'ACTIVE' },
       ]);
 
-      const result = await service.requestExport(userId);
+      const result = await service.processExport('job-1');
 
       expect(result.status).toBe(DataExportJobStatus.COMPLETED);
-      expect(mockPrisma.dataExportJob.create).toHaveBeenCalledWith({
-        data: { userId, status: DataExportJobStatus.PENDING },
-      });
       // Cross-module compilation actually queried the user's own rows only
       expect(mockPrisma.enrollment.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { studentId: userId } }),
@@ -156,26 +229,16 @@ describe('DataExportService', () => {
 
     it('marks the job FAILED when compilation throws', async () => {
       stubCrossModuleQueries();
-      mockPrisma.user.findUnique
-        .mockResolvedValueOnce({ id: userId, isBanned: false }) // requestExport guard
-        .mockRejectedValueOnce(new Error('profile fetch failed')); // profile section
-      mockPrisma.dataExportJob.findFirst.mockResolvedValue(null);
-      mockPrisma.dataExportJob.create.mockResolvedValue({
-        id: 'job-2',
-        userId,
-        status: DataExportJobStatus.PENDING,
-      });
       mockPrisma.dataExportJob.findUnique.mockResolvedValue({
         id: 'job-2',
         userId,
         status: DataExportJobStatus.PENDING,
       });
+      mockPrisma.user.findUnique.mockRejectedValueOnce(new Error('profile fetch failed'));
       mockPrisma.dataExportJob.update.mockResolvedValue({ id: 'job-2' });
 
-      const result = await service.requestExport(userId);
+      await expect(service.processExport('job-2')).rejects.toThrow('profile fetch failed');
 
-      // Failure is captured on the job; the API still returns the trackable job
-      expect(result.status).toBe(DataExportJobStatus.PENDING);
       const failureCall = mockPrisma.dataExportJob.update.mock.calls.find(
         (call) => call[0].data.status === DataExportJobStatus.FAILED,
       );
@@ -183,8 +246,6 @@ describe('DataExportService', () => {
       expect(failureCall[0].data.errorMessage).toContain('profile fetch failed');
     });
   });
-
-  describe('getExportStatus()', () => {
     it('returns the job when it belongs to the requester', async () => {
       mockPrisma.dataExportJob.findFirst.mockResolvedValue({ id: 'job-1', status: 'COMPLETED' });
 
