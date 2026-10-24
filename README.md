@@ -87,7 +87,11 @@ The backend is the content and user management layer of Hamplard. It handles eve
 
 ## API Endpoints
 
-All endpoints prefixed with `/api/v1`. Protected routes require `Authorization: Bearer <JWT>`.
+All endpoints are prefixed with `API_PREFIX` (default `/api/v1`). Protected routes require `Authorization: Bearer <JWT>`.
+
+Rate-limit middleware builds auth and health paths from `API_PREFIX`, so a custom prefix still applies the tighter auth budget and health-check exemption.
+
+`TRUST_PROXY` configures Express `trust proxy` used for `req.ip`. Leave it unset (false) unless the API sits behind a known reverse proxy; `true` is not applied because it would trust client-supplied `X-Forwarded-For` values. Use hop count `1` (or an explicit proxy IP/CIDR) behind a single load balancer. See `.env.example`.
 
 ### Auth
 | Method | Path | Description |

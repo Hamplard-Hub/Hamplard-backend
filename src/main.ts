@@ -9,6 +9,7 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { initializeSentry } from './common/logging/sentry';
 import { buildSwaggerConfig } from './swagger.config';
+import { parseTrustProxy } from './common/config/env.util';
 
 async function bootstrap() {
   initializeSentry();
@@ -23,6 +24,14 @@ async function bootstrap() {
   const port       = config.get<number>('PORT', 3000);
   const apiPrefix  = config.get<string>('API_PREFIX', 'api/v1');
   const corsOrigin = config.get<string>('CORS_ORIGIN', 'http://localhost:3001');
+  const trustProxy = parseTrustProxy(config.get<unknown>('TRUST_PROXY'));
+
+  // `req.ip` (used by RateLimitMiddleware) follows this setting.
+  // Default false: do not trust X-Forwarded-For. See .env.example TRUST_PROXY.
+  app.set('trust proxy', trustProxy);
+  if (trustProxy !== false) {
+    logger.log(`Express trust proxy enabled: ${JSON.stringify(trustProxy)}`);
+  }
 
   app.use(helmet());
 
