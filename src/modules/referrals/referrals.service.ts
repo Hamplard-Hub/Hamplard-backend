@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -478,6 +479,10 @@ export class ReferralsService {
 
   /**
    * Marks a referral reward as redeemed after a successful enrollment purchase.
+   *
+   * Checkout quote is out of scope; this is the post-purchase confirmation path.
+   * Prefer calling this server-side immediately after enrollment rather than
+   * trusting a client-supplied enrollment id without the checks below.
    */
   async redeemReward(userId: string, rewardId: string, enrollmentId: string) {
     const reward = await this.prisma.referralReward.findUnique({ where: { id: rewardId } });
@@ -495,14 +500,54 @@ export class ReferralsService {
       throw new BadRequestException('This referral reward has expired');
     }
 
-    return this.prisma.referralReward.update({
-      where: { id: rewardId },
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { id: enrollmentId },
+      include: { course: { select: { price: true } } },
+    });
+    if (!enrollment) {
+      throw new BadRequestException('Enrollment not found');
+    }
+    if (enrollment.studentId !== userId) {
+      throw new ForbiddenException('Enrollment does not belong to the authenticated user');
+    }
+
+    const originalPrice = Number(enrollment.course.price);
+    const paid = Number(enrollment.amountPaid);
+    const discountAmount = this.calculateDiscount(
+      reward.discountType,
+      Number(reward.discountValue),
+      originalPrice,
+    );
+    const expectedPaid = Math.max(0, originalPrice - discountAmount);
+    const applied =
+      discountAmount <= 0
+        ? Math.abs(paid - originalPrice) <= 0.01
+        : paid <= expectedPaid + 0.01 && paid < originalPrice - 0.01;
+
+    if (!applied) {
+      throw new BadRequestException(
+        'This enrollment was not created with the referral reward applied',
+      );
+    }
+
+    const now = new Date();
+    const { count } = await this.prisma.referralReward.updateMany({
+      where: {
+        id: rewardId,
+        beneficiaryId: userId,
+        status: ReferralRewardStatus.ISSUED,
+      },
       data: {
         status: ReferralRewardStatus.REDEEMED,
-        redeemedAt: new Date(),
+        redeemedAt: now,
         enrollmentId,
       },
     });
+    if (count !== 1) {
+      throw new BadRequestException('This referral reward is not available for redemption');
+    }
+
+    return this.prisma.referralReward.findUnique({ where: { id: rewardId } });
   }
 
   async deactivateCode(userId: string) {

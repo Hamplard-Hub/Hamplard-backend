@@ -6,6 +6,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { ReferralsService } from './referrals.service';
 import { ValidateReferralDto } from './dto/validate-referral.dto';
 import { ApplyReferralRewardDto } from './dto/apply-referral-reward.dto';
+import { RedeemReferralRewardDto } from './dto/redeem-referral-reward.dto';
 import { UpdateRewardRulesDto } from './dto/update-reward-rules.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -84,9 +85,9 @@ export class ReferralsController {
   @ApiOperation({ summary: 'Redeem a referral reward after a successful enrollment' })
   redeemReward(
     @CurrentUser('id') userId: string,
-    @Body() body: { rewardId: string; enrollmentId: string },
+    @Body() dto: RedeemReferralRewardDto,
   ) {
-    return this.referralsService.redeemReward(userId, body.rewardId, body.enrollmentId);
+    return this.referralsService.redeemReward(userId, dto.rewardId, dto.enrollmentId);
   }
 
   @Patch('code/deactivate')

@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -44,6 +45,9 @@ describe('ReferralsService', () => {
     referralRewardRule: {
       findUnique: jest.fn(),
       upsert: jest.fn(),
+    },
+    enrollment: {
+      findUnique: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -481,21 +485,34 @@ describe('ReferralsService', () => {
       expect(result.finalPrice).toBe(45);
     });
 
-    it('redeems an issued reward', async () => {
-      mockPrisma.referralReward.findUnique.mockResolvedValue({
-        id: 'rw-1',
-        beneficiaryId: 'u-1',
-        status: ReferralRewardStatus.ISSUED,
-        expiresAt: new Date(Date.now() + 86_400_000),
+    const issuedReward = {
+      id: 'rw-1',
+      beneficiaryId: 'u-1',
+      status: ReferralRewardStatus.ISSUED,
+      discountType: DiscountType.PERCENTAGE,
+      discountValue: 10,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    };
+
+    it('redeems an issued reward when the enrollment belongs to the user and paid the discounted price', async () => {
+      mockPrisma.referralReward.findUnique
+        .mockResolvedValueOnce(issuedReward)
+        .mockResolvedValueOnce({
+          id: 'rw-1',
+          status: ReferralRewardStatus.REDEEMED,
+          enrollmentId: 'enr-1',
+        });
+      mockPrisma.enrollment.findUnique.mockResolvedValue({
+        id: 'enr-1',
+        studentId: 'u-1',
+        amountPaid: 45,
+        course: { price: 50 },
       });
-      mockPrisma.referralReward.update.mockResolvedValue({
-        id: 'rw-1',
-        status: ReferralRewardStatus.REDEEMED,
-        enrollmentId: 'enr-1',
-      });
+      mockPrisma.referralReward.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await service.redeemReward('u-1', 'rw-1', 'enr-1');
       expect(result.status).toBe(ReferralRewardStatus.REDEEMED);
+      expect(mockPrisma.referralReward.updateMany).toHaveBeenCalled();
     });
 
     it('rejects redemption of a non-issued reward', async () => {
@@ -509,6 +526,47 @@ describe('ReferralsService', () => {
       await expect(service.redeemReward('u-1', 'rw-1', 'enr-1')).rejects.toThrow(
         BadRequestException,
       );
+      expect(mockPrisma.referralReward.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a nonexistent enrollment', async () => {
+      mockPrisma.referralReward.findUnique.mockResolvedValue(issuedReward);
+      mockPrisma.enrollment.findUnique.mockResolvedValue(null);
+
+      await expect(service.redeemReward('u-1', 'rw-1', 'enr-missing')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.referralReward.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects an enrollment that belongs to another user', async () => {
+      mockPrisma.referralReward.findUnique.mockResolvedValue(issuedReward);
+      mockPrisma.enrollment.findUnique.mockResolvedValue({
+        id: 'enr-2',
+        studentId: 'other-user',
+        amountPaid: 45,
+        course: { price: 50 },
+      });
+
+      await expect(service.redeemReward('u-1', 'rw-1', 'enr-2')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockPrisma.referralReward.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects redemption when the enrollment was not created with the reward applied', async () => {
+      mockPrisma.referralReward.findUnique.mockResolvedValue(issuedReward);
+      mockPrisma.enrollment.findUnique.mockResolvedValue({
+        id: 'enr-1',
+        studentId: 'u-1',
+        amountPaid: 50,
+        course: { price: 50 },
+      });
+
+      await expect(service.redeemReward('u-1', 'rw-1', 'enr-1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.referralReward.updateMany).not.toHaveBeenCalled();
     });
   });
 });
