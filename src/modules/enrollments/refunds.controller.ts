@@ -13,6 +13,9 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RefundStatus, UserRole } from '@prisma/client';
 
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+import { QueryRefundsDto } from './dto/query-refunds.dto';
+
 @ApiTags('refunds')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -35,10 +38,9 @@ export class RefundsController {
   @ApiOperation({ summary: 'Get the authenticated student\'s refund requests' })
   findMy(
     @CurrentUser('id') studentId: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query() pagination: PaginationQueryDto,
   ) {
-    return this.refundsService.findByStudent(studentId, page, limit);
+    return this.refundsService.findByStudent(studentId, pagination.page, pagination.limit);
   }
 
   @Get(':id')
@@ -59,15 +61,8 @@ export class RefundsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Admin lists refund requests' })
-  @ApiQuery({ name: 'status', required: false, enum: RefundStatus })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  findAll(
-    @Query('status') status?: RefundStatus,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
-    return this.refundsService.findAll({ status, page, limit });
+  findAll(@Query() query: QueryRefundsDto) {
+    return this.refundsService.findAll({ status: query.status, page: query.page, limit: query.limit });
   }
 
   @Post(':id/approve')

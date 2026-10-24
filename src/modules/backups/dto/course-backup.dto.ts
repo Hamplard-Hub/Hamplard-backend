@@ -19,21 +19,9 @@ export class RequestCourseBackupDto {
   courseId?: string;
 }
 
-export class QueryCourseBackupsDto {
-  @ApiPropertyOptional({ default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number = 1;
+import { PaginationQueryDto } from "../../../common/dto/pagination.dto";
 
-  @ApiPropertyOptional({ default: 20 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  limit?: number = 20;
-
+export class QueryCourseBackupsDto extends PaginationQueryDto {
   @ApiPropertyOptional({ enum: CourseBackupStatus })
   @IsOptional()
   @IsEnum(CourseBackupStatus)

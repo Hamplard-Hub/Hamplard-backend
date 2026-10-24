@@ -8,6 +8,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { ReviewCommentDto } from './dto/review-comment.dto';
 import { CommentReviewStatus, EnrollmentStatus, UserRole } from '@prisma/client';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const Filter = require('bad-words');
 import Filter = require('bad-words');
 
 @Injectable()

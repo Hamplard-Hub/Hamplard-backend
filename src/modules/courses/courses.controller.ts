@@ -15,6 +15,8 @@ import { CourseStatus, UserRole } from '@prisma/client';
 import { Cacheable } from '../../common/cache/cache.decorator';
 import { HttpCacheInterceptor } from '../../common/cache/cache.interceptor';
 
+import { QueryCoursesDto } from './dto/query-courses.dto';
+
 @ApiTags('courses')
 @Controller('courses')
 export class CoursesController {
@@ -28,20 +30,13 @@ export class CoursesController {
   @UseInterceptors(HttpCacheInterceptor)
   @Cacheable('courses:list', 60)
   @ApiOperation({ summary: 'Browse active courses with filters' })
-  @ApiQuery({ name: 'category', required: false })
-  @ApiQuery({ name: 'level',    required: false })
-  @ApiQuery({ name: 'search',   required: false })
-  @ApiQuery({ name: 'page',     required: false, type: Number })
-  @ApiQuery({ name: 'limit',    required: false, type: Number })
-  findAll(
-    @Query('category') category?: string,
-    @Query('level')    level?: string,
-    @Query('search')   search?: string,
-    @Query('page')     page?: number,
-    @Query('limit')    limit?: number,
-  ) {
+  findAll(@Query() query: QueryCoursesDto) {
     return this.coursesService.findAll({
-      category, level, search, page, limit,
+      category: query.category,
+      level: query.level,
+      search: query.search,
+      page: query.page,
+      limit: query.limit,
       status: CourseStatus.ACTIVE,
     });
   }

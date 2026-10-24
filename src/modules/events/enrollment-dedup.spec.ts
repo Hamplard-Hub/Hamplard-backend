@@ -76,6 +76,10 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
         };
       }),
     },
+    payment: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'pay-1', ...data })),
+    },
     coursePrerequisite: { findMany: jest.fn().mockResolvedValue([]) },
     chainEvent: { create: jest.fn().mockResolvedValue({}) },
     eventPollerCheckpoint: {
@@ -88,6 +92,7 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
   const stellar = {
     getLatestLedger: jest.fn().mockResolvedValue(100),
     fetchContractEvents: jest.fn(),
+    getTransactionStatus: jest.fn().mockResolvedValue({ successful: true, status: 'SUCCESS' }),
   };
 
   const studentEnrolledEvent = (ledger: number) => ({
@@ -104,6 +109,7 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
         id: COURSE_ID,
         title: 'Professional Tailoring',
         instructorAddress: 'GINSTRUCTOR',
+        status: 'ACTIVE',
         totalEnrollments: 0,
         totalRevenue: 0,
       }],

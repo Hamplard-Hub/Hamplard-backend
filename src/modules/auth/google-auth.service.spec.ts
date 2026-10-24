@@ -26,6 +26,16 @@ describe('GoogleAuthService', () => {
     }),
   };
   const config = { get: jest.fn((key: string) => key === 'GOOGLE_CLIENT_ID' ? 'google-client-id' : 'google-client-secret') };
+  const cacheMap = new Map<string, any>();
+  const cache = {
+    get: jest.fn(async (key: string) => cacheMap.get(key)),
+    set: jest.fn(async (key: string, val: any) => cacheMap.set(key, val)),
+    del: jest.fn(async (key: string) => cacheMap.delete(key)),
+  };
+  const twoFactor = {
+    isEnabled: jest.fn().mockResolvedValue(false),
+    verifyLoginTotp: jest.fn().mockResolvedValue(true),
+  };
 
   const buildService = () =>
     new GoogleAuthService(
@@ -33,6 +43,8 @@ describe('GoogleAuthService', () => {
       jwt as any,
       sessions as any,
       refreshTokens as any,
+      cache as any,
+      twoFactor as any,
       config as any,
     );
 
@@ -56,12 +68,12 @@ describe('GoogleAuthService', () => {
     });
   });
 
-  it('creates and consumes single-use OAuth state values', () => {
+  it('creates and consumes single-use OAuth state values', async () => {
     const service = buildService();
-    const state = service.createOAuthState();
+    const state = await service.createOAuthState();
 
-    expect(service.consumeOAuthState(state)).toBe(true);
-    expect(service.consumeOAuthState(state)).toBe(false);
+    expect(await service.consumeOAuthState(state)).toBe(true);
+    expect(await service.consumeOAuthState(state)).toBe(false);
   });
 
   it('rejects an ID token when Google signature verification fails', async () => {
@@ -126,6 +138,7 @@ describe('GoogleAuthService', () => {
         googleId: null,
         name: 'Existing Name',
         avatarUrl: null,
+        isVerified: true,
       });
     prisma.user.update.mockResolvedValue({
       id: 'existing-user',

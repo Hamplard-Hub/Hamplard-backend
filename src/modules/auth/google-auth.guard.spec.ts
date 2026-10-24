@@ -21,9 +21,9 @@ describe('GoogleAuthGuard', () => {
 
     it.each(['/api/v1/auth/google', '/api/v1/auth/google/callback'])(
       'rejects %s with 503 before invoking Passport',
-      (path) => {
-        expect(() => guard.canActivate(buildContext(path, { state: 's' }, 'google_oauth_state=s'))).toThrow(
-          new ServiceUnavailableException('Google authentication is not configured'),
+      async (path) => {
+        await expect(guard.canActivate(buildContext(path, { state: 's' }, 'google_oauth_state=s'))).rejects.toThrow(
+          ServiceUnavailableException,
         );
         expect(googleAuth.consumeOAuthState).not.toHaveBeenCalled();
       },
@@ -33,14 +33,14 @@ describe('GoogleAuthGuard', () => {
   describe('when Google auth is enabled', () => {
     const googleAuth = {
       assertEnabled: jest.fn(),
-      consumeOAuthState: jest.fn().mockReturnValue(false),
+      consumeOAuthState: jest.fn().mockResolvedValue(false),
     };
     const guard = new GoogleAuthGuard(googleAuth as any);
 
-    it('still validates the OAuth state on the callback', () => {
-      expect(() =>
+    it('still validates the OAuth state on the callback', async () => {
+      await expect(
         guard.canActivate(buildContext('/api/v1/auth/google/callback', { state: 's' }, 'google_oauth_state=other')),
-      ).toThrow(UnauthorizedException);
+      ).rejects.toThrow(UnauthorizedException);
       expect(googleAuth.assertEnabled).toHaveBeenCalled();
     });
   });

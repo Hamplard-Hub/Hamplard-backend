@@ -25,27 +25,14 @@ export class SearchController {
       'Results include highlighted matches. Supports filtering by category, level, and language. ' +
       'Query is sanitized for profanity. Results are ranked by relevance.',
   })
-  @ApiQuery({ name: 'query', required: true, description: 'Full-text search query' })
-  @ApiQuery({ name: 'category', required: false, description: 'Filter by category' })
-  @ApiQuery({ name: 'level', required: false, description: 'Filter by level (Beginner, Intermediate, Advanced)' })
-  @ApiQuery({ name: 'language', required: false, description: 'Filter by language' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  search(
-    @Query('query') query: string,
-    @Query('category') category?: string,
-    @Query('level') level?: string,
-    @Query('language') language?: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
+  search(@Query() query: SearchQueryDto) {
     return this.searchService.search({
-      query,
-      category,
-      level,
-      language,
-      page: page ?? 1,
-      limit: limit ?? 20,
+      query: query.query,
+      category: query.category,
+      level: query.level,
+      language: query.language,
+      page: query.page,
+      limit: query.limit,
     });
   }
 

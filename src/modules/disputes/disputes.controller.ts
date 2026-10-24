@@ -11,6 +11,9 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DisputeStatus, UserRole } from '@prisma/client';
 
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+import { QueryDisputesDto } from './dto/query-disputes.dto';
+
 @ApiTags('disputes')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -34,14 +37,11 @@ export class DisputesController {
 
   @Get('my')
   @ApiOperation({ summary: 'Get all disputes filed by the authenticated user' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   findMy(
     @CurrentUser('id') studentId: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query() pagination: PaginationQueryDto,
   ) {
-    return this.disputesService.findMyDisputes(studentId, page, limit);
+    return this.disputesService.findMyDisputes(studentId, pagination.page, pagination.limit);
   }
 
   @Get('my/:id')
@@ -62,15 +62,8 @@ export class DisputesController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'List all disputes (admin only)' })
-  @ApiQuery({ name: 'status', required: false, enum: DisputeStatus })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  findAll(
-    @Query('status') status?: DisputeStatus,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
-    return this.disputesService.findAll(page, limit, status);
+  findAll(@Query() query: QueryDisputesDto) {
+    return this.disputesService.findAll(query.page, query.limit, query.status);
   }
 
   @Get(':id')

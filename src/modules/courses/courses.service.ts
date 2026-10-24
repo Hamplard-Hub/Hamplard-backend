@@ -3,6 +3,7 @@ import {
   ConflictException, Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { ConfigService } from '@nestjs/config';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
@@ -109,10 +110,12 @@ export class CoursesService {
    * Called after the instructor has also registered the course on-chain.
    */
   async submitForReview(courseId: string, user: CourseActor, txHash?: string) {
-    const course = await this.findOne(courseId);
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
     this.assertCourseOwner(course, user);
-  async submitForReview(courseId: string, instructorId: string, txHash?: string) {
-    const course = await this.findOne(courseId, { isAdmin: true });
 
     if (course.status !== CourseStatus.DRAFT) {
       throw new ForbiddenException('Only DRAFT courses can be submitted for review');
@@ -248,12 +251,12 @@ export class CoursesService {
    */
   async findOne(
     id: string,
-    viewer?: { userId?: string; stellarAddress?: string; isAdmin?: boolean },
+    viewer?: { userId?: string; stellarAddress?: string; isAdmin?: boolean; role?: string },
   ) {
     const course = await this.prisma.course.findUnique({
       where: { id },
       include: {
-        instructor: { select: { name: true, stellarAddress: true, avatarUrl: true, bio: true } },
+        instructor: { select: { id: true, name: true, stellarAddress: true, avatarUrl: true, bio: true } },
         modules: {
           orderBy: { position: 'asc' },
           include: {
@@ -266,8 +269,9 @@ export class CoursesService {
     if (!course) throw new NotFoundException(`Course ${id} not found`);
 
     const isOwner =
-      !!viewer?.stellarAddress && viewer.stellarAddress === course.instructorAddress;
-    const isAdmin = !!viewer?.isAdmin;
+      (!!viewer?.stellarAddress && viewer.stellarAddress === course.instructorAddress) ||
+      (!!viewer?.userId && (viewer.userId === (course as any).instructorId || viewer.userId === (course as any).instructor?.id));
+    const isAdmin = !!viewer?.isAdmin || viewer?.role === UserRole.ADMIN || viewer?.role === 'ADMIN';
 
     // Hide non-ACTIVE courses from everyone except the owner and admins.
     if (course.status !== CourseStatus.ACTIVE && !isOwner && !isAdmin) {
@@ -287,6 +291,28 @@ export class CoursesService {
 
     // Anonymous / non-enrolled callers: return a curriculum outline.
     return this.toPublicOutline(course);
+  }
+
+  async findOneForViewer(id: string, userId?: string, role?: UserRole) {
+    return this.findOne(id, { userId, isAdmin: role === UserRole.ADMIN });
+  }
+
+  async getCheckoutBreakdown(courseId: string, region?: string) {
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      select: { id: true, title: true, price: true, platformFeePercent: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
+
+    return {
+      courseId: course.id,
+      courseTitle: course.title,
+      ...this.feeCalculator.computeBreakdown({
+        coursePrice: Number(course.price),
+        platformFeePercent: course.platformFeePercent,
+        region,
+      }),
+    };
   }
 
   /** Returns true when the viewer has an active enrollment in the course. */
@@ -351,10 +377,12 @@ export class CoursesService {
   }
 
   async update(courseId: string, user: CourseActor, dto: UpdateCourseDto) {
-    const course = await this.findOne(courseId);
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
     this.assertCourseOwner(course, user);
-  async update(courseId: string, instructorId: string, dto: UpdateCourseDto) {
-    const course = await this.findOne(courseId, { isAdmin: true });
     if (course.status === CourseStatus.ARCHIVED) {
       throw new ForbiddenException('Cannot update an archived course');
     }
@@ -368,23 +396,6 @@ export class CoursesService {
 
     await this.invalidateCourseCaches();
     return updated;
-  }
-
-  private async indexCourseForSearch(courseId: string): Promise<void> {
-    const course = await this.prisma.course.findUnique({
-      where: { id: courseId },
-      include: { instructor: { select: { name: true } } },
-    });
-    if (!course) return;
-    const doc: CourseSearchDocument = {
-      id: course.id,
-      title: course.title,
-      description: course.description,
-      category: course.category,
-      level: course.level,
-      instructorName: course.instructor?.name,
-    };
-    await this.searchService.indexCourse(doc);
   }
 
   async updateStats(courseId: string, delta: { enrollments?: number; revenue?: number }) {
@@ -538,25 +549,16 @@ export class CoursesService {
    * chains can coexist while the overall graph stays acyclic.
    */
   async setPrerequisites(courseId: string, user: CourseActor, dto: SetPrerequisitesDto) {
-    const course = await this.findOne(courseId);
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
     this.assertCourseOwner(course, user);
 
     const uniqueIds = [...new Set(dto.prerequisiteIds)];
     if (uniqueIds.includes(courseId)) {
       throw new ConflictException('A course cannot be its own prerequisite');
-    }
-  async setPrerequisites(courseId: string, instructorId: string, dto: SetPrerequisitesDto) {
-    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
-    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
-
-    await this.prisma.coursePrerequisite.deleteMany({ where: { courseId } });
-    if (dto.prerequisiteIds.length > 0) {
-      await this.prisma.coursePrerequisite.createMany({
-        data: dto.prerequisiteIds.map((prerequisiteCourseId) => ({
-          courseId,
-          prerequisiteId: prerequisiteCourseId,
-        })),
-      });
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -575,7 +577,11 @@ export class CoursesService {
   }
 
   async removePrerequisite(courseId: string, user: CourseActor, prerequisiteId: string) {
-    const course = await this.findOne(courseId);
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
     this.assertCourseOwner(course, user);
 
     const link = await this.prisma.coursePrerequisite.findUnique({
@@ -652,7 +658,6 @@ export class CoursesService {
       }
     }
     return null;
-    return this.prisma.coursePrerequisite.findMany({ where: { courseId } });
   }
 
   // ----------------------------------------------------------

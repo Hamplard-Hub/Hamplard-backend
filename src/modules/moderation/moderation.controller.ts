@@ -9,6 +9,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ReportStatus, ReportTargetType, ReportCategory, UserRole } from '@prisma/client';
+import { QueryModerationDto } from './dto/query-moderation.dto';
 
 @ApiTags('moderation (admin dashboard)')
 @ApiBearerAuth()
@@ -31,24 +32,13 @@ export class ModerationController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Moderation dashboard queue (admin only)' })
-  @ApiQuery({ name: 'status', required: false, enum: ReportStatus })
-  @ApiQuery({ name: 'targetType', required: false, enum: ReportTargetType })
-  @ApiQuery({ name: 'category', required: false, enum: ReportCategory })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  getDashboardListing(
-    @Query('status') status?: ReportStatus,
-    @Query('targetType') targetType?: ReportTargetType,
-    @Query('category') category?: ReportCategory,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
+  getDashboardListing(@Query() query: QueryModerationDto) {
     return this.moderationService.getDashboardListing({
-      status,
-      targetType,
-      category,
-      page: page ? Number(page) : 1,
-      limit: limit ? Number(limit) : 10,
+      status: query.status,
+      targetType: query.targetType,
+      category: query.category,
+      page: query.page,
+      limit: query.limit,
     });
   }
 

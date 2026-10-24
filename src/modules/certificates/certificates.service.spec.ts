@@ -142,6 +142,7 @@ describe('CertificatesService', () => {
       mockPrisma.certificate.findUnique.mockResolvedValue({
         id: 'CERT-ABC123',
         isRevoked: false,
+        txHash: 'tx-abc',
         student: { name: 'Jane', stellarAddress: 'GABC' },
         course:  { title: 'Professional Tailoring', instructor: { name: 'John' } },
       });
@@ -169,6 +170,7 @@ describe('CertificatesService', () => {
       mockPrisma.certificate.findUnique.mockResolvedValue({
         id: 'CERT-NO-CHAIN',
         isRevoked: false,
+        txHash: 'tx-abc',
         student: { name: 'Jane', stellarAddress: 'GABC' },
         course:  { title: 'Makeup', instructor: { name: 'MUA' } },
       });

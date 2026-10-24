@@ -9,6 +9,8 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
 
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+
 @ApiTags('admin-impersonation')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -29,15 +31,10 @@ export class ImpersonationController {
 
   @Get('audit-logs')
   @ApiOperation({ summary: 'Retrieve impersonation audit trail (admin only)' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  getAuditTrail(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
+  getAuditTrail(@Query() pagination: PaginationQueryDto) {
     return this.impersonationService.getAuditTrail(
-      page ? Number(page) : 1,
-      limit ? Number(limit) : 10,
+      pagination.page,
+      pagination.limit,
     );
   }
 

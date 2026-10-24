@@ -11,6 +11,8 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '@prisma/client';
 
+import { QueryBundlesDto } from './dto/query-bundles.dto';
+
 @ApiTags('bundles')
 @Controller('bundles')
 export class BundlesController {
@@ -22,15 +24,12 @@ export class BundlesController {
 
   @Get()
   @ApiOperation({ summary: 'List active course bundles' })
-  @ApiQuery({ name: 'instructorAddress', required: false })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  findAll(
-    @Query('instructorAddress') instructorAddress?: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
-    return this.bundlesService.findAll({ instructorAddress, page, limit });
+  findAll(@Query() query: QueryBundlesDto) {
+    return this.bundlesService.findAll({
+      instructorAddress: query.instructorAddress,
+      page: query.page,
+      limit: query.limit,
+    });
   }
 
   @Get(':id')

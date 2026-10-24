@@ -1,6 +1,6 @@
 import {
   Injectable, NotFoundException, ForbiddenException, Logger,
-  BadRequestException,
+  BadRequestException, ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
@@ -255,6 +255,7 @@ export class CertificatesService {
     if (cert.isRevoked) {
       return {
         status: 'INVALID',
+        valid: false,
         reason: 'revoked',
         certificate: null,
       };
@@ -264,17 +265,20 @@ export class CertificatesService {
     if (!cert.txHash) {
       return {
         status: 'PENDING',
+        valid: false,
         reason: 'not_issued_on_chain_yet',
         certificate: null,
       };
     }
 
     // Cross-check with on-chain state
-    const onChainResult = await this.stellar.verifyCertificateOnChain(certificateId);
+    const onChain = await this.stellar.verifyCertificateOnChain(certificateId);
+    const onChainResult = typeof onChain === 'boolean' ? { valid: onChain, error: undefined } : onChain;
 
     if (onChainResult.error) {
       return {
         status: 'UNVERIFIABLE',
+        valid: false,
         reason: 'rpc_error',
         details: onChainResult.error.message,
         certificate: null,
@@ -284,12 +288,13 @@ export class CertificatesService {
     if (!onChainResult.valid) {
       return {
         status: 'INVALID',
+        valid: false,
         reason: 'not_found_on_chain',
         certificate: null,
       };
     }
 
-    return { status: 'VALID', certificate: cert };
+    return { status: 'VALID', valid: true, certificate: cert };
   }
 
   async revoke(certificateId: string, adminId: string, reason?: string) {

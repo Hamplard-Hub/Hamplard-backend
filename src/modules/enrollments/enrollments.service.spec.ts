@@ -8,7 +8,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { InvoicesService } from '../invoices/invoices.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { DripScheduleService } from '../lessons/drip-schedule.service';
-import { FraudFlagStatus, FraudRiskLevel } from '@prisma/client';
+import { StellarService } from '../../common/stellar/stellar.service';
+import { CourseStatus, FraudFlagStatus, FraudRiskLevel } from '@prisma/client';
 
 describe('EnrollmentsService - Fraud HOLD handling', () => {
   let service: EnrollmentsService;
@@ -27,6 +28,9 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    payment: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     enrollmentFraudFlag: {
       create: jest.fn(),
       findMany: jest.fn(),
@@ -34,6 +38,10 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
       count: jest.fn(),
     },
     $transaction: jest.fn(),
+  };
+
+  const mockStellar = {
+    getTransactionStatus: jest.fn().mockResolvedValue({ successful: true, status: 'SUCCESS' }),
   };
 
   const mockNotifications = {
@@ -62,6 +70,7 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
         { provide: InvoicesService, useValue: mockInvoices },
         { provide: ReferralsService, useValue: mockReferrals },
         { provide: DripScheduleService, useValue: mockDripSchedule },
+        { provide: StellarService, useValue: mockStellar },
         {
           provide: ConfigService,
           useValue: {
@@ -80,7 +89,7 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
   it('persists a HELD fraud flag and throws 423 when an enrollment is blocked by fraud check', async () => {
     mockPrisma.enrollment.findUnique.mockResolvedValue(null);
     // checkPrerequisites() requires the target course to exist
-    mockPrisma.course.findUnique.mockResolvedValue({ id: 'course-1', title: 'Course 1' });
+    mockPrisma.course.findUnique.mockResolvedValue({ id: 'course-1', title: 'Course 1', status: CourseStatus.ACTIVE });
     mockPrisma.coursePrerequisite.findMany.mockResolvedValue([]);
 
     const heldFlagId = 'flag-held-uuid-1';
