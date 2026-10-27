@@ -89,6 +89,7 @@ enum NotificationType {
   REFUND_PROCESSED
   REFERRAL_REWARD_ISSUED
   COURSE_INTEREST_REMINDER
+  NEW_DEVICE_LOGIN
 }
 
 enum RefundStatus {

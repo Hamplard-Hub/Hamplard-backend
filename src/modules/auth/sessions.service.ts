@@ -1,6 +1,9 @@
-// sessions.service.ts — issue #69: session and device management
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+// sessions.service.ts — issue #69 & #501: session and device management + new-device login alerts
+import { Injectable, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { NotificationType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 export interface DeviceMetadata {
   userAgent?: string;
@@ -8,7 +11,7 @@ export interface DeviceMetadata {
 }
 
 /** Very small heuristic parser — good enough for a human-readable device label. */
-function parseDeviceLabel(userAgent?: string): string | undefined {
+export function parseDeviceLabel(userAgent?: string): string | undefined {
   if (!userAgent) return undefined;
 
   let browser = 'Unknown browser';
@@ -30,7 +33,11 @@ function parseDeviceLabel(userAgent?: string): string | undefined {
 
 @Injectable()
 export class SessionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly notifications?: NotificationsService,
+    @Optional() private readonly config?: ConfigService,
+  ) {}
 
   async createSession(params: {
     userId: string;
@@ -39,16 +46,55 @@ export class SessionsService {
     meta?: DeviceMetadata;
   }) {
     const { userId, jti, expiresAt, meta } = params;
-    return this.prisma.session.create({
+    const deviceLabel = parseDeviceLabel(meta?.userAgent);
+    const ipAddress = meta?.ipAddress;
+    const hasDeviceContext = Boolean(deviceLabel || ipAddress || meta?.userAgent);
+
+    const existingDeviceSession =
+      hasDeviceContext && typeof this.prisma.session.findFirst === 'function'
+        ? await this.prisma.session.findFirst({
+            where: {
+              userId,
+              deviceLabel: deviceLabel ?? null,
+              ipAddress: ipAddress ?? null,
+            },
+          })
+        : null;
+
+    const session = await this.prisma.session.create({
       data: {
         userId,
         jti,
         expiresAt,
         userAgent: meta?.userAgent,
-        ipAddress: meta?.ipAddress,
-        deviceLabel: parseDeviceLabel(meta?.userAgent),
+        ipAddress,
+        deviceLabel,
       },
     });
+
+    if (hasDeviceContext && !existingDeviceSession && this.notifications) {
+      const frontendUrl =
+        this.config?.get<string>('FRONTEND_URL', 'https://hamplard.com') ??
+        'https://hamplard.com';
+      const sessionsUrl = `${frontendUrl.replace(/\/+$/, '')}/dashboard/settings/sessions`;
+      const deviceSummary = deviceLabel ?? 'an unrecognized device';
+      const ipSummary = ipAddress ? ` (IP: ${ipAddress})` : '';
+
+      await this.notifications.notifyUser(
+        userId,
+        'NEW_DEVICE_LOGIN' as NotificationType,
+        'New device sign-in detected',
+        `We detected a sign-in to your Hamplard account from ${deviceSummary}${ipSummary}. Review or revoke active sessions at ${sessionsUrl}`,
+        {
+          sessionId: session.id,
+          deviceLabel: deviceLabel ?? null,
+          ipAddress: ipAddress ?? null,
+          sessionsUrl,
+        },
+      );
+    }
+
+    return session;
   }
 
   /** Used by JwtAuthGuard to reject requests carrying a revoked/expired session token. */

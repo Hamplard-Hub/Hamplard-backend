@@ -567,6 +567,7 @@ export class NotificationsService {
       KYC_REJECTED: '❌',
       PAYOUT_PROCESSED: '💸',
       PAYOUT_SCHEDULED: '📅',
+      NEW_DEVICE_LOGIN: '🔐',
     };
 
     await this.transporter.sendMail({

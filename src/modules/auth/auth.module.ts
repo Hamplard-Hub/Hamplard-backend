@@ -14,6 +14,7 @@ import { GoogleAuthGuard } from './google-auth.guard';
 import { OtpController } from './otp.controller';
 import { OtpService } from './otp.service';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { RefreshTokenService } from './refresh-token.service';
 import { SessionsController } from './sessions.controller';
 import { SessionsService } from './sessions.service';
@@ -36,6 +37,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
       }),
     }),
     ReferralsModule,
+    NotificationsModule,
   ],
   controllers: [
     AuthController,
