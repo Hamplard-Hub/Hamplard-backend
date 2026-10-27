@@ -128,4 +128,34 @@ describe('HealthController (Issue #80 — checkpoint via health endpoint)', () =
       }),
     );
   });
+
+  it("GET /health/live checks only the process and stays ok even when DB and virus scanner fail (#500)", async () => {
+    mockPrisma.$queryRawUnsafe.mockRejectedValue(new Error("DB connection timeout"));
+    mockVirusScan.getScannerStatus.mockReturnValue({ enabled: true, available: false });
+
+    const result = await controller.live();
+
+    expect(result.status).toBe("ok");
+    expect(result.info?.process).toEqual(
+      expect.objectContaining({
+        status: "up",
+      }),
+    );
+    expect(mockEvents.getCheckpointStatus).not.toHaveBeenCalled();
+  });
+
+  it("GET /health/ready checks database, Redis, checkpoint, and virus scanner (#500)", async () => {
+    mockEvents.getCheckpointStatus.mockResolvedValue(healthyStatus);
+
+    const result = await controller.ready();
+
+    expect(result.status).toBe("ok");
+    expect(result.info?.database).toEqual({ status: "up" });
+    expect(result.info?.redis).toEqual({ status: "up", configured: false });
+    expect(result.info?.virus_scanner).toEqual({
+      status: "up",
+      enabled: true,
+      available: true,
+    });
+  });
 });
