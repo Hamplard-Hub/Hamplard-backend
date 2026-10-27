@@ -1,15 +1,20 @@
 // lessons.service.ts
 import {
-  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger,
+  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger, Optional,
 } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { NotificationType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class LessonsService {
   private readonly logger = new Logger(LessonsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly notifications?: NotificationsService,
+    @Optional() private readonly certificatesService?: { issue: (adminId: string, studentId: string, courseId: string) => Promise<any> },
+  ) {}
 
   private async verifyCourseOwnership(
     courseId: string,
@@ -256,7 +261,15 @@ export class LessonsService {
   private async recalculateProgress(enrollmentId: string) {
     const enrollment = await this.prisma.enrollment.findUnique({
       where: { id: enrollmentId },
-      include: { course: { include: { modules: { include: { lessons: true } } } } },
+      include: {
+        student: true,
+        course: {
+          include: {
+            instructor: true,
+            modules: { include: { lessons: true } },
+          },
+        },
+      },
     });
     if (!enrollment) return;
 
@@ -269,17 +282,79 @@ export class LessonsService {
     });
 
     const progressPercent = Math.round((completed / total) * 100);
+    const wasAlreadyCompleted = enrollment.status === 'COMPLETED';
+    const isNowCompleted = progressPercent === 100;
+    const newlyCompleted = isNowCompleted && !wasAlreadyCompleted;
 
     await this.prisma.enrollment.update({
       where: { id: enrollmentId },
       data: {
         progressPercent,
-        ...(progressPercent === 100 ? {
+        ...(newlyCompleted ? {
           status:      'COMPLETED',
           completedAt: new Date(),
         } : {}),
       },
     });
+
+    if (newlyCompleted) {
+      const totalModules = enrollment.course.modules.length;
+      const totalDurationSecs = allLessons.reduce(
+        (acc, lesson: any) => acc + (Number(lesson.videoDuration) || 0),
+        0,
+      );
+      const summary = {
+        enrollmentId,
+        courseId: enrollment.courseId,
+        courseTitle: enrollment.course.title,
+        totalModules,
+        totalLessons: total,
+        completedLessons: completed,
+        totalDurationSecs,
+      };
+
+      if (this.notifications) {
+        await this.notifications.notifyUser(
+          enrollment.studentId,
+          NotificationType.COURSE_COMPLETED,
+          `Course Completed: ${enrollment.course.title}`,
+          `Congratulations! You completed all ${total} lessons across ${totalModules} modules in "${enrollment.course.title}".`,
+          summary,
+        );
+
+        const instructorId =
+          (enrollment.course as any).instructor?.id ??
+          (enrollment.course as any).instructorId;
+        if (instructorId && instructorId !== enrollment.studentId) {
+          const studentName = (enrollment as any).student?.name ?? 'A student';
+          await this.notifications.notifyUser(
+            instructorId,
+            NotificationType.COURSE_COMPLETED,
+            `Student Completed ${enrollment.course.title}`,
+            `${studentName} has completed 100% (${total} lessons across ${totalModules} modules) of "${enrollment.course.title}".`,
+            {
+              ...summary,
+              studentId: enrollment.studentId,
+              studentName,
+            },
+          );
+        }
+      }
+
+      if (this.certificatesService?.issue) {
+        const issuerId =
+          (enrollment.course as any).instructor?.id ??
+          (enrollment.course as any).instructorId ??
+          enrollment.studentId;
+        await this.certificatesService
+          .issue(issuerId, enrollment.studentId, enrollment.courseId)
+          .catch((err: Error) =>
+            this.logger.debug(
+              `Automatic certificate issuance skipped for ${enrollmentId}: ${err.message}`,
+            ),
+          );
+      }
+    }
 
     this.logger.debug(`Enrollment ${enrollmentId} progress: ${progressPercent}%`);
     return progressPercent;
