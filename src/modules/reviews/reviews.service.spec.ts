@@ -27,6 +27,7 @@ describe('ReviewsService (Issue #173) — edit/delete/admin', () => {
       findMany: jest.fn(),
       count: jest.fn(),
       aggregate: jest.fn().mockResolvedValue({ _avg: { rating: 4 }, _count: { _all: 1 } }),
+      groupBy: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -99,4 +100,48 @@ describe('ReviewsService (Issue #173) — edit/delete/admin', () => {
 
     await expect(service.adminDeleteReview('nonexistent')).rejects.toThrow(NotFoundException);
   });
+
+  describe('getCourseReviewSummary (Issue #491)', () => {
+    it('should compute rating distribution histogram and average', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue({ id: 'course1' });
+      mockPrisma.courseReview.groupBy.mockResolvedValue([
+        { rating: 5, _count: { rating: 10 } },
+        { rating: 4, _count: { rating: 5 } },
+        { rating: 3, _count: { rating: 2 } },
+        { rating: 1, _count: { rating: 1 } },
+      ]);
+
+      const summary = await service.getCourseReviewSummary('course1');
+      expect(summary.courseId).toBe('course1');
+      expect(summary.distribution).toEqual({
+        1: 1,
+        2: 0,
+        3: 2,
+        4: 5,
+        5: 10,
+      });
+      expect(summary.total).toBe(18);
+      // (5*10 + 4*5 + 3*2 + 1*1) = 50 + 20 + 6 + 1 = 77 / 18 = 4.28
+      expect(summary.average).toBe(4.28);
+    });
+
+    it('should return empty distribution and 0 average when no reviews exist', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue({ id: 'course-empty' });
+      mockPrisma.courseReview.groupBy.mockResolvedValue([]);
+
+      const summary = await service.getCourseReviewSummary('course-empty');
+      expect(summary.distribution).toEqual({ 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 });
+      expect(summary.total).toBe(0);
+      expect(summary.average).toBe(0);
+    });
+
+    it('should throw 404 if course does not exist', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(null);
+
+      await expect(service.getCourseReviewSummary('missing-course')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
 });
+
