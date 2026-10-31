@@ -37,6 +37,13 @@ export class ReviewsController {
     return this.reviewsService.findForCourse(courseId, pagination.page, pagination.limit);
   }
 
+  @Get(':courseId/reviews/summary')
+  @ApiOperation({ summary: 'Get course rating distribution summary and average (Issue #491)' })
+  getCourseReviewSummary(@Param('courseId') courseId: string) {
+    return this.reviewsService.getCourseReviewSummary(courseId);
+  }
+
+
   @Patch(':courseId/reviews/me')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()

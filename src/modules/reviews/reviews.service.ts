@@ -95,6 +95,38 @@ export class ReviewsService {
     return { message: 'Review deleted by admin' };
   }
 
+  async getCourseReviewSummary(courseId: string) {
+    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
+    if (!course) throw new NotFoundException('Course not found');
+
+    const groups = await this.prisma.courseReview.groupBy({
+      by: ['rating'],
+      where: { courseId },
+      _count: { rating: true },
+    });
+
+    const distribution: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    let total = 0;
+    let sum = 0;
+
+    for (const g of groups) {
+      if (g.rating >= 1 && g.rating <= 5) {
+        distribution[g.rating] = g._count.rating;
+        total += g._count.rating;
+        sum += g.rating * g._count.rating;
+      }
+    }
+
+    const average = total > 0 ? Number((sum / total).toFixed(2)) : 0;
+
+    return {
+      courseId,
+      distribution,
+      total,
+      average,
+    };
+  }
+
   private async recomputeCourseRating(courseId: string) {
     const agg = await this.prisma.courseReview.aggregate({
       where: { courseId },
