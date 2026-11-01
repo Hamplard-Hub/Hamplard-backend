@@ -43,10 +43,12 @@ describe('CouponsService (Issue #145) — Validation of expiresAt and discount b
     },
     course: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
     },
     couponRedemption: {
       findUnique: jest.fn(),
       create: jest.fn(),
+      findMany: jest.fn(),
     },
     enrollment: {
       findUnique: jest.fn(),
@@ -540,6 +542,106 @@ describe('CouponsService (Issue #145) — Validation of expiresAt and discount b
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);
       expect(errors.some((e) => e.property === 'discountValue')).toBe(true);
+    });
+  });
+
+  describe('Coupon performance stats (Issue #496)', () => {
+    const owner = { id: 'user-1', role: UserRole.INSTRUCTOR };
+    const otherInstructor = { id: 'user-2', role: UserRole.INSTRUCTOR };
+
+    it('returns total redemptions, revenue, discount given and daily breakdown for owner', async () => {
+      mockPrisma.coupon.findUnique.mockResolvedValue(mockExistingCoupon);
+
+      const redemptions = [
+        {
+          id: 'red-1',
+          couponId: 'coupon-1',
+          courseId: 'course-1',
+          discount: 20,
+          redeemedAt: new Date('2026-10-25T10:00:00Z'),
+        },
+        {
+          id: 'red-2',
+          couponId: 'coupon-1',
+          courseId: 'course-1',
+          discount: 20,
+          redeemedAt: new Date('2026-10-25T14:30:00Z'),
+        },
+        {
+          id: 'red-3',
+          couponId: 'coupon-1',
+          courseId: 'course-2',
+          discount: 10,
+          redeemedAt: new Date('2026-10-26T09:15:00Z'),
+        },
+      ];
+
+      mockPrisma.couponRedemption.findMany.mockResolvedValue(redemptions);
+      mockPrisma.course.findMany.mockResolvedValue([
+        { id: 'course-1', price: 100 },
+        { id: 'course-2', price: 50 },
+      ]);
+
+      const result = await service.getStats('coupon-1', owner);
+
+      expect(result).toBeDefined();
+      expect(result.couponId).toBe('coupon-1');
+      expect(result.code).toBe('SAVE20');
+      expect(result.totalRedemptions).toBe(3);
+      // Course-1 price 100, discount 20 -> revenue 80 each (x2 = 160)
+      // Course-2 price 50, discount 10 -> revenue 40 (x1 = 40)
+      // Total revenue = 200, Total discount = 50
+      expect(result.totalRevenue).toBe(200);
+      expect(result.totalDiscountGiven).toBe(50);
+
+      expect(result.byDay).toHaveLength(2);
+      expect(result.byDay[0]).toEqual({
+        date: '2026-10-25',
+        redemptions: 2,
+        revenue: 160,
+        discountGiven: 40,
+      });
+      expect(result.byDay[1]).toEqual({
+        date: '2026-10-26',
+        redemptions: 1,
+        revenue: 40,
+        discountGiven: 10,
+      });
+    });
+
+    it('allows admins to view performance stats of any coupon', async () => {
+      mockPrisma.coupon.findUnique.mockResolvedValue(mockExistingCoupon);
+      mockPrisma.couponRedemption.findMany.mockResolvedValue([]);
+      mockPrisma.course.findMany.mockResolvedValue([]);
+
+      const result = await service.getStats('coupon-1', admin);
+      expect(result.totalRedemptions).toBe(0);
+      expect(result.totalRevenue).toBe(0);
+      expect(result.totalDiscountGiven).toBe(0);
+      expect(result.byDay).toEqual([]);
+    });
+
+    it('rejects an instructor viewing stats for another user coupon with 403 Forbidden', async () => {
+      mockPrisma.coupon.findUnique.mockResolvedValue(mockExistingCoupon);
+
+      await expect(service.getStats('coupon-1', otherInstructor)).rejects.toThrow(
+        ForbiddenException,
+      );
+      await expect(service.getStats('coupon-1', otherInstructor)).rejects.toThrow(
+        'You can only manage coupons you created',
+      );
+    });
+
+    it('returns empty stats correctly when a coupon has zero redemptions', async () => {
+      mockPrisma.coupon.findUnique.mockResolvedValue(mockExistingCoupon);
+      mockPrisma.couponRedemption.findMany.mockResolvedValue([]);
+      mockPrisma.course.findMany.mockResolvedValue([]);
+
+      const result = await service.getStats('coupon-1', owner);
+      expect(result.totalRedemptions).toBe(0);
+      expect(result.totalRevenue).toBe(0);
+      expect(result.totalDiscountGiven).toBe(0);
+      expect(result.byDay).toEqual([]);
     });
   });
 });

@@ -93,6 +93,20 @@ export class CouponsController {
     return this.couponsService.getRedemptions(id, user, pagination.page, pagination.limit);
   }
 
+  @Get(':id/stats')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.INSTRUCTOR)
+  @ApiOperation({
+    summary: 'Get coupon performance stats (revenue, redemptions, discount given by day)',
+    description: 'Owner or admin only. Returns total redemptions, revenue, discount given, and daily breakdown.',
+  })
+  getStats(
+    @Param('id') id: string,
+    @CurrentUser() user: CouponActor,
+  ) {
+    return this.couponsService.getStats(id, user);
+  }
+
   // ----------------------------------------------------------
   // ALL AUTHENTICATED USERS — CHECKOUT VALIDATION
   // ----------------------------------------------------------
