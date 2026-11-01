@@ -335,6 +335,70 @@ export class CouponsService {
     return { data: redemptions, meta: { total, page, limit } };
   }
 
+  /**
+   * Returns performance stats for a coupon: redemptions, revenue, discount given,
+   * aggregated both in total and broken down by day.
+   * Restricted to the coupon's creator or admins (Issue #496).
+   */
+  async getStats(couponId: string, actor: CouponActor) {
+    const coupon = await this.findOne(couponId, actor);
+
+    const redemptions = await this.prisma.couponRedemption.findMany({
+      where: { couponId },
+      orderBy: { redeemedAt: 'asc' },
+    });
+
+    // Fetch associated courses to derive original course prices
+    const courseIds = [...new Set(redemptions.map((r) => r.courseId))];
+    const courses =
+      courseIds.length > 0
+        ? await this.prisma.course.findMany({
+            where: { id: { in: courseIds } },
+            select: { id: true, price: true },
+          })
+        : [];
+
+    const priceMap = new Map(courses.map((c) => [c.id, Number(c.price)]));
+
+    let totalDiscountGiven = 0;
+    let totalRevenue = 0;
+    const dailyMap = new Map<
+      string,
+      { date: string; redemptions: number; revenue: number; discountGiven: number }
+    >();
+
+    for (const r of redemptions) {
+      const discount = Number(r.discount);
+      const originalPrice = priceMap.get(r.courseId) ?? discount;
+      const revenue = Math.max(0, originalPrice - discount);
+
+      totalDiscountGiven += discount;
+      totalRevenue += revenue;
+
+      const dateStr = r.redeemedAt.toISOString().split('T')[0];
+      const entry = dailyMap.get(dateStr) ?? {
+        date: dateStr,
+        redemptions: 0,
+        revenue: 0,
+        discountGiven: 0,
+      };
+
+      entry.redemptions += 1;
+      entry.revenue = Number((entry.revenue + revenue).toFixed(2));
+      entry.discountGiven = Number((entry.discountGiven + discount).toFixed(2));
+      dailyMap.set(dateStr, entry);
+    }
+
+    return {
+      couponId: coupon.id,
+      code: coupon.code,
+      totalRedemptions: redemptions.length,
+      totalRevenue: Number(totalRevenue.toFixed(2)),
+      totalDiscountGiven: Number(totalDiscountGiven.toFixed(2)),
+      byDay: Array.from(dailyMap.values()),
+    };
+  }
+
   // ----------------------------------------------------------
   // HELPERS
   // ----------------------------------------------------------
