@@ -600,6 +600,65 @@ export class CoursesService {
   }
 
   /**
+   * Issue #498 — returns paginated list of students enrolled in a course.
+   * Accessible by the course instructor or an ADMIN.
+   * Email/phone are excluded to respect student privacy.
+   */
+  async getStudentRoster(courseId: string, user: CourseActor, page = 1, limit = 20) {
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
+    this.assertCourseOwner(course, user);
+
+    const [enrollments, total] = await this.prisma.$transaction([
+      this.prisma.enrollment.findMany({
+        where: { courseId },
+        select: {
+          id: true,
+          enrolledAt: true,
+          progressPercent: true,
+          updatedAt: true,
+          status: true,
+          student: {
+            select: {
+              id: true,
+              name: true,
+              avatarUrl: true,
+            },
+          },
+        },
+        orderBy: { enrolledAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.enrollment.count({ where: { courseId } }),
+    ]);
+
+    const students = enrollments.map((e) => ({
+      enrollmentId: e.id,
+      studentId: e.student.id,
+      name: e.student.name || 'Anonymous Student',
+      avatarUrl: e.student.avatarUrl,
+      enrolledAt: e.enrolledAt,
+      progress: e.progressPercent,
+      lastActivity: e.updatedAt,
+      status: e.status,
+    }));
+
+    return {
+      data: students,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
    * Detects a directed cycle in the "course requires prerequisite" graph
    * using an iterative DFS with coloring. Returns the cycle path or null.
    */

@@ -31,6 +31,8 @@ const mockPrisma = {
   },
   enrollment: {
     findFirst: jest.fn(),
+    findMany: jest.fn(),
+    count: jest.fn(),
   },
   $getTransactionClient: jest.fn(),
   $transaction: jest.fn(),
@@ -570,6 +572,52 @@ describe('CoursesService status transitions (issue #232)', () => {
         await expect(service.removePrerequisite(MOCK_COURSE.id, user, 'PREREQ-1'))
           .resolves.toEqual({ message: 'Prerequisite removed successfully' });
         expect(mockPrisma.coursePrerequisite.delete).toHaveBeenCalledWith({ where: { id: 'link-1' } });
+      });
+    });
+
+    describe('getStudentRoster() (issue #498)', () => {
+      beforeEach(() => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
+        mockPrisma.$transaction.mockResolvedValue([
+          [
+            {
+              id: 'enr-1',
+              enrolledAt: new Date('2026-01-01'),
+              progressPercent: 75,
+              updatedAt: new Date('2026-01-02'),
+              status: 'ACTIVE',
+              student: {
+                id: 'student-1',
+                name: 'Alice Student',
+                avatarUrl: 'https://example.com/avatar.png',
+              },
+            },
+          ],
+          1,
+        ]);
+      });
+
+      it('returns 403 for a non-owner instructor', async () => {
+        await expect(service.getStudentRoster(MOCK_COURSE.id, NON_OWNER, 1, 20))
+          .rejects.toThrow(ForbiddenException);
+      });
+
+      it.each([['owner', OWNER], ['admin', ADMIN]])('returns student roster for %s without email/phone', async (_label, user) => {
+        const result = await service.getStudentRoster(MOCK_COURSE.id, user, 1, 20);
+        expect(result.data).toHaveLength(1);
+        expect(result.data[0]).toEqual({
+          enrollmentId: 'enr-1',
+          studentId: 'student-1',
+          name: 'Alice Student',
+          avatarUrl: 'https://example.com/avatar.png',
+          enrolledAt: expect.any(Date),
+          progress: 75,
+          lastActivity: expect.any(Date),
+          status: 'ACTIVE',
+        });
+        expect((result.data[0] as any).email).toBeUndefined();
+        expect((result.data[0] as any).phoneNumber).toBeUndefined();
+        expect(result.meta.total).toBe(1);
       });
     });
   });
