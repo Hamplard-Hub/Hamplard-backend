@@ -305,6 +305,48 @@ export class EnrollmentsService {
     return { data: enrollments, meta: { total, page, limit } };
   }
 
+  async searchAdmin(query: {
+    studentId?: string;
+    courseId?: string;
+    txHash?: string;
+    status?: any;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+
+    const where: any = {};
+    if (query.studentId) where.studentId = query.studentId;
+    if (query.courseId) where.courseId = query.courseId;
+    if (query.txHash) where.txHash = { contains: query.txHash, mode: 'insensitive' };
+    if (query.status) where.status = query.status;
+
+    const [enrollments, total] = await this.prisma.$transaction([
+      this.prisma.enrollment.findMany({
+        where,
+        include: {
+          student: { select: { id: true, name: true, email: true, stellarAddress: true } },
+          course: { select: { id: true, title: true, price: true } },
+        },
+        orderBy: { enrolledAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.enrollment.count({ where }),
+    ]);
+
+    return {
+      data: enrollments,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   async findOne(studentId: string, courseId: string) {
     const enrollment = await this.prisma.enrollment.findUnique({
       where: { studentId_courseId: { studentId, courseId } },
