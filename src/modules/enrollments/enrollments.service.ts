@@ -32,16 +32,17 @@ export class EnrollmentsService {
    * The backend receives the txHash and verifies it on-chain before registering.
    * 
    * Issues #239 & #240:
-   * - Verifies the payment transaction on-chain
+   * - Verifies the payment transaction on-chain comprehensively (issue #403)
    * - Validates the student, course ID, and amount from the transaction
    * - Ensures txHash is unique (one payment = one enrollment)
    * - Rejects enrollment in non-ACTIVE courses
+   * 
+   * Issue #404: Wraps payment, enrollment, and course stats in a transaction
    */
   async create(
     studentId: string,
     courseId: string,
     txHash: string,
-    amountPaid: number,
   ) {
     // ------------------------------------------------------------------
     // PRE-CHECK #0: Verify the course is ACTIVE (issue #239)
@@ -53,10 +54,10 @@ export class EnrollmentsService {
     this.assertCourseActive(course);
 
     // ------------------------------------------------------------------
-    // PRE-CHECK #0B/#0C: Verify the tx on-chain and that it is unused
-    // (issues #239 & #240)
+    // PRE-CHECK #0B/#0C/#403: Verify the tx on-chain comprehensively
+    // and get verified amount (not from request body)
     // ------------------------------------------------------------------
-    await this.verifyPaymentTransaction(txHash);
+    const verifiedAmountPaid = await this.verifyPaymentTransaction(txHash, studentId, courseId);
 
     // ------------------------------------------------------------------
     // PRE-CHECK #1: Ensure student is not already enrolled
@@ -67,37 +68,51 @@ export class EnrollmentsService {
     if (existing) throw new ConflictException('Already enrolled in this course');
 
     // ------------------------------------------------------------------
-    // PRE-CHECK #2/#3: Prerequisites + fraud scoring
+    // PRE-CHECK #2/#3: Prerequisites + fraud scoring (issue #405)
     // ------------------------------------------------------------------
-    const fraudResult = await this.runPreEnrollmentChecks(studentId, courseId, amountPaid);
+    const fraudResult = await this.runPreEnrollmentChecks(studentId, courseId, verifiedAmountPaid);
 
     // ------------------------------------------------------------------
-    // STEP 1: Create Payment record (issue #240 — txHash uniqueness)
-    // ------------------------------------------------------------------
-    const payment = await this.prisma.payment.create({
-      data: {
-        txHash,
-        studentId,
-        amountPaid: new Prisma.Decimal(amountPaid),
-        paymentType: 'ENROLLMENT',
-      },
-    });
-
-    // ------------------------------------------------------------------
-    // STEP 2: Create enrollment record with fee snapshot
+    // STEP 1-3: Create Payment, Enrollment, and update Course stats atomically
+    // (issue #404 — ensure if enrollment fails, payment is also rolled back)
     // ------------------------------------------------------------------
     let enrollment;
     try {
-      enrollment = await this.prisma.enrollment.create({
-        data: {
-          studentId,
-          courseId,
-          txHash,
-          amountPaid: new Prisma.Decimal(amountPaid),
-          platformFeePercent: course.platformFeePercent,
-        },
-        include: { course: true, student: true },
+      const result = await this.prisma.$transaction(async (tx) => {
+        // Create Payment record (issue #240 — txHash uniqueness)
+        await tx.payment.create({
+          data: {
+            txHash,
+            studentId,
+            amountPaid: new Prisma.Decimal(verifiedAmountPaid),
+            paymentType: 'ENROLLMENT',
+          },
+        });
+
+        // Create enrollment record with fee snapshot
+        const newEnrollment = await tx.enrollment.create({
+          data: {
+            studentId,
+            courseId,
+            txHash,
+            amountPaid: new Prisma.Decimal(verifiedAmountPaid),
+            platformFeePercent: course.platformFeePercent,
+          },
+          include: { course: true, student: true },
+        });
+
+        // Update course stats
+        await tx.course.update({
+          where: { id: courseId },
+          data: {
+            totalEnrollments: { increment: 1 },
+            totalRevenue: { increment: new Prisma.Decimal(verifiedAmountPaid) },
+          },
+        });
+
+        return newEnrollment;
       });
+      enrollment = result;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         throw new ConflictException('Already enrolled in this course');
@@ -105,16 +120,7 @@ export class EnrollmentsService {
       throw error;
     }
 
-    // Update course stats
-    await this.prisma.course.update({
-      where: { id: courseId },
-      data: {
-        totalEnrollments: { increment: 1 },
-        totalRevenue: { increment: new Prisma.Decimal(amountPaid) },
-      },
-    });
-
-    await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, amountPaid);
+    await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, verifiedAmountPaid);
 
     this.logger.log(`Enrollment created: ${studentId} → ${courseId} (payment ${txHash})`);
     return enrollment;
@@ -138,10 +144,12 @@ export class EnrollmentsService {
   }
 
   /**
-   * Verifies the payment transaction succeeded on-chain (issue #239) and has
-   * not already been used for another purchase (issue #240).
+   * Basic payment transaction verification for bundle enrollments.
+   * Checks if transaction succeeded and hasn't been used.
+   * Does not validate specific course/student as bundles span multiple courses.
+   * Issue #403: For bundle context, we verify basic tx validity only.
    */
-  async verifyPaymentTransaction(txHash: string) {
+  async verifyPaymentTransactionBasic(txHash: string): Promise<void> {
     const txStatus = await this.stellar.getTransactionStatus(txHash);
     if (!txStatus) {
       throw new BadRequestException(
@@ -160,6 +168,76 @@ export class EnrollmentsService {
     if (existingPayment) {
       throw new ConflictException(
         `Payment ${txHash} has already been used. One transaction maps to one purchase.`,
+      );
+    }
+  }
+
+  /**
+   * Comprehensive payment transaction verification (issue #403).
+   * Validates:
+   *  1. Transaction succeeded on-chain
+   *  2. Called the enroll method on Hamplard contract
+   *  3. Student address matches caller's wallet
+   *  4. Course ID matches request
+   *  5. Amount paid >= course price
+   *  6. Payment hasn't been used already (issue #240)
+   * 
+   * Returns the verified amount paid (from on-chain data, not request body).
+   */
+  async verifyPaymentTransaction(
+    txHash: string,
+    studentId: string,
+    courseId: string,
+  ): Promise<number> {
+    // First check if payment has already been used (issue #240)
+    const existingPayment = await this.prisma.payment.findUnique({
+      where: { txHash },
+    });
+    if (existingPayment) {
+      throw new ConflictException(
+        `Payment ${txHash} has already been used. One transaction maps to one purchase.`,
+      );
+    }
+
+    // Get student wallet address
+    const student = await this.prisma.user.findUnique({
+      where: { id: studentId },
+      select: { stellarAddress: true },
+    });
+    if (!student) {
+      throw new NotFoundException(`Student ${studentId} not found`);
+    }
+
+    // Get course for price validation
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      select: { price: true },
+    });
+    if (!course) {
+      throw new NotFoundException(`Course ${courseId} not found`);
+    }
+
+    // Comprehensively verify the enrollment transaction on-chain
+    try {
+      const verified = await this.stellar.verifyEnrollmentTransaction(
+        txHash,
+        this.stellar.getContractId(),
+        student.stellarAddress,
+        courseId,
+        Number(course.price),
+      );
+
+      return verified.amountPaid;
+    } catch (error) {
+      // Re-throw as BadRequestException with more user-friendly message
+      if (error.message.includes('mismatch')) {
+        throw new BadRequestException(error.message);
+      }
+      if (error.message.includes('Insufficient')) {
+        throw new BadRequestException(error.message);
+      }
+      throw new BadRequestException(
+        `Transaction ${txHash} verification failed: ${error.message}`,
       );
     }
   }
@@ -219,6 +297,9 @@ export class EnrollmentsService {
    * Side effects that follow a newly created enrollment: fraud flag
    * persistence, student/instructor notifications, invoice, referral
    * conversion and drip schedule initialisation.
+   *
+   * Issue #405: Receives the pre-computed fraudResult instead of recomputing it.
+   * Only persists flags if needed and action is FLAG.
    */
   async runPostEnrollmentSteps(
     enrollment: {
@@ -233,10 +314,17 @@ export class EnrollmentsService {
   ) {
     const { studentId, courseId } = enrollment;
 
-    // Persist fraud flag if score is HIGH
-    if (fraudResult.action === 'FLAG') {
+    // Persist fraud flag if score is HIGH (action=FLAG) and not yet persisted (issue #405)
+    if (fraudResult.action === 'FLAG' && !fraudResult.flagId) {
+      // Use shouldPersistFlag=true to force persistence in post-check
       this.fraudDetection
-        .processFraudCheck(enrollment.id, studentId, courseId, amountPaid)
+        .processFraudCheck(
+          enrollment.id,
+          studentId,
+          courseId,
+          amountPaid,
+          true, // shouldPersistFlag - persist even though we already scored pre-enrollment
+        )
         .catch((err: Error) =>
           this.logger.error(
             `Fraud flag persistence failed for enrollment ${enrollment.id}: ${err.message}`,

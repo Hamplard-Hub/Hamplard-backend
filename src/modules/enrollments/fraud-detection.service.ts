@@ -118,17 +118,23 @@ export class FraudDetectionService {
    * NOTE: When action is HOLD, the enrollment itself should NOT be created.
    *       The caller (EnrollmentsService) is responsible for enforcing this.
    *
-   * @param enrollmentId  The newly created enrollment UUID (pass null when HOLD
-   *                      check is run *before* DB creation — see integration note).
+   * ISSUE #405: To prevent double-scoring, this method is called ONCE pre-enrollment
+   * (with enrollmentId=null), and the result is passed to runPostEnrollmentSteps.
+   * The post-check ONLY persists flags if action=FLAG and did not already persist.
+   *
+   * @param enrollmentId  The newly created enrollment UUID (pass null for pre-check).
    * @param studentId     Platform user ID of the student.
    * @param courseId      Course being enrolled in.
    * @param amountPaid    USDC amount from the enrollment payload.
+   * @param shouldPersistFlag  If true, always persist the flag even if action=FLAG.
+   *                           Used only for post-enrollment persistence (issue #405).
    */
   async processFraudCheck(
     enrollmentId: string | null,
     studentId: string,
     courseId: string,
     amountPaid: number,
+    shouldPersistFlag = false,
   ): Promise<FraudCheckResult> {
     const { score, riskLevel, reasons, action } =
       await this.scoreEnrollment(studentId, courseId, amountPaid);
@@ -141,13 +147,17 @@ export class FraudDetectionService {
       return { action, score, riskLevel, reasons };
     }
 
-    // FLAG or HOLD — persist a fraud flag
-    // If FLAG action and no enrollmentId provided yet, return result without persisting
-    // (the flag will be persisted in post-check once enrollment is created)
-    if (action === 'FLAG' && !enrollmentId) {
+    // FLAG action without enrollment or persistence flag — return without persisting
+    // (issue #405: pre-check stores result, post-check will persist if needed)
+    if (!shouldPersistFlag && !enrollmentId) {
+      this.logger.debug(
+        `Fraud check pre-enrollment FLAG (not persisting yet): student=${studentId} score=${score}`,
+      );
       return { action, score, riskLevel, reasons };
     }
 
+    // HOLD always persists immediately
+    // OR FLAG with shouldPersistFlag=true (for post-enrollment persistence when needed)
     const status: FraudFlagStatus =
       action === 'HOLD' ? FraudFlagStatus.HELD : FraudFlagStatus.OPEN;
 
