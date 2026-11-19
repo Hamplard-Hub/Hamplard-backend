@@ -1,345 +1,483 @@
-# Testing Guide for GDPR Async Data Export Implementation
+# Testing Guide: Issues #404, #403, #405, #310
 
-## Pre-Deployment Testing
+## Quick Reference
 
-### 1. Build Verification
+| Issue | Title | Files | Status |
+|-------|-------|-------|--------|
+| #404 | Atomic Enrollment Creation | enrollments.service.ts | ✅ Implemented |
+| #403 | Comprehensive Payment Validation | stellar.service.ts, enrollments.service.ts, enrollments.controller.ts | ✅ Implemented |
+| #405 | Prevent Duplicate Fraud Scoring | fraud-detection.service.ts, enrollments.service.ts | ✅ Implemented |
+| #310 | Distributed Locking for @Cron | distributed-lock.service.ts, scheduling.module.ts, dashboard.service.ts, audit-log.service.ts | ✅ Implemented |
+
+## Issue #404 Testing: Atomic Enrollment Creation
+
+### Manual Test Case 1: Successful enrollment creates payment and updates stats
+
+**Setup:**
+- Create a student: `student-1`
+- Create an active course: `course-1` with price 100 USDC
+
+**Steps:**
+1. Mock a successful on-chain enrollment transaction
+2. Call `POST /api/v1/enrollments` with `{ courseId: "course-1", txHash: "tx123" }`
+3. Verify in database:
+   - Payment record exists with txHash="tx123"
+   - Enrollment record exists with studentId="student-1", courseId="course-1"
+   - Course.totalEnrollments incremented by 1
+   - Course.totalRevenue increased by 100
+
+**Expected:** All three operations committed together
+
+### Manual Test Case 2: P2002 constraint violation rolls back all operations
+
+**Setup:**
+- Student already enrolled in course (simulate by pre-creating enrollment)
+
+**Steps:**
+1. Mock a successful on-chain transaction (student hasn't paid this time but code doesn't catch it pre-tx)
+2. Call `POST /api/v1/enrollments` again
+3. Verify:
+   - No second Payment record created (transaction rolled back)
+   - Error response: 409 Conflict "Already enrolled in this course"
+   - Course stats unchanged
+
+**Expected:** Transaction rollback prevents orphaned payment
+
+### Automated Tests
+
 ```bash
-cd /home/edohwares/Desktop/Room/drips/ceejay/Hamplard-backend
-
-# Build the project
-npm run build
-
-# Expected: Successfully compiles without errors
-# Check: dist/modules/privacy/ contains all .js files
+npm test -- enrollments.service.spec.ts -t "Issue #404"
 ```
 
-### 2. Test Execution
-```bash
-# Run all tests
-npm test
-
-# Run privacy module tests specifically
-npm test -- src/modules/privacy/data-export.service.spec.ts
-
-# Expected: All tests pass
-# Should see:
-#   ✓ requestExport() throws when no authenticated user id is provided
-#   ✓ requestExport() throws NotFoundException when user not found
-#   ✓ requestExport() rejects banned users
-#   ✓ requestExport() rejects second request while job in flight
-#   ✓ requestExport() enforces 24h cooldown between requests
-#   ✓ requestExport() creates job and enqueues it (asynchronous processing)
-#   ✓ requestExport() marks job FAILED when processExport throws
-#   ✓ processExport() compiles cross-module data and marks COMPLETED
-#   ✓ processExport() marks job FAILED when compilation throws
-#   ✓ [other existing tests...]
-```
-
-### 3. Lint Check
-```bash
-npm run lint
-
-# Expected: No errors or warnings related to privacy module
-```
-
-## Manual Testing (Staging Environment)
-
-### Setup
-1. Ensure Redis is running: `redis-cli ping` → "PONG"
-2. Start application: `npm run start:dev`
-3. Authenticate user with JWT token
-4. Have database prepared with test data
-
-### Test Case 1: Immediate Response (202 ACCEPTED)
-```bash
-# Request export
-curl -X POST http://localhost:3000/api/v1/privacy/data-exports \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# Expected Response (should be immediate, < 100ms):
-HTTP/1.1 202 Accepted
-Content-Type: application/json
-
-{
-  "id": "clv9p8q9k0001...",
-  "userId": "user-id-123",
-  "status": "PENDING",
-  "requestedAt": "2026-10-22T10:30:00.000Z"
-}
-
-# IMPORTANT: NO payload included!
-# IMPORTANT: NO fileSizeBytes, checksum, completedAt
-```
-
-### Test Case 2: Verify Job Created
-```bash
-# Query job status immediately after request
-curl http://localhost:3000/api/v1/privacy/data-exports/clv9p8q9k0001 \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-
-# Expected: Status still PENDING (should not be COMPLETED yet)
-HTTP/1.1 200 OK
-{
-  "id": "clv9p8q9k0001",
-  "status": "PENDING",
-  "requestedAt": "2026-10-22T10:30:00.000Z"
-}
-```
-
-### Test Case 3: Poll Until Complete
-```bash
-# Repeatedly query status every 5 seconds
-for i in {1..120}; do
-  curl http://localhost:3000/api/v1/privacy/data-exports/clv9p8q9k0001 \
-    -H "Authorization: Bearer YOUR_JWT_TOKEN"
-  sleep 5
-done
-
-# Expected progression:
-# 1. PENDING → (job enqueued)
-# 2. PROCESSING → (background worker processing)
-# 3. COMPLETED → (processing finished)
-#    With: fileSizeBytes, checksum, completedAt
-
-# For large account (1000+ records): Should complete in 1-2 minutes
-# NOT 10+ minutes like before
-```
-
-### Test Case 4: Download Export
-```bash
-# Once status is COMPLETED:
-curl http://localhost:3000/api/v1/privacy/data-exports/clv9p8q9k0001/download \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -o export.json
-
-# Expected:
-# - File downloads successfully
-# - Contains full JSON structure:
-#   {
-#     "format": "hamplard-gdpr-data-export",
-#     "version": 1,
-#     "exportedAt": "...",
-#     "data": {
-#       "profile": {...},
-#       "enrollments": [...],
-#       "certificates": [...],
-#       ...
-#     }
-#   }
-
-# Verify integrity:
-sha256sum export.json
-# Compare against API response checksum
-```
-
-### Test Case 5: Rejection - Banned User
-```bash
-# Create/use banned user token
-curl -X POST http://localhost:3000/api/v1/privacy/data-exports \
-  -H "Authorization: Bearer BANNED_USER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# Expected:
-HTTP/1.1 400 Bad Request
-{
-  "message": "Banned users cannot request a data export"
-}
-```
-
-### Test Case 6: Rejection - In-Flight Job
-```bash
-# Request export
-curl -X POST http://localhost:3000/api/v1/privacy/data-exports \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# Response: { id: "job-1", status: "PENDING" }
-
-# Immediately request again (before processing completes)
-curl -X POST http://localhost:3000/api/v1/privacy/data-exports \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# Expected:
-HTTP/1.1 400 Bad Request
-{
-  "message": "An export request is already being processed",
-  "existingJobId": "job-1"
-}
-```
-
-### Test Case 7: Rejection - Cooldown
-```bash
-# Request export
-curl -X POST http://localhost:3000/api/v1/privacy/data-exports \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{}'
-
-# Wait for completion (check status polling)
-
-# Request another export within 24 hours
-curl -X POST http://localhost:3000/api/v1/privacy/data-exports \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{}'
-
-# Expected:
-HTTP/1.1 400 Bad Request
-{
-  "message": "You can request a new export in about 23 hour(s). Your last export was requested at 2026-10-22T10:30:00.000Z."
-}
-```
-
-### Test Case 8: Authorization - Cannot See Other User's Export
-```bash
-# User A creates export: job-123
-# Get job ID from response
-
-# User B tries to access User A's export:
-curl http://localhost:3000/api/v1/privacy/data-exports/job-123 \
-  -H "Authorization: Bearer USER_B_TOKEN"
-
-# Expected:
-HTTP/1.1 404 Not Found
-{
-  "message": "Export request not found"
-}
-
-# Note: Returns 404, not 403, to prevent job ID enumeration
-```
-
-## Performance Verification
-
-### Metrics to Track
-
-1. **Response Time**
-   - Before: 30+ seconds
-   - After: < 100 milliseconds
-   - ✅ Should see 100-300x improvement
-
-2. **Event Loop Blocking**
-   - Before: 30+ second blocks
-   - After: < 1 millisecond blocks
-   - ✅ Application remains responsive
-
-3. **Concurrent Requests**
-   - Before: 1 export per request (blocks others)
-   - After: Multiple exports processing concurrently
-   - ✅ Can handle parallel requests
-
-4. **Error Recovery**
-   - Before: Failed export = failed request
-   - After: Failed export retries automatically
-   - ✅ Automatic exponential backoff
-
-### Load Testing Example
-```bash
-# Test with multiple concurrent requests
-for i in {1..10}; do
-  curl -X POST http://localhost:3000/api/v1/privacy/data-exports \
-    -H "Authorization: Bearer TOKEN_$i" \
-    -d '{}' &
-done
-wait
-
-# Expected: All respond with 202 in < 100ms
-# NOT blocking each other
-# All jobs successfully enqueued
-```
-
-## Debugging
-
-### Check Redis Connection
-```bash
-redis-cli ping
-# Expected: PONG
-
-redis-cli KEYS "*data-export*"
-# Expected: Lists of job keys if jobs exist
-```
-
-### Check BullMQ Dashboard
-```bash
-# If you have bull-board installed:
-curl http://localhost:3000/admin/queues
-# View active jobs, completed jobs, failed jobs
-```
-
-### Check Job Details in Redis
-```bash
-redis-cli GET "bull:data-export:job:{jobId}:0"
-# See raw job data
-
-redis-cli HGETALL "bull:data-export:job:{jobId}:meta"
-# See job metadata
-```
-
-### View Logs
-```bash
-# In application logs, should see:
-# [DataExportService] Data export requested: job=clv9p8q9k0001 user=user-123
-# [DataExportProcessor] Processing job clv9p8q9k0001
-# [DataExportService] Data export job clv9p8q9k0001 completed (1.2 MB)
-```
-
-## Rollback Plan
-
-If issues discovered:
-
-1. **Issue: Worker not processing jobs**
-   - Check: Redis is running
-   - Check: Worker container started
-   - Rollback: Restart application
-
-2. **Issue: Jobs stuck in PROCESSING**
-   - Check: Worker process alive
-   - Fix: Kill stuck job: `redis-cli DEL "bull:data-export:job:{jobId}"`
-   - Requeue: Job will retry per configuration
-
-3. **Issue: Performance not improved**
-   - Check: Queue module properly configured
-   - Check: Worker processes running
-   - Verify: @HttpCode(202) decorator present
-
-4. **Complete Rollback** (if needed):
-   - Revert code to previous version
-   - Restart application (no database migration needed)
-   - Existing jobs continue processing in background
-
-## Success Criteria
-
-✅ All tests passing
-✅ Build without errors
-✅ POST /data-exports returns 202 in < 100ms
-✅ Status polling works correctly
-✅ Download endpoint functions
-✅ Large account exports complete without timeout
-✅ Event loop remains responsive
-✅ Concurrent requests handled properly
-✅ Error handling and retries work
-✅ Authorization/security maintained
+**Test Cases:**
+- ✅ Should wrap payment, enrollment, and course stats in a transaction
+- ✅ Should rollback enrollment if payment creation fails (P2002)
 
 ---
 
-## Test Coverage Summary
+## Issue #403 Testing: Comprehensive Payment Transaction Validation
 
-| Component | Test Count | Coverage |
-|-----------|-----------|----------|
-| requestExport() | 7 | 100% |
-| processExport() | 2 | 100% |
-| getExportStatus() | 2 | 100% |
-| listMyExports() | 1 | 100% |
-| downloadExport() | 6 | 100% |
-| cleanupExpiredExports() | 2 | 100% |
-| **TOTAL** | **20** | **100%** |
+### Manual Test Case 1: Valid transaction with matching student and amount
 
-All tests updated for async/queue-based behavior.
+**Setup:**
+- Student: `student-1` with wallet `GAXYZ123`
+- Course: `course-1` with price 100 USDC
+- On-chain tx emits event: `{ student: "GAXYZ123", courseId: "course-1", amount: 150 }`
+
+**Steps:**
+1. Call `POST /api/v1/enrollments` with `{ courseId: "course-1", txHash: "valid-tx" }`
+2. Verify in database:
+   - Enrollment created with amountPaid=150
+   - No error thrown
+
+**Expected:** Enrollment succeeds, amount from tx (not request body)
+
+### Manual Test Case 2: Transaction for different student
+
+**Setup:**
+- Student: `student-1` with wallet `GAXYZ123`
+- On-chain tx student: `student-2` wallet `GDIFFERENT`
+- Course: `course-1`
+
+**Steps:**
+1. Call `POST /api/v1/enrollments` as student-1 with valid tx for student-2
+2. Verify error: 400 Bad Request "Student address mismatch"
+
+**Expected:** Enrollment rejected (prevents account hijacking)
+
+### Manual Test Case 3: Transaction for different course
+
+**Setup:**
+- Student requests enrollment in `course-1`
+- On-chain tx is for `course-2`
+
+**Steps:**
+1. Call `POST /api/v1/enrollments` with `{ courseId: "course-1", txHash: "tx-for-course-2" }`
+2. Verify error: 400 Bad Request "Course ID mismatch"
+
+**Expected:** Enrollment rejected (prevents course substitution)
+
+### Manual Test Case 4: Insufficient payment amount
+
+**Setup:**
+- Course price: 100 USDC
+- On-chain tx amount: 50 USDC
+
+**Steps:**
+1. Call `POST /api/v1/enrollments` with valid tx but insufficient amount
+2. Verify error: 400 Bad Request "Insufficient payment"
+
+**Expected:** Enrollment rejected (prevents underpayment)
+
+### Manual Test Case 5: Replayed transaction (already used)
+
+**Setup:**
+- First student enrolls with tx="reused-tx"
+- Second student tries same tx
+
+**Steps:**
+1. Enroll student-1 successfully with "reused-tx"
+2. Try to enroll student-2 with same "reused-tx"
+3. Verify error: 409 Conflict "Payment has already been used"
+
+**Expected:** Second enrollment rejected (prevents tx reuse)
+
+### Automated Tests
+
+```bash
+npm test -- enrollments.service.spec.ts -t "Issue #403"
+```
+
+**Test Cases:**
+- ✅ Should return verified amount from on-chain data
+- ✅ Should reject if transaction student address does not match
+- ✅ Should reject if amount is insufficient
+- ✅ Should reject if payment has already been used
+
+### API Changes to Test
+
+**Old Request (no longer works):**
+```json
+POST /api/v1/enrollments
+{
+  "courseId": "course-1",
+  "txHash": "tx123",
+  "amountPaid": 100
+}
+```
+
+**New Request:**
+```json
+POST /api/v1/enrollments
+{
+  "courseId": "course-1",
+  "txHash": "tx123"
+}
+```
+
+⚠️ Frontend must be updated to remove `amountPaid` from request body.
 
 ---
 
-**Testing Date**: October 22, 2026
-**Status**: Ready for QA
+## Issue #405 Testing: Prevent Duplicate Fraud Scoring
+
+### Manual Test Case 1: Fraud check executes exactly once per enrollment
+
+**Setup:**
+- Enable fraud detection with low thresholds (e.g., max 3 enrollments per hour)
+- Student has 4 enrollments in the last hour
+
+**Steps:**
+1. Attempt 5th enrollment (should trigger fraud flag)
+2. Monitor logs or add debug counters to `processFraudCheck`
+3. Verify method called exactly once (pre-enrollment)
+
+**Expected:** Fraud check runs once, not twice
+
+### Manual Test Case 2: Score is consistent whether pre or post enrollment
+
+**Setup:**
+- Student with 3 enrollments in the last hour
+- Attempting 4th enrollment (high daily volume)
+
+**Steps:**
+1. Enable debug logging in fraud detection
+2. Attempt enrollment
+3. Check calculated score:
+   - Pre-enrollment score (velocity before DB write)
+   - Post-enrollment score (if recomputed)
+4. Verify scores are identical (no increment from new enrollment)
+
+**Expected:** Scores match (no double-counting of the current enrollment)
+
+### Manual Test Case 3: FLAG action persists correctly
+
+**Setup:**
+- Create condition where fraud score = 75 (FLAG, not HOLD)
+
+**Steps:**
+1. Attempt enrollment
+2. Verify:
+   - fraudResult.action = 'FLAG'
+   - fraudResult.flagId is undefined (pre-check)
+   - Post-enrollment: Flag is persisted to DB
+   - Flag.enrollmentId is set (linked to enrollment)
+
+**Expected:** Flag persisted once during post-steps
+
+### Automated Tests
+
+```bash
+npm test -- enrollments.service.spec.ts -t "Issue #405"
+```
+
+**Test Cases:**
+- ✅ Should not run fraud check twice
+- ✅ Should pass pre-computed fraud result to post-enrollment steps
+
+### Database Inspection
+
+Check fraud flags are created correctly:
+
+```sql
+-- Should see one flag per enrollment, not two
+SELECT COUNT(*) FROM "EnrollmentFraudFlag" 
+WHERE "enrollmentId" = 'enrollment-id';
+-- Expected: 1
+
+-- Check timestamps (flag created after enrollment)
+SELECT e.id, e."createdAt", f.id, f."createdAt" 
+FROM "Enrollment" e
+LEFT JOIN "EnrollmentFraudFlag" f ON e.id = f."enrollmentId"
+WHERE e.id = 'enrollment-id';
+```
+
+---
+
+## Issue #310 Testing: Distributed Locking for @Cron
+
+### Manual Test Case 1: Single instance runs cron job
+
+**Setup:**
+- Single API instance running
+- Scheduler enabled (RUN_SCHEDULER=true)
+- Redis accessible
+
+**Steps:**
+1. Start application
+2. Wait for scheduled task (e.g., dashboard recalc at 30-minute mark)
+3. Check logs: Should see "Lock acquired: dashboard-stats-recalc"
+4. Monitor dashboard stats are updated
+
+**Expected:** Job runs normally, lock acquired and released
+
+### Manual Test Case 2: Multiple instances - only one runs job
+
+**Setup:**
+- 2 API instances running (or simulate with multiple threads)
+- Redis accessible from both
+- Scheduler enabled on both
+
+**Steps:**
+1. Start instance 1
+2. Wait 5 seconds
+3. Start instance 2
+4. Wait for scheduled task time
+5. Check logs:
+   - Instance 1: "Lock acquired: dashboard-stats-recalc"
+   - Instance 2: "Skipping locked task: dashboard-stats-recalc"
+6. Verify stats updated exactly once (not duplicated)
+
+**Expected:** Lock prevents concurrent execution, only one instance runs
+
+### Manual Test Case 3: Lock TTL prevents indefinite blocking
+
+**Setup:**
+- Modify dashboard service to have a very long task (simulated with sleep)
+- TTL set to 5 seconds
+
+**Steps:**
+1. Start instance 1 (acquires lock for 5s, sleeps 10s)
+2. Wait 6 seconds
+3. Start instance 2 (lock expired, acquires new one)
+4. Verify stats calculated by instance 2 even though instance 1 still running
+
+**Expected:** After TTL expires, lock can be acquired by another instance
+
+### Automated Tests
+
+```bash
+npm test -- distributed-lock.service.spec.ts
+```
+
+**Test Cases:**
+- ✅ Should acquire lock when key does not exist
+- ✅ Should not acquire lock when key already exists
+- ✅ Should throw error if lock name is empty
+- ✅ Should throw error if TTL is invalid
+- ✅ Should release lock successfully
+- ✅ Should execute function if lock is acquired
+- ✅ Should not execute function if lock is not acquired
+- ✅ Should release lock even if function throws
+- ✅ Should prevent concurrent execution of same lock
+
+### Redis Inspection
+
+Monitor locks in Redis:
+
+```bash
+# List all active locks
+redis-cli KEYS "hamplard:lock:*"
+
+# Check lock value (instance PID + timestamp)
+redis-cli GET "hamplard:lock:dashboard-stats-recalc"
+# Expected format: "instance:12345-1700000000000"
+
+# Check TTL
+redis-cli TTL "hamplard:lock:dashboard-stats-recalc"
+# Expected: positive number (seconds remaining)
+```
+
+### Services Updated
+
+**Already updated with distributed locking:**
+1. ✅ `src/modules/admin/dashboard.service.ts` - @Cron EVERY_30_MINUTES
+2. ✅ `src/modules/audit-log/audit-log.service.ts` - @Cron EVERY_DAY_AT_MIDNIGHT
+
+**Remaining services (recommended for future updates):**
+- `src/modules/backups/backups.service.ts` - @Cron EVERY_DAY_AT_MIDNIGHT
+- `src/modules/backups/db-backup.service.ts` - @Cron '0 0 2 * * *'
+- `src/modules/backups/restore.service.ts` - @Cron EVERY_MINUTE
+- `src/modules/cron-monitor/cron-monitor.scheduler.ts` - Multiple @Cron
+- `src/modules/gamification/leaderboard.service.ts` - @Cron EVERY_HOUR
+- `src/modules/lessons/drip-schedule.service.ts` - @Cron '0 */10 * * * *'
+- `src/modules/live-sessions/live-session-reminders.service.ts` - @Cron EVERY_5_MINUTES
+- `src/modules/notifications/notifications.service.ts` - @Cron '0 0 8 * * *'
+- `src/modules/privacy/data-export.service.ts` - @Cron EVERY_DAY_AT_MIDNIGHT
+- `src/modules/quizzes/quiz-sessions.service.ts` - @Cron EVERY_MINUTE
+
+---
+
+## Integration Test Scenario
+
+**Scenario:** Student enrolls in course with all features enabled
+
+**Setup:**
+- Fraud detection enabled
+- Distributed locking enabled
+- Multiple API instances running
+- Redis accessible
+
+**Flow:**
+1. **Pre-check phase:**
+   - [Issue #403] Verify transaction comprehensively on-chain
+   - [Issue #403] Extract verified amount from tx (not request body)
+   - [Issue #405] Compute fraud score once (no DB writes yet)
+
+2. **Enrollment phase:**
+   - [Issue #404] Start Prisma transaction
+   - [Issue #404] Create Payment record (atomically)
+   - [Issue #404] Create Enrollment record (atomically)
+   - [Issue #404] Update Course stats (atomically)
+   - [Issue #404] Commit or rollback entire transaction
+
+3. **Post-check phase:**
+   - [Issue #405] If fraud action=FLAG, persist flag with pre-computed score
+   - [Issue #405] Do NOT recompute fraud score
+
+4. **Notifications phase (async):**
+   - Send student notification
+   - Generate invoice
+   - Track referral conversion
+   - Initialize drip schedule
+
+**Verification Checklist:**
+- ✅ Exactly one Payment record created
+- ✅ Exactly one Enrollment record created
+- ✅ Course stats incremented exactly once
+- ✅ Fraud check executed once (check logs)
+- ✅ Fraud flag persisted if needed (with pre-computed score)
+- ✅ Notifications sent (check db)
+- ✅ No duplicate cron jobs run (check logs)
+- ✅ Error handling works (test with invalid tx, wrong student, etc.)
+
+---
+
+## Regression Testing
+
+### Existing Functionality
+
+Run existing tests to ensure no regressions:
+
+```bash
+npm test -- enrollments.service.spec.ts
+npm test -- bundles.service.spec.ts
+npm test -- fraud-detection.service.spec.ts
+```
+
+### Bundle Enrollments (Issue #279)
+
+Bundle enrollments use `verifyPaymentTransactionBasic` instead of comprehensive validation:
+
+**Test:**
+1. Enroll in bundle with multiple courses
+2. Verify:
+   - Payment transaction verified (success, not used)
+   - Per-course pre-enrollment checks run
+   - Per-course enrollments created atomically
+   - Course stats updated for each new enrollment
+   - Post-enrollment steps run for each course
+
+---
+
+## Performance Impact
+
+### Issue #404: Atomic Transactions
+- **Impact:** Minimal (single transaction instead of 3 separate queries)
+- **Benefit:** No orphaned payments
+
+### Issue #403: Comprehensive Validation
+- **Impact:** Requires additional event parsing from Stellar RPC
+- **Latency:** +100-200ms per enrollment (RPC call to fetch events)
+- **Benefit:** Prevents fraud/attacks
+
+### Issue #405: Single Fraud Scoring
+- **Impact:** Reduced DB load (~50% fewer queries)
+- **Latency:** -5-10ms per enrollment (no recompute)
+- **Benefit:** Faster enrollments, consistent scores
+
+### Issue #310: Distributed Locking
+- **Impact:** Requires Redis availability
+- **Latency:** +1-5ms per cron job (lock acquisition)
+- **Benefit:** No duplicate jobs, no notification spam
+
+---
+
+## Deployment Checklist
+
+Before deploying to production:
+
+- [ ] Redis is configured and tested
+- [ ] Frontend updated to remove `amountPaid` from enrollment requests
+- [ ] Database migrations applied
+- [ ] All tests passing: `npm test`
+- [ ] Build successful: `npm run build`
+- [ ] Staging environment tested with multiple instances
+- [ ] Fraud detection thresholds reviewed
+- [ ] Cron job timing verified (no conflicts)
+- [ ] Logging/monitoring configured for new locks
+- [ ] Rollback plan in place
+
+---
+
+## Troubleshooting
+
+### Issue #403: Transaction verification fails
+
+**Problem:** "Transaction student (X) does not match caller (Y)"
+
+**Cause:** Student's wallet address doesn't match the one in the tx
+
+**Solution:** Verify student's Stellar wallet address is correctly stored in DB
+
+### Issue #310: Lock never acquires
+
+**Problem:** Jobs always skipped with "Skipping locked task"
+
+**Cause:** Redis connection issue or lock TTL too short
+
+**Solution:**
+- Check Redis connectivity: `redis-cli ping` (should return PONG)
+- Increase TTL in cron handler
+- Check Redis logs for errors
+
+### Issue #405: Fraud check still runs twice
+
+**Problem:** Logs show processFraudCheck called twice
+
+**Cause:** Old code still running, or runPostEnrollmentSteps still calling with wrong params
+
+**Solution:**
+- Verify code deployed correctly
+- Check git diff to confirm changes
+- Restart application

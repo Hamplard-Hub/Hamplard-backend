@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { DistributedLockService } from '../../common/scheduling/distributed-lock.service';
 import { CreateAuditLogDto } from './dto/create-audit-log.dto';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
 
@@ -12,6 +13,7 @@ export class AuditLogService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly lockService: DistributedLockService,
   ) {}
 
   async createEntry(actorId: string, dto: CreateAuditLogDto) {
@@ -152,21 +154,24 @@ export class AuditLogService {
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async purgeOldEntries() {
-    const retentionDays = this.configService.get<number>('AUDIT_LOG_RETENTION_DAYS', 90);
-    const purgeDate = new Date();
-    purgeDate.setDate(purgeDate.getDate() - retentionDays);
+    // Issue #310: Use distributed lock to prevent duplicate runs across instances
+    await this.lockService.withLock('audit-log-purge', 1 * 60 * 60 * 1000, async () => {
+      const retentionDays = this.configService.get<number>('AUDIT_LOG_RETENTION_DAYS', 90);
+      const purgeDate = new Date();
+      purgeDate.setDate(purgeDate.getDate() - retentionDays);
 
-    try {
-      const result = await this.prisma.adminAuditLog.deleteMany({
-        where: {
-          createdAt: {
-            lt: purgeDate,
+      try {
+        const result = await this.prisma.adminAuditLog.deleteMany({
+          where: {
+            createdAt: {
+              lt: purgeDate,
+            },
           },
-        },
-      });
-      this.logger.log(`Purged ${result.count} old audit log entries (older than ${retentionDays} days)`);
-    } catch (error) {
-      this.logger.error('Failed to purge old audit log entries', error);
-    }
+        });
+        this.logger.log(`Purged ${result.count} old audit log entries (older than ${retentionDays} days)`);
+      } catch (error) {
+        this.logger.error('Failed to purge old audit log entries', error);
+      }
+    });
   }
 }

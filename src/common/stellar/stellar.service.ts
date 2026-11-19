@@ -192,70 +192,157 @@ export class StellarService implements OnModuleInit {
   }
 
   /**
-   * Verify an enrollment transaction on-chain (issue #239).
-   * Fetches the transaction, validates it succeeded, and extracts:
-   * - the contract call method and parameters
-   * - the student address, course ID, and amount paid
-   * Returns null if the tx is not found, pending, or fails.
+   * Comprehensive enrollment transaction verification (issue #403).
+   * 
+   * Validates:
+   *  1. Transaction succeeded on-chain
+   *  2. Called the enroll method on Hamplard contract
+   *  3. Student address matches the caller
+   *  4. Course ID matches
+   *  5. Amount paid >= course price
+   * 
+   * Returns the verified on-chain data (student address, course ID, amount paid).
+   * Throws BadRequestException if validation fails.
    */
   async verifyEnrollmentTransaction(
     txHash: string,
+    expectedContractId: string,
+    expectedStudentAddress: string,
+    expectedCourseId: string,
+    expectedMinAmount: number,
   ): Promise<{
     studentAddress: string;
     courseId: string;
-    amountPaid: string;
-  } | null> {
+    amountPaid: number;
+  }> {
     try {
       const result = await this.rpcClient.getTransaction(txHash);
 
-      // Tx must have succeeded
+      // 1. Tx must have succeeded
       if (result.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
         this.logger.warn(`Enrollment tx ${txHash} status: ${result.status}`);
-        return null;
+        throw new Error(`Transaction did not succeed (status: ${result.status})`);
       }
 
-      // Extract the transaction envelope
+      // Extract and validate contract events
       if (!result.resultXdr) {
         this.logger.warn(`Enrollment tx ${txHash} has no result XDR`);
-        return null;
+        throw new Error('Transaction has no result data');
       }
 
-      // Parse the result XDR to look for 'enroll' contract call details
-      // The event poller extracts these from the contract events.
-      // For now, we rely on events emitted by the contract.
+      // Fetch contract events from this transaction
       const events = await this.rpcClient.getEvents({
         startLedger: result.ledger,
         filters: [{ type: 'contract', contractIds: [this.contractId] }],
         limit: 100,
       });
 
-      // Look for 'student_enrolled' event with matching txHash
+      // Look for contract invocation event with enroll method call
+      let verifiedData: {
+        contractId: string;
+        method: string;
+        studentAddress: string;
+        courseId: string;
+        amountPaid: number;
+      } | null = null;
+
       for (const event of events.events) {
         const anyEvent = event as any;
-        if (anyEvent.type === 'contract' && anyEvent.event?.type === 'contract') {
+        if (anyEvent.type === 'contract') {
           const eventData = anyEvent.event;
-          // Extract event topics and data — structure depends on contract implementation
-          // Placeholder: assumes events emit (studentAddress, courseId, amountPaid) as topics/data
-          // This will be validated by the event poller in detail.
           if (eventData.topics && eventData.data) {
             try {
-              const parsed = scValToNative(eventData.data);
-              return {
-                studentAddress: parsed.student || '',
-                courseId: parsed.courseId || '',
-                amountPaid: (parsed.amount || '0').toString(),
-              };
+              // Extract contract ID from event
+              const contractIdTopic = eventData.topics?.[0];
+              const methodTopic = eventData.topics?.[1];
+              
+              if (contractIdTopic) {
+                const contractIdFromEvent = scValToNative(contractIdTopic);
+                
+                // Verify contract ID matches
+                if (contractIdFromEvent !== expectedContractId) {
+                  this.logger.warn(
+                    `Transaction uses different contract (${contractIdFromEvent} vs ${expectedContractId})`,
+                  );
+                  continue;
+                }
+
+                const methodFromEvent = methodTopic ? scValToNative(methodTopic) : null;
+
+                // Verify method is 'enroll'
+                if (methodFromEvent !== 'enroll') {
+                  this.logger.warn(`Transaction method is ${methodFromEvent}, not 'enroll'`);
+                  continue;
+                }
+
+                // Extract enrollment parameters from event data
+                const parsed = scValToNative(eventData.data);
+
+                // Verify student address
+                if (parsed.student !== expectedStudentAddress) {
+                  this.logger.warn(
+                    `Transaction student (${parsed.student}) ` +
+                    `does not match caller (${expectedStudentAddress})`,
+                  );
+                  throw new Error('Student address mismatch: enrollment is for a different wallet');
+                }
+
+                // Verify course ID
+                if (parsed.courseId !== expectedCourseId) {
+                  this.logger.warn(
+                    `Transaction course (${parsed.courseId}) ` +
+                    `does not match expected (${expectedCourseId})`,
+                  );
+                  throw new Error('Course ID mismatch: transaction is for a different course');
+                }
+
+                const amountFromTx = Number(parsed.amount || '0');
+                
+                // Verify amount >= minimum (course price)
+                if (amountFromTx < expectedMinAmount) {
+                  this.logger.warn(
+                    `Transaction amount (${amountFromTx}) ` +
+                    `is less than course price (${expectedMinAmount})`,
+                  );
+                  throw new Error(
+                    `Insufficient payment: transaction amount (${amountFromTx}) ` +
+                    `is less than course price (${expectedMinAmount})`,
+                  );
+                }
+
+                verifiedData = {
+                  contractId: contractIdFromEvent,
+                  method: methodFromEvent,
+                  studentAddress: parsed.student,
+                  courseId: parsed.courseId,
+                  amountPaid: amountFromTx,
+                };
+                break;
+              }
             } catch (err) {
-              this.logger.debug(`Failed to parse enrollment event data: ${err.message}`);
+              this.logger.debug(`Failed to parse enrollment event: ${err.message}`);
             }
           }
         }
       }
 
-      return null;
+      if (!verifiedData) {
+        throw new Error('No valid enrollment event found in transaction');
+      }
+
+      this.logger.log(
+        `Enrollment transaction verified: student=${verifiedData.studentAddress} ` +
+        `course=${verifiedData.courseId} amount=${verifiedData.amountPaid}`,
+      );
+
+      return {
+        studentAddress: verifiedData.studentAddress,
+        courseId: verifiedData.courseId,
+        amountPaid: verifiedData.amountPaid,
+      };
     } catch (error) {
-      this.logger.error(`verifyEnrollmentTransaction(${txHash}) failed`, error.message);
-      return null;
+      this.logger.error(`verifyEnrollmentTransaction(${txHash}) failed: ${error.message}`);
+      throw error;
     }
   }
 
