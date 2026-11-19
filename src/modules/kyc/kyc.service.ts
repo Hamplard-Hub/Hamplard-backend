@@ -5,7 +5,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService } from '../uploads/uploads.service';
-import { KycStatus, NotificationType } from '@prisma/client';
+import { KycStatus, NotificationType, AuditAction, AuditTargetType } from '@prisma/client';
 import { SubmitKycDto } from './dto/submit-kyc.dto';
 import { ReviewKycDto } from './dto/review-kyc.dto';
 
@@ -135,7 +135,7 @@ export class KycService {
   // ADMIN REVIEW
   // ----------------------------------------------------------
 
-  async review(id: string, adminId: string, dto: ReviewKycDto) {
+  async review(id: string, adminId: string, dto: ReviewKycDto, ipAddress?: string) {
     const submission = await this.findOne(id);
 
     const acceptedReviewStatuses: KycStatus[] = [
@@ -199,12 +199,24 @@ export class KycService {
       );
     }
 
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: dto.status === KycStatus.APPROVED ? AuditAction.KYC_APPROVED : AuditAction.KYC_REJECTED,
+        targetType: AuditTargetType.KYC_SUBMISSION,
+        targetId: id,
+        metadata: { instructorId: submission.instructorId, previousStatus: submission.status, newStatus: dto.status, adminNotes: dto.adminNotes },
+        ipAddress,
+      },
+    });
+
     this.logger.log(`KYC submission ${id} reviewed as ${dto.status} by admin ${adminId}`);
     return updated;
   }
 
   /** Admin: revoke an instructor's existing approval and block future payouts. */
-  async revoke(id: string, adminId: string, adminNotes?: string) {
+  async revoke(id: string, adminId: string, adminNotes?: string, ipAddress?: string) {
     const submission = await this.findOne(id);
     if (submission.status !== KycStatus.APPROVED) {
       throw new BadRequestException('Only an approved KYC submission can be revoked');
@@ -242,6 +254,18 @@ export class KycService {
       `Your identity verification has been revoked.${adminNotes ? ` Reason: ${adminNotes}` : ''}`,
       { submissionId: id },
     );
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.KYC_REVOKED,
+        targetType: AuditTargetType.KYC_SUBMISSION,
+        targetId: id,
+        metadata: { instructorId: submission.instructorId, adminNotes },
+        ipAddress,
+      },
+    });
 
     this.logger.log(`KYC verification for instructor ${submission.instructorId} revoked by admin ${adminId}`);
     return updated;

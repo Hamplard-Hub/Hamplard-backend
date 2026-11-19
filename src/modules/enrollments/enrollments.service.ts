@@ -84,7 +84,7 @@ export class EnrollmentsService {
     });
 
     // ------------------------------------------------------------------
-    // STEP 2: Create enrollment record
+    // STEP 2: Create enrollment record with fee snapshot
     // ------------------------------------------------------------------
     let enrollment;
     try {
@@ -94,6 +94,7 @@ export class EnrollmentsService {
           courseId,
           txHash,
           amountPaid: new Prisma.Decimal(amountPaid),
+          platformFeePercent: course.platformFeePercent,
         },
         include: { course: true, student: true },
       });

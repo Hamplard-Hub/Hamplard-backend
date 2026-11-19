@@ -8,7 +8,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { KycService } from '../kyc/kyc.service';
 import { PayoutQueryDto } from './dto/payout-query.dto';
 import { CreatePayoutDto, UpdatePayoutStatusDto } from './dto/create-payout.dto';
-import { PayoutStatus, UserRole } from '@prisma/client';
+import { PayoutStatus, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
 
 @Injectable()
 export class PayoutsService {
@@ -123,7 +123,7 @@ export class PayoutsService {
   /**
    * Create a new payout record (Admin or automated platform payout).
    */
-  async createPayout(dto: CreatePayoutDto) {
+  async createPayout(dto: CreatePayoutDto, adminId?: string, ipAddress?: string) {
     const instructor = await this.prisma.user.findUnique({
       where: { id: dto.instructorId },
     });
@@ -151,6 +151,19 @@ export class PayoutsService {
       },
     });
 
+    if (adminId) {
+      await this.prisma.adminAuditLog.create({
+        data: {
+          actorId: adminId,
+          action: AuditAction.PAYOUT_CREATED,
+          targetType: AuditTargetType.PAYOUT,
+          targetId: payout.id,
+          metadata: { instructorId: dto.instructorId, amount: Number(dto.amount), currency: dto.currency ?? 'USDC' },
+          ipAddress,
+        },
+      });
+    }
+
     this.logger.log(`Payout record created: ${payout.id} for instructor ${dto.instructorId}`);
     return payout;
   }
@@ -158,7 +171,7 @@ export class PayoutsService {
   /**
    * Track payout status transitions (PENDING -> PROCESSING -> COMPLETED/FAILED).
    */
-  async updatePayoutStatus(payoutId: string, dto: UpdatePayoutStatusDto) {
+  async updatePayoutStatus(payoutId: string, dto: UpdatePayoutStatusDto, adminId?: string, ipAddress?: string) {
     const payout = await this.prisma.payout.findUnique({
       where: { id: payoutId },
     });
@@ -174,6 +187,19 @@ export class PayoutsService {
         txHash: dto.txHash ?? payout.txHash,
       },
     });
+
+    if (adminId) {
+      await this.prisma.adminAuditLog.create({
+        data: {
+          actorId: adminId,
+          action: AuditAction.PAYOUT_STATUS_CHANGED,
+          targetType: AuditTargetType.PAYOUT,
+          targetId: payoutId,
+          metadata: { previousStatus: payout.status, newStatus: dto.status, txHash: dto.txHash, instructorId: payout.instructorId, amount: Number(payout.amount) },
+          ipAddress,
+        },
+      });
+    }
 
     this.logger.log(
       `Payout status transition: ${payoutId} updated from ${payout.status} to ${dto.status}`,
