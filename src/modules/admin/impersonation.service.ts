@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nest
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StartImpersonationDto } from './dto/start-impersonation.dto';
+import { AuditAction, AuditTargetType } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface ImpersonationAuditLog {
@@ -26,7 +27,7 @@ export class ImpersonationService {
     private readonly jwtService: JwtService,
   ) {}
 
-  async startImpersonation(adminId: string, dto: StartImpersonationDto) {
+  async startImpersonation(adminId: string, dto: StartImpersonationDto, ipAddress?: string) {
     const admin = await this.prisma.user.findUnique({ where: { id: adminId } });
     if (!admin || admin.role !== 'ADMIN') {
       throw new ForbiddenException('Only admin users can start an impersonation session');
@@ -67,6 +68,19 @@ export class ImpersonationService {
     };
 
     this.auditTrail.unshift(logEntry);
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.IMPERSONATION_STARTED,
+        targetType: AuditTargetType.USER,
+        targetId: dto.targetUserId,
+        metadata: { targetUserEmail: targetUser.email, targetUserName: targetUser.name, reason: dto.reason, durationSeconds, sessionId },
+        ipAddress,
+      },
+    });
+
     this.logger.log(
       `Admin ${adminId} started impersonating user ${targetUser.id} for ${durationSeconds}s (Session: ${sessionId})`,
     );
@@ -127,7 +141,7 @@ export class ImpersonationService {
     };
   }
 
-  endSession(sessionId: string, adminId: string) {
+  endSession(sessionId: string, adminId: string, ipAddress?: string) {
     const log = this.auditTrail.find((s) => s.sessionId === sessionId);
     if (!log) {
       throw new NotFoundException('Impersonation session not found');
@@ -137,6 +151,19 @@ export class ImpersonationService {
     }
 
     log.status = 'ENDED';
+
+    // Audit log
+    this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.IMPERSONATION_ENDED,
+        targetType: AuditTargetType.USER,
+        targetId: log.targetUserId,
+        metadata: { sessionId, targetUserEmail: log.targetUserEmail, reason: log.reason, durationSeconds: log.durationSeconds },
+        ipAddress,
+      },
+    }).catch(err => this.logger.error('Failed to create audit log for impersonation end', err));
+
     this.logger.log(`Impersonation session ${sessionId} ended by admin ${adminId}`);
     return { sessionId, status: 'ENDED', endedAt: new Date() };
   }

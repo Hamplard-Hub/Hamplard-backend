@@ -8,7 +8,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
-import { CourseStatus, NotificationType, UserRole } from '@prisma/client';
+import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
@@ -135,7 +135,7 @@ export class CoursesService {
   // APPROVE / REJECT (admin)
   // -----------------------------------------------------
 
-  async approve(courseId: string, adminId: string) {
+  async approve(courseId: string, adminId: string, ipAddress?: string) {
     const course = await this.findOne(courseId, { isAdmin: true });
     if (course.status !== CourseStatus.PENDING) {
       throw new ForbiddenException('Only PENDING courses can be approved');
@@ -163,12 +163,24 @@ export class CoursesService {
       );
     }
 
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.COURSE_APPROVED,
+        targetType: AuditTargetType.COURSE,
+        targetId: courseId,
+        metadata: { courseTitle: course.title, instructorAddress: course.instructorAddress },
+        ipAddress,
+      },
+    });
+
     this.logger.log(`Course approved: ${courseId}`);
     await this.invalidateCourseCaches();
     return updated;
   }
 
-  async reject(courseId: string, adminId: string, reason: string) {
+  async reject(courseId: string, adminId: string, reason: string, ipAddress?: string) {
     const course = await this.findOne(courseId, { isAdmin: true });
     if (course.status !== CourseStatus.PENDING) {
       throw new ForbiddenException('Only PENDING courses can be rejected');
@@ -191,6 +203,18 @@ export class CoursesService {
         { courseId, reason },
       );
     }
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.COURSE_REJECTED,
+        targetType: AuditTargetType.COURSE,
+        targetId: courseId,
+        metadata: { courseTitle: course.title, instructorAddress: course.instructorAddress, reason },
+        ipAddress,
+      },
+    });
 
     await this.invalidateCourseCaches();
     return updated;

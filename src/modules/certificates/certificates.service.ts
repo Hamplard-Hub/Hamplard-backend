@@ -6,7 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ExamsService } from '../exams/exams.service';
-import { NotificationType, Prisma, UserRole } from '@prisma/client';
+import { NotificationType, Prisma, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
 import { UploadsService } from '../uploads/uploads.service';
 
 /**
@@ -77,7 +77,7 @@ export class CertificatesService {
    *     and sends back the txHash to update the DB record
    *  7. Notify the student
    */
-  async issue(adminId: string, studentId: string, courseId: string): Promise<any> {
+  async issue(adminId: string, studentId: string, courseId: string, ipAddress?: string): Promise<any> {
     // Verify enrollment exists and is completed
     const enrollment = await this.prisma.enrollment.findUnique({
       where: { studentId_courseId: { studentId, courseId } },
@@ -105,7 +105,6 @@ export class CertificatesService {
     const certificateId = `CERT-${uuidv4().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
 
     // Create DB record
-    // Issue #248: Catch P2002 (unique constraint violation) for concurrent issuance
     let certificate;
     try {
       certificate = await this.prisma.certificate.create({
@@ -147,6 +146,18 @@ export class CertificatesService {
       data: { pdfUrl },
     });
 
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.CERTIFICATE_ISSUED,
+        targetType: AuditTargetType.CERTIFICATE,
+        targetId: certificateId,
+        metadata: { studentId, courseId, courseTitle: enrollment.course.title, instructorAddress: enrollment.course.instructorAddress },
+        ipAddress,
+      },
+    });
+
     this.logger.log(`Certificate issued: ${certificateId} for student ${studentId}, PDF: ${pdfUrl}`);
 
     await this.notifications.notifyUser(
@@ -161,11 +172,27 @@ export class CertificatesService {
   }
 
   /** Update the txHash after the admin calls issue_certificate() on-chain */
-  async updateTxHash(certificateId: string, txHash: string) {
-    return this.prisma.certificate.update({
+  async updateTxHash(certificateId: string, txHash: string, adminId?: string, ipAddress?: string) {
+    const cert = await this.findById(certificateId);
+    const updated = await this.prisma.certificate.update({
       where: { id: certificateId },
       data: { txHash },
     });
+
+    if (adminId) {
+      await this.prisma.adminAuditLog.create({
+        data: {
+          actorId: adminId,
+          action: AuditAction.CERTIFICATE_TX_HASH_UPDATED,
+          targetType: AuditTargetType.CERTIFICATE,
+          targetId: certificateId,
+          metadata: { previousTxHash: cert.txHash, newTxHash: txHash, studentId: cert.studentId, courseId: cert.courseId },
+          ipAddress,
+        },
+      });
+    }
+
+    return updated;
   }
 
   async findByStudent(studentId: string) {
@@ -297,7 +324,7 @@ export class CertificatesService {
     return { status: 'VALID', valid: true, certificate: cert };
   }
 
-  async revoke(certificateId: string, adminId: string, reason?: string) {
+  async revoke(certificateId: string, adminId: string, reason?: string, ipAddress?: string) {
     const cert = await this.findById(certificateId);
     if (cert.isRevoked) throw new ForbiddenException('Certificate already revoked');
 
@@ -308,6 +335,18 @@ export class CertificatesService {
         revokedById: adminId,
         revokedAt: new Date(),
         revokeReason: reason ?? null,
+      },
+    });
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: AuditAction.CERTIFICATE_REVOKED,
+        targetType: AuditTargetType.CERTIFICATE,
+        targetId: certificateId,
+        metadata: { studentId: cert.studentId, courseId: cert.courseId, courseTitle: cert.courseTitle, reason },
+        ipAddress,
       },
     });
 

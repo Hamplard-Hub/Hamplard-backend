@@ -4,7 +4,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { DisputeStatus, DisputeReferenceType, NotificationType } from '@prisma/client';
+import { DisputeStatus, DisputeReferenceType, NotificationType, AuditAction, AuditTargetType } from '@prisma/client';
 import { FileDisputeDto } from './dto/file-dispute.dto';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 
@@ -125,7 +125,7 @@ export class DisputesService {
   // RESOLVE (admin)
   // ----------------------------------------------------------
 
-  async resolve(id: string, adminId: string, dto: ResolveDisputeDto) {
+  async resolve(id: string, adminId: string, dto: ResolveDisputeDto, ipAddress?: string) {
     const dispute = await this.findOne(id);
 
     const resolvableStatuses: DisputeStatus[] = [DisputeStatus.OPEN, DisputeStatus.UNDER_REVIEW];
@@ -153,6 +153,19 @@ export class DisputesService {
         adminNotes: dto.adminNotes,
         resolvedById: adminId,
         resolvedAt: new Date(),
+      },
+    });
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: adminId,
+        action: dto.status === DisputeStatus.RESOLVED ? AuditAction.DISPUTE_RESOLVED :
+                dto.status === DisputeStatus.REJECTED ? AuditAction.DISPUTE_REJECTED : AuditAction.DISPUTE_CLOSED,
+        targetType: AuditTargetType.DISPUTE,
+        targetId: id,
+        metadata: { filedById: dispute.filedById, referenceType: dispute.referenceType, referenceId: dispute.referenceId, subject: dispute.subject, adminNotes: dto.adminNotes },
+        ipAddress,
       },
     });
 
