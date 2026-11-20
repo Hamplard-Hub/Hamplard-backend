@@ -40,6 +40,7 @@ describe('JwtStrategy', () => {
       role: 'STUDENT',
       isBanned: false,
       isSuspended: false,
+      isDeactivated: false,
       jti: 'access-jti',
     });
   });
@@ -128,6 +129,38 @@ describe('JwtStrategy', () => {
         typ: 'refresh',
       }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+  describe('account lifecycle (issues #74/#75)', () => {
+    const base = {
+      id: 'user-1',
+      stellarAddress: 'GABC',
+      googleId: null,
+      role: 'STUDENT',
+      isBanned: false,
+      isSuspended: false,
+      suspendedUntil: null,
+      deactivatedAt: null,
+      deletedAt: null,
+    };
+
+    it('rejects a valid token for a deleted account', async () => {
+      prisma.user.findUnique.mockResolvedValue({ ...base, deletedAt: new Date() });
+      const strategy = new JwtStrategy(config as any, prisma as any);
+
+      await expect(strategy.validate({ sub: 'user-1', role: 'STUDENT' })).rejects.toThrow(
+        'Account has been deleted',
+      );
+    });
+
+    it('flags a deactivated account so the guard can restrict it', async () => {
+      prisma.user.findUnique.mockResolvedValue({ ...base, deactivatedAt: new Date() });
+      const strategy = new JwtStrategy(config as any, prisma as any);
+
+      await expect(strategy.validate({ sub: 'user-1', role: 'STUDENT' })).resolves.toMatchObject({
+        id: 'user-1',
+        isDeactivated: true,
+      });
+    });
   });
 });
 
