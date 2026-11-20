@@ -1,10 +1,15 @@
-import { Injectable, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { Injectable, ExecutionContext, UnauthorizedException, ForbiddenException, Optional } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { PrismaService } from '../prisma/prisma.service';
+import { ALLOW_DEACTIVATED_KEY } from '../decorators/allow-deactivated.decorator';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
-    constructor(private readonly prisma: PrismaService) {
+    constructor(
+        private readonly prisma: PrismaService,
+        @Optional() private readonly reflector?: Reflector,
+    ) {
         super();
     }
 
@@ -21,6 +26,18 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
 
         if (!user || !user.id) {
             throw new UnauthorizedException('Invalid token payload');
+        }
+
+        // Issues #74/#75 — deactivated accounts may only reach routes that opt in
+        // (the reactivation endpoint).
+        if (user.isDeactivated) {
+            const allowed = this.reflector?.getAllAndOverride<boolean>(ALLOW_DEACTIVATED_KEY, [
+                context.getHandler(),
+                context.getClass(),
+            ]);
+            if (!allowed) {
+                throw new ForbiddenException('Account is deactivated');
+            }
         }
 
         // Issue #69 — reject requests carrying a revoked/expired session token.

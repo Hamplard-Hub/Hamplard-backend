@@ -142,7 +142,7 @@ export class RefreshTokenService {
     }
 
     const user = await this.prisma.user.findUnique({ where: { id: record.userId } });
-    if (!user) {
+    if (!user || user.deletedAt) {
       await this.revokeFamily(record.familyId);
       throw new UnauthorizedException('Invalid refresh token');
     }
