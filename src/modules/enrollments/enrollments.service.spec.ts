@@ -19,7 +19,9 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
   const mockPrisma = {
     enrollment: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       create: jest.fn(),
+      count: jest.fn(),
     },
     coursePrerequisite: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -153,5 +155,50 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
     expect(result.data[0].status).toBe(FraudFlagStatus.HELD);
     expect(result.data[0].enrollment).toBeNull();
     expect(result.data[0].blockedCourseId).toBe('course-1');
+  });
+
+  describe('searchAdmin (Issue #497)', () => {
+    it('searches enrollments with filters for studentId, courseId, txHash, status', async () => {
+      const mockRecord = {
+        id: 'enrollment-1',
+        studentId: 'student-1',
+        courseId: 'course-1',
+        txHash: '0xabc123',
+        status: 'ACTIVE',
+        amountPaid: 100,
+        enrolledAt: new Date(),
+        student: { id: 'student-1', name: 'Alice', email: 'alice@example.com' },
+        course: { id: 'course-1', title: 'Rust Soroban', price: 100 },
+      };
+
+      mockPrisma.$transaction.mockResolvedValue([[mockRecord], 1]);
+
+      const result = await service.searchAdmin({
+        studentId: 'student-1',
+        courseId: 'course-1',
+        txHash: '0xabc',
+        status: 'ACTIVE' as any,
+        page: 1,
+        limit: 10,
+      });
+
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].id).toBe('enrollment-1');
+      expect(result.meta.total).toBe(1);
+      expect(result.meta.page).toBe(1);
+      expect(result.meta.limit).toBe(10);
+      expect(mockPrisma.$transaction).toHaveBeenCalled();
+    });
+
+    it('paginates correctly when no filters are passed', async () => {
+      mockPrisma.$transaction.mockResolvedValue([[], 0]);
+
+      const result = await service.searchAdmin({ page: 2, limit: 15 });
+
+      expect(result.data).toEqual([]);
+      expect(result.meta.total).toBe(0);
+      expect(result.meta.page).toBe(2);
+      expect(result.meta.limit).toBe(15);
+    });
   });
 });
