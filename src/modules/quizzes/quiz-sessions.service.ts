@@ -4,12 +4,14 @@ import {
   BadRequestException,
   ForbiddenException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { QuizSessionStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { QuizAttemptsService, QuizAttemptResult } from './quiz-attempts.service';
 import { SubmitSessionAnswersDto } from './dto/quiz-sessions.dto';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 
 export { QuizSessionStatus };
 
@@ -46,6 +48,7 @@ export class QuizSessionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly quizAttemptsService: QuizAttemptsService,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {}
 
   /**
@@ -202,21 +205,28 @@ export class QuizSessionsService {
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async handleAutoSubmitOnTimeout(): Promise<void> {
-    const expired = (await this.prisma.quizSession.findMany({
-      where: {
-        status: QuizSessionStatus.IN_PROGRESS,
-        expiresAt: { lte: new Date() },
-      },
-      take: 100,
-    })) as unknown as QuizSessionRow[];
+    const doSubmit = async () => {
+      const expired = (await this.prisma.quizSession.findMany({
+        where: {
+          status: QuizSessionStatus.IN_PROGRESS,
+          expiresAt: { lte: new Date() },
+        },
+        take: 100,
+      })) as unknown as QuizSessionRow[];
 
-    for (const session of expired) {
-      try {
-        await this.autoSubmitSession(session.id, session.userId);
-      } catch (error) {
-        this.logger.error(`Failed to auto-submit expired session ${session.id}`, error as Error);
+      for (const session of expired) {
+        try {
+          await this.autoSubmitSession(session.id, session.userId);
+        } catch (error) {
+          this.logger.error(`Failed to auto-submit expired session ${session.id}`, error as Error);
+        }
       }
+    };
+
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('quiz-auto-submit', doSubmit);
     }
+    return doSubmit();
   }
 
   private async loadOwnedSession(

@@ -77,6 +77,38 @@ export class CertificatesService {
    *     and sends back the txHash to update the DB record
    *  7. Notify the student
    */
+  /**
+   * Idempotently issue a certificate automatically when a student completes a course.
+   */
+  async issueAutomatic(studentId: string, courseId: string): Promise<any> {
+    const existing = await this.prisma.certificate.findFirst({
+      where: { studentId, courseId },
+      include: { student: true, course: true },
+    });
+    if (existing) {
+      this.logger.debug(`Certificate already issued for student ${studentId}, course ${courseId}`);
+      return existing;
+    }
+
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { studentId_courseId: { studentId, courseId } },
+      include: { course: true, student: true },
+    });
+
+    if (!enrollment || enrollment.status !== 'COMPLETED') {
+      this.logger.warn(`Automatic certificate issuance skipped: enrollment ${studentId}/${courseId} is not completed`);
+      return null;
+    }
+
+    const passedExam = await this.examsService.hasPassedExam(studentId, courseId);
+    if (!passedExam) {
+      this.logger.warn(`Automatic certificate issuance skipped: required exam not passed for student ${studentId}, course ${courseId}`);
+      return null;
+    }
+
+    return this.generateAndSaveCertificate(enrollment, studentId, courseId);
+  }
+
   async issue(adminId: string, studentId: string, courseId: string, ipAddress?: string): Promise<any> {
     // Verify enrollment exists and is completed
     const enrollment = await this.prisma.enrollment.findUnique({
@@ -101,6 +133,22 @@ export class CertificatesService {
     });
     if (existing) throw new ForbiddenException('Certificate already issued for this enrollment');
 
+    return this.generateAndSaveCertificate(enrollment, studentId, courseId, adminId, ipAddress);
+  }
+
+  private async generateAndSaveCertificate(
+    enrollment: any,
+    studentId: string,
+    courseId: string,
+    adminId?: string,
+    ipAddress?: string,
+  ): Promise<any> {
+    const existing = await this.prisma.certificate.findFirst({
+      where: { studentId, courseId },
+      include: { student: true, course: true },
+    });
+    if (existing) return existing;
+
     // Generate a unique certificate ID
     const certificateId = `CERT-${uuidv4().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
 
@@ -117,9 +165,12 @@ export class CertificatesService {
         },
         include: { student: true, course: true },
       });
-    } catch (error) {
+    } catch (error: any) {
       if (error.code === 'P2002' && error.meta?.target?.includes('studentId_courseId')) {
-        throw new ConflictException('Certificate already issued for this enrollment');
+        return this.prisma.certificate.findFirst({
+          where: { studentId, courseId },
+          include: { student: true, course: true },
+        });
       }
       throw error;
     }
@@ -147,16 +198,30 @@ export class CertificatesService {
     });
 
     // Audit log
-    await this.prisma.adminAuditLog.create({
-      data: {
-        actorId: adminId,
-        action: AuditAction.CERTIFICATE_ISSUED,
-        targetType: AuditTargetType.CERTIFICATE,
-        targetId: certificateId,
-        metadata: { studentId, courseId, courseTitle: enrollment.course.title, instructorAddress: enrollment.course.instructorAddress },
-        ipAddress,
-      },
-    });
+    let actorId = adminId;
+    if (!actorId || actorId === 'SYSTEM') {
+      const adminUser = await this.prisma.user?.findFirst?.({ where: { role: UserRole.ADMIN } });
+      actorId = adminUser?.id;
+    }
+
+    if (actorId && this.prisma.adminAuditLog) {
+      await this.prisma.adminAuditLog.create({
+        data: {
+          actorId,
+          action: AuditAction.CERTIFICATE_ISSUED,
+          targetType: AuditTargetType.CERTIFICATE,
+          targetId: certificateId,
+          metadata: {
+            studentId,
+            courseId,
+            automatic: !adminId || adminId === 'SYSTEM',
+            courseTitle: enrollment.course.title,
+            instructorAddress: enrollment.course.instructorAddress,
+          },
+          ipAddress,
+        },
+      });
+    }
 
     this.logger.log(`Certificate issued: ${certificateId} for student ${studentId}, PDF: ${pdfUrl}`);
 
@@ -179,7 +244,7 @@ export class CertificatesService {
       data: { txHash },
     });
 
-    if (adminId) {
+    if (adminId && this.prisma.adminAuditLog) {
       await this.prisma.adminAuditLog.create({
         data: {
           actorId: adminId,
@@ -339,16 +404,18 @@ export class CertificatesService {
     });
 
     // Audit log
-    await this.prisma.adminAuditLog.create({
-      data: {
-        actorId: adminId,
-        action: AuditAction.CERTIFICATE_REVOKED,
-        targetType: AuditTargetType.CERTIFICATE,
-        targetId: certificateId,
-        metadata: { studentId: cert.studentId, courseId: cert.courseId, courseTitle: cert.courseTitle, reason },
-        ipAddress,
-      },
-    });
+    if (this.prisma.adminAuditLog) {
+      await this.prisma.adminAuditLog.create({
+        data: {
+          actorId: adminId,
+          action: AuditAction.CERTIFICATE_REVOKED,
+          targetType: AuditTargetType.CERTIFICATE,
+          targetId: certificateId,
+          metadata: { studentId: cert.studentId, courseId: cert.courseId, courseTitle: cert.courseTitle, reason },
+          ipAddress,
+        },
+      });
+    }
 
     await this.notifications.notifyUser(
       cert.studentId,

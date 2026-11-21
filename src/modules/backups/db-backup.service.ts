@@ -4,9 +4,10 @@ import { createReadStream } from 'node:fs';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import {
   DeleteObjectsCommand,
   ListObjectsV2Command,
@@ -47,6 +48,7 @@ export class DbBackupService {
   constructor(
     private readonly config: ConfigService,
     @Inject(DB_BACKUP_S3_CLIENT) private readonly s3Client: S3Client,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {}
 
   @Cron('0 0 2 * * *', {
@@ -54,6 +56,9 @@ export class DbBackupService {
     timeZone: 'UTC',
   })
   async handleScheduledBackup(): Promise<BackupRunStatus> {
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('nightly-database-backup', () => this.runBackup());
+    }
     return this.runBackup();
   }
 

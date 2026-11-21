@@ -1,15 +1,21 @@
 // lessons.service.ts
 import {
-  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger,
+  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger, Optional,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CertificatesService } from '../certificates/certificates.service';
+import { QueueService } from '../../common/queue/queue.service';
 
 @Injectable()
 export class LessonsService {
   private readonly logger = new Logger(LessonsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly certificatesService?: CertificatesService,
+    @Optional() private readonly queueService?: QueueService,
+  ) {}
 
   private async verifyCourseOwnership(
     courseId: string,
@@ -280,6 +286,21 @@ export class LessonsService {
         } : {}),
       },
     });
+
+    if (progressPercent === 100) {
+      try {
+        if (this.queueService) {
+          await this.queueService.enqueueCertificateIssuance(enrollment.studentId, enrollment.courseId);
+        } else if (this.certificatesService) {
+          await this.certificatesService.issueAutomatic(enrollment.studentId, enrollment.courseId);
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not enqueue certificate issuance, falling back to direct: ${err.message}`);
+        if (this.certificatesService) {
+          await this.certificatesService.issueAutomatic(enrollment.studentId, enrollment.courseId);
+        }
+      }
+    }
 
     this.logger.debug(`Enrollment ${enrollmentId} progress: ${progressPercent}%`);
     return progressPercent;

@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import { NotificationType, UserRole } from '@prisma/client';
 import { ConfigureCourseDripDto } from './dto/configure-course-drip.dto';
 import { ConfigureLessonDripDto } from './dto/configure-lesson-drip.dto';
@@ -16,6 +17,7 @@ export class DripScheduleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {}
 
   /**
@@ -415,49 +417,56 @@ export class DripScheduleService {
    */
   @Cron('0 */10 * * * *')
   async notifyNewlyUnlockedLessons() {
-    const now = new Date();
+    const doNotify = async () => {
+      const now = new Date();
 
-    const pendingUnlocks = await this.prisma.enrollmentLessonUnlock.findMany({
-      where: {
-        unlockAt: { lte: now },
-        notifiedAt: null,
-      },
-      include: {
-        enrollment: {
-          select: { studentId: true, enrolledAt: true, course: { select: { title: true } } },
+      const pendingUnlocks = await this.prisma.enrollmentLessonUnlock.findMany({
+        where: {
+          unlockAt: { lte: now },
+          notifiedAt: null,
         },
-        lesson: { select: { title: true } },
-      },
-      take: 100,
-    });
+        include: {
+          enrollment: {
+            select: { studentId: true, enrolledAt: true, course: { select: { title: true } } },
+          },
+          lesson: { select: { title: true } },
+        },
+        take: 100,
+      });
 
-    for (const unlock of pendingUnlocks) {
-      // Skip immediate unlocks from non-drip courses: their unlockAt equals
-      // the enrollment date, so they were available from the start (#266).
-      if (unlock.unlockAt <= unlock.enrollment.enrolledAt) {
-        await this.prisma.enrollmentLessonUnlock.update({
-          where: { id: unlock.id },
-          data: { notifiedAt: now },
-        });
-        continue;
-      }
-      try {
-        await this.notifications.notifyUser(
-          unlock.enrollment.studentId,
-          NotificationType.LESSON_UNLOCKED,
-          'New Lesson Unlocked! 🔓',
-          `Lesson "${unlock.lesson.title}" in "${unlock.enrollment.course.title}" is now available to learn.`,
-          { lessonId: unlock.lessonId, courseTitle: unlock.enrollment.course.title },
-        );
+      for (const unlock of pendingUnlocks) {
+        // Skip immediate unlocks from non-drip courses: their unlockAt equals
+        // the enrollment date, so they were available from the start (#266).
+        if (unlock.unlockAt <= unlock.enrollment.enrolledAt) {
+          await this.prisma.enrollmentLessonUnlock.update({
+            where: { id: unlock.id },
+            data: { notifiedAt: now },
+          });
+          continue;
+        }
+        try {
+          await this.notifications.notifyUser(
+            unlock.enrollment.studentId,
+            NotificationType.LESSON_UNLOCKED,
+            'New Lesson Unlocked! 🔓',
+            `Lesson "${unlock.lesson.title}" in "${unlock.enrollment.course.title}" is now available to learn.`,
+            { lessonId: unlock.lessonId, courseTitle: unlock.enrollment.course.title },
+          );
 
-        await this.prisma.enrollmentLessonUnlock.update({
-          where: { id: unlock.id },
-          data: { notifiedAt: now },
-        });
-      } catch (err) {
-        this.logger.error(`Failed to notify student for unlock ${unlock.id}: ${err.message}`);
+          await this.prisma.enrollmentLessonUnlock.update({
+            where: { id: unlock.id },
+            data: { notifiedAt: now },
+          });
+        } catch (err: any) {
+          this.logger.error(`Failed to notify student for unlock ${unlock.id}: ${err.message}`);
+        }
       }
+    };
+
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('drip-notifications', doNotify);
     }
+    return doNotify();
   }
 
   private async assertCourseOwnership(courseId: string, instructorIdOrAddress: string) {

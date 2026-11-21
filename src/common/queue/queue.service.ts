@@ -4,7 +4,14 @@ import { Queue } from 'bullmq';
 import { plainToInstance } from 'class-transformer';
 import { IsEmail, IsEnum, IsNotEmpty, IsString, MaxLength, validateSync } from 'class-validator';
 import { NotificationType } from '@prisma/client';
-import { NOTIFICATION_EMAIL_JOB, NOTIFICATION_EMAIL_QUEUE, DATA_EXPORT_JOB, DATA_EXPORT_QUEUE } from './queue.constants';
+import {
+  NOTIFICATION_EMAIL_JOB,
+  NOTIFICATION_EMAIL_QUEUE,
+  DATA_EXPORT_JOB,
+  DATA_EXPORT_QUEUE,
+  CERTIFICATE_ISSUANCE_JOB,
+  CERTIFICATE_ISSUANCE_QUEUE,
+} from './queue.constants';
 
 export class NotificationEmailJobData {
   @IsString()
@@ -42,6 +49,16 @@ export class DataExportJobData {
   userId: string;
 }
 
+export class CertificateIssuanceJobData {
+  @IsString()
+  @IsNotEmpty()
+  studentId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  courseId: string;
+}
+
 export interface QueueJobStatus {
   id: string;
   queue: string;
@@ -59,6 +76,8 @@ export class QueueService {
     private readonly notificationEmailQueue: Queue<NotificationEmailJobData>,
     @InjectQueue(DATA_EXPORT_QUEUE)
     private readonly dataExportQueue: Queue<DataExportJobData>,
+    @InjectQueue(CERTIFICATE_ISSUANCE_QUEUE)
+    private readonly certificateIssuanceQueue: Queue<CertificateIssuanceJobData>,
   ) {}
 
   async enqueueNotificationEmail(payload: unknown) {
@@ -103,6 +122,15 @@ export class QueueService {
     data.userId = userId;
 
     const job = await this.dataExportQueue.add(DATA_EXPORT_JOB, data);
+    return { id: job.id as string, status: await job.getState() };
+  }
+
+  async enqueueCertificateIssuance(studentId: string, courseId: string) {
+    const data = new CertificateIssuanceJobData();
+    data.studentId = studentId;
+    data.courseId = courseId;
+
+    const job = await this.certificateIssuanceQueue.add(CERTIFICATE_ISSUANCE_JOB, data);
     return { id: job.id as string, status: await job.getState() };
   }
 }

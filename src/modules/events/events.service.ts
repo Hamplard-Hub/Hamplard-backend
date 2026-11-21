@@ -1,10 +1,11 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CONTRACT_EVENT_PAGE_LIMIT, StellarService } from '../../common/stellar/stellar.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CoursesService } from '../courses/courses.service';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import { NotificationType } from '@prisma/client';
 import { Address, scValToNative, xdr } from '@stellar/stellar-sdk';
 
@@ -72,6 +73,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
   private consecutiveWriteFailures = 0;
   private lastWriteError: string | null = null;
   private lastPolledAt: Date | null = null;
+  private pollExecutionCount = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -80,6 +82,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     private readonly courses: CoursesService,
     private readonly config: ConfigService,
     private readonly schedulerRegistry: SchedulerRegistry,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {}
 
   async onModuleInit() {
@@ -152,6 +155,15 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async pollEvents() {
+    this.pollExecutionCount++;
+    const shouldRecordInMonitor = this.cronMonitor && (this.pollExecutionCount % 60 === 1);
+    if (shouldRecordInMonitor && this.cronMonitor) {
+      return this.cronMonitor.run('stellar-event-poller-sample', () => this.executePoll());
+    }
+    return this.executePoll();
+  }
+
+  private async executePoll() {
     // Issue #229 — a slow RPC/DB round-trip must not let ticks overlap, which
     // would process the same ledger range twice.
     if (this.isPolling) {

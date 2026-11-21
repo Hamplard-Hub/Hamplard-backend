@@ -14,12 +14,14 @@ import {
   NotFoundException,
   BadRequestException,
   InternalServerErrorException,
+  Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { createHash } from 'crypto';
 import { Prisma, DataExportJobStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { QueueService } from '../../common/queue/queue.service';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 
 /** A completed export is downloadable for 7 days before it is destroyed. */
 const EXPORT_RETENTION_DAYS = 7;
@@ -106,6 +108,7 @@ export class DataExportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {}
 
   // ----------------------------------------------------------
@@ -422,11 +425,19 @@ export class DataExportService {
   /** Daily housekeeping: purge expired export payloads for all users. */
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT, { name: 'data-export-cleanup' })
   async handleScheduledCleanup() {
-    try {
-      await this.cleanupExpiredExports();
-    } catch (error) {
-      this.logger.error(`Scheduled data export cleanup failed: ${error?.message}`);
+    const doCleanup = async () => {
+      try {
+        await this.cleanupExpiredExports();
+      } catch (error: any) {
+        this.logger.error(`Scheduled data export cleanup failed: ${error?.message}`);
+        throw error;
+      }
+    };
+
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('data-export-cleanup', doCleanup);
     }
+    return doCleanup();
   }
 
   /**

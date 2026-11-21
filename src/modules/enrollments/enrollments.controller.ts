@@ -6,6 +6,7 @@ import { EnrollmentsService } from './enrollments.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 
 @ApiTags('enrollments')
 @ApiBearerAuth()
@@ -23,10 +24,10 @@ export class EnrollmentsController {
   @ApiOperation({ summary: 'Register on-chain enrollment in the DB' })
   create(
     @CurrentUser('id') studentId: string,
-    @Body() body: { courseId: string; txHash: string; amountPaid: number },
+    @Body() dto: CreateEnrollmentDto,
   ) {
     return this.enrollmentsService.create(
-      studentId, body.courseId, body.txHash, body.amountPaid,
+      studentId, dto.courseId, dto.txHash, dto.amountPaid,
     );
   }
 

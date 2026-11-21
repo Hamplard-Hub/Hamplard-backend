@@ -5,12 +5,16 @@ import { LessonsService } from './lessons.service';
 import { DripScheduleService } from './drip-schedule.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { EnrollmentsModule } from '../enrollments/enrollments.module';
+import { CertificatesModule } from '../certificates/certificates.module';
+import { QueueModule } from '../../common/queue/queue.module';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     NotificationsModule,
     forwardRef(() => EnrollmentsModule),
+    CertificatesModule,
+    QueueModule,
   ],
   controllers: [LessonsController],
   providers: [LessonsService, DripScheduleService],
