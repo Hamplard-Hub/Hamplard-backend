@@ -290,7 +290,8 @@ describe('CoursesService', () => {
 
   it('returns full content for enrolled callers', async () => {
     mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
-    mockPrisma.enrollment.findFirst.mockResolvedValue({ studentId: 'student-1' });
+    // Enrollment record uses studentId (not userId) per the Prisma schema fix.
+    mockPrisma.enrollment.findFirst.mockResolvedValue({ id: 'enroll-1', studentId: 'student-1' });
 
     const result = await service.findOne('COURSE-TAILORING-001', {
       userId: 'student-1',
@@ -299,6 +300,41 @@ describe('CoursesService', () => {
     const paid = result.modules[0].lessons[1] as any;
     expect(paid.videoUrl).toBe(PAID_LESSON.videoUrl);
     expect(paid.content).toBe(PAID_LESSON.content);
+  });
+
+  it('strips paid content for a non-enrolled student (enrollment.findFirst returns null)', async () => {
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
+    // No enrollment record — simulates a student who has NOT purchased the course.
+    mockPrisma.enrollment.findFirst.mockResolvedValue(null);
+
+    const result = await service.findOne('COURSE-TAILORING-001', {
+      userId: 'non-enrolled-student',
+      role: 'STUDENT',
+    });
+    const lessons = result.modules[0].lessons as any[];
+    const paid = lessons.find((l: any) => l.id === 'lesson-paid');
+    // Paid content must be stripped.
+    expect(paid.videoUrl).toBeUndefined();
+    expect(paid.content).toBeUndefined();
+    // Outline metadata is still present.
+    expect(paid.title).toBe(PAID_LESSON.title);
+    expect(paid.isFree).toBe(false);
+  });
+
+  it('queries enrollment using studentId (not userId) and filters to ACTIVE/COMPLETED', async () => {
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
+    mockPrisma.enrollment.findFirst.mockResolvedValue({ id: 'enroll-1', studentId: 'student-1' });
+
+    await service.findOne('COURSE-TAILORING-001', { userId: 'student-1' });
+
+    expect(mockPrisma.enrollment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          studentId: 'student-1',
+          status: { in: ['ACTIVE', 'COMPLETED'] },
+        }),
+      }),
+    );
   });
 
   it('throws NotFoundException when course not found', async () => {

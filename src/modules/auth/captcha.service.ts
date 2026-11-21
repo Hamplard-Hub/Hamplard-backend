@@ -9,33 +9,43 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
+import { RedisRateLimitService } from '../../common/redis-rate-limit/redis-rate-limit.service';
 
 interface AttemptState {
   failures: number;
   blockedUntil?: number;
 }
 
+/** Redis key prefix for CAPTCHA attempt state. */
+const KEY_PREFIX = 'captcha:attempt:';
+
 @Injectable()
 export class CaptchaService {
   private readonly logger = new Logger(CaptchaService.name);
-  private readonly attempts = new Map<string, AttemptState>();
 
   private readonly secretKey: string;
   private readonly verifyUrl: string;
   private readonly timeoutMs: number;
   private readonly maxFailures: number;
   private readonly blockDurationMs: number;
+  /** TTL (seconds) used when persisting attempt state to Redis. */
+  private readonly stateTtlSeconds: number;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly rl: RedisRateLimitService,
+  ) {
     this.secretKey = this.config.get<string>('CAPTCHA_SECRET_KEY', '');
     this.verifyUrl = this.config.get<string>(
       'CAPTCHA_VERIFY_URL',
       'https://www.google.com/recaptcha/api/siteverify',
     );
-    this.timeoutMs = this.readNumber('CAPTCHA_TIMEOUT_MS', 5000);
-    this.maxFailures = this.readNumber('CAPTCHA_MAX_FAILURES', 5);
-    this.blockDurationMs =
-      this.readNumber('CAPTCHA_BLOCK_DURATION_SECONDS', 900) * 1000;
+    this.timeoutMs        = this.readNumber('CAPTCHA_TIMEOUT_MS',             5_000);
+    this.maxFailures      = this.readNumber('CAPTCHA_MAX_FAILURES',           5);
+    this.blockDurationMs  = this.readNumber('CAPTCHA_BLOCK_DURATION_SECONDS', 900) * 1_000;
+    // Keep the state key alive a little longer than the block so it's
+    // accessible throughout the full block window.
+    this.stateTtlSeconds  = Math.ceil(this.blockDurationMs / 1_000) + 60;
   }
 
   /**
@@ -44,11 +54,14 @@ export class CaptchaService {
    */
   async verifyBeforeNonce(token: string | undefined, ip: string): Promise<void> {
     const clientIp = ip || 'unknown';
-    this.assertNotBlocked(clientIp);
+    await this.assertNotBlocked(clientIp);
 
     const captchaToken = token?.trim();
     if (!captchaToken) {
-      this.rejectFailedAttempt(clientIp, new BadRequestException('CAPTCHA token is required'));
+      await this.rejectFailedAttempt(
+        clientIp,
+        new BadRequestException('CAPTCHA token is required'),
+      );
     }
 
     if (!this.secretKey) {
@@ -60,7 +73,7 @@ export class CaptchaService {
     try {
       const params = new URLSearchParams();
       params.append('secret', this.secretKey);
-      params.append('response', captchaToken);
+      params.append('response', captchaToken!);
       if (clientIp !== 'unknown') {
         params.append('remoteip', clientIp);
       }
@@ -78,9 +91,7 @@ export class CaptchaService {
 
       payload = response.data;
     } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
+      if (error instanceof HttpException) throw error;
 
       const axiosError = error as AxiosError;
       this.logger.warn(
@@ -90,12 +101,13 @@ export class CaptchaService {
     }
 
     if (payload?.success === true) {
-      this.attempts.delete(clientIp);
+      // Clear failure state on success.
+      await this.rl.del(`${KEY_PREFIX}${clientIp}`);
       return;
     }
 
     if (payload?.success === false) {
-      this.rejectFailedAttempt(
+      await this.rejectFailedAttempt(
         clientIp,
         new UnauthorizedException('CAPTCHA verification failed'),
       );
@@ -105,8 +117,8 @@ export class CaptchaService {
     throw new ServiceUnavailableException('CAPTCHA verification is unavailable');
   }
 
-  private assertNotBlocked(ip: string): void {
-    const state = this.getState(ip);
+  private async assertNotBlocked(ip: string): Promise<void> {
+    const state = await this.getState(ip);
     if (state.blockedUntil && Date.now() < state.blockedUntil) {
       throw new HttpException(
         'Too many failed CAPTCHA attempts. Try again later.',
@@ -115,12 +127,13 @@ export class CaptchaService {
     }
   }
 
-  private rejectFailedAttempt(ip: string, exception: Error): never {
-    const state = this.getState(ip);
+  private async rejectFailedAttempt(ip: string, exception: Error): Promise<never> {
+    const state = await this.getState(ip);
     state.failures += 1;
 
     if (state.failures >= this.maxFailures) {
       state.blockedUntil = Date.now() + this.blockDurationMs;
+      await this.rl.setJson(`${KEY_PREFIX}${ip}`, state, this.stateTtlSeconds);
       this.logger.warn(
         `Temporarily blocking IP after ${state.failures} failed CAPTCHA attempts`,
       );
@@ -130,27 +143,24 @@ export class CaptchaService {
       );
     }
 
+    await this.rl.setJson(`${KEY_PREFIX}${ip}`, state, this.stateTtlSeconds);
     throw exception;
   }
 
-  private getState(ip: string): AttemptState {
-    const existing = this.attempts.get(ip);
-    if (!existing) {
-      const fresh: AttemptState = { failures: 0 };
-      this.attempts.set(ip, fresh);
-      return fresh;
-    }
+  private async getState(ip: string): Promise<AttemptState> {
+    const existing = await this.rl.getJson<AttemptState>(`${KEY_PREFIX}${ip}`);
+    if (!existing) return { failures: 0 };
 
+    // Auto-clear an expired block so we return a clean slate.
     if (existing.blockedUntil && Date.now() >= existing.blockedUntil) {
-      existing.failures = 0;
-      existing.blockedUntil = undefined;
+      return { failures: 0 };
     }
 
     return existing;
   }
 
   private readNumber(key: string, fallback: number): number {
-    const value = this.config.get<string | number>(key, fallback);
+    const value  = this.config.get<string | number>(key, fallback);
     const parsed = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }

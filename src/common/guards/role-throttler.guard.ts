@@ -1,9 +1,12 @@
 // role-throttler.guard.ts
 // Issue #72 — differentiated throttling policy per authenticated role.
 //
-// Buckets: anon:<ip> (strictest), student:<id>, instructor:<id>, admin:<id>.
+// Buckets: anon:<ip> (strictest), STUDENT:<id>, INSTRUCTOR:<id>, ADMIN:<id>.
 // Limits are env-tunable per bucket; every response carries X-RateLimit-*
 // status headers and a rejected request gets 429 + Retry-After.
+//
+// Counters are stored in Redis (INCR + EXPIRE fixed-window) so limits are
+// shared across instances and survive process restarts.
 //
 // Note: implemented as a focused CanActivate guard rather than extending
 // ThrottlerGuard because @nestjs/throttler's per-route options cannot express
@@ -13,34 +16,34 @@ import { Injectable, CanActivate, ExecutionContext, Logger } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Response } from 'express';
-
-interface Bucket {
-  count: number;
-  resetAt: number;
-}
+import { RedisRateLimitService } from '../redis-rate-limit/redis-rate-limit.service';
 
 @Injectable()
 export class RoleThrottlerGuard implements CanActivate {
   private readonly logger = new Logger(RoleThrottlerGuard.name);
-  private readonly buckets = new Map<string, Bucket>();
   private readonly jwt: JwtService;
 
   private readonly windowMs: number;
+  private readonly windowSeconds: number;
   private readonly limits: Record<string, number>;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly rl: RedisRateLimitService,
+  ) {
     // Guards registered via APP_GUARD run before controller-level
     // JwtAuthGuard has populated req.user, so we verify the bearer token
     // here ourselves (same secret as AuthModule) instead of trusting an
     // unverified claim that could escalate a client into a bigger bucket.
     this.jwt = new JwtService({ secret: config.get<string>('JWT_SECRET') });
 
-    this.windowMs = this.config.get<number>('ROLE_THROTTLE_WINDOW_MS', 60000);
+    this.windowMs      = this.config.get<number>('ROLE_THROTTLE_WINDOW_MS', 60_000);
+    this.windowSeconds = Math.ceil(this.windowMs / 1000);
     this.limits = {
-      anon: this.config.get<number>('ROLE_THROTTLE_ANON_LIMIT', 20),
-      STUDENT: this.config.get<number>('ROLE_THROTTLE_STUDENT_LIMIT', 60),
+      anon:       this.config.get<number>('ROLE_THROTTLE_ANON_LIMIT',       20),
+      STUDENT:    this.config.get<number>('ROLE_THROTTLE_STUDENT_LIMIT',    60),
       INSTRUCTOR: this.config.get<number>('ROLE_THROTTLE_INSTRUCTOR_LIMIT', 120),
-      ADMIN: this.config.get<number>('ROLE_THROTTLE_ADMIN_LIMIT', 300),
+      ADMIN:      this.config.get<number>('ROLE_THROTTLE_ADMIN_LIMIT',      300),
     };
   }
 
@@ -69,53 +72,47 @@ export class RoleThrottlerGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const http = context.switchToHttp();
-    const req = http.getRequest<Record<string, any>>();
-    const res = http.getResponse<Response>();
+    const req  = http.getRequest<Record<string, any>>();
+    const res  = http.getResponse<Response>();
 
-    const subject = this.resolveSubject(req);
-    const roleBucket =
-      this.limits[subject.role] !== undefined ? subject.role : 'anon';
-    const key = `${roleBucket}:${subject.id}`;
-    const max = this.limits[roleBucket];
-    const now = Date.now();
+    const subject    = this.resolveSubject(req);
+    const roleBucket = this.limits[subject.role] !== undefined ? subject.role : 'anon';
+    const max        = this.limits[roleBucket];
+    const key        = `rl:role:${roleBucket}:${subject.id}`;
 
-    let bucket = this.buckets.get(key);
-    if (!bucket || now >= bucket.resetAt) {
-      bucket = { count: 0, resetAt: now + this.windowMs };
-      this.buckets.set(key, bucket);
-      this.pruneExpired(now);
+    let count: number;
+    let ttlSeconds: number;
+
+    try {
+      ({ count, ttlSeconds } = await this.rl.fixedWindow(key, this.windowSeconds));
+    } catch (err) {
+      // Redis unavailable — fail open to avoid blocking legitimate traffic.
+      this.logger.error(`Role-throttle Redis error (fail-open): ${(err as Error).message}`);
+      return true;
     }
-    bucket.count += 1;
 
-    res.setHeader('X-RateLimit-Bucket', roleBucket);
-    res.setHeader('X-RateLimit-Limit', max);
-    res.setHeader('X-RateLimit-Remaining', Math.max(0, max - bucket.count));
-    res.setHeader('X-RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+    const resetEpoch = Math.ceil(Date.now() / 1000) + ttlSeconds;
 
-    if (bucket.count > max) {
-      const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
-      res.setHeader('Retry-After', retryAfterSeconds);
+    res.setHeader('X-RateLimit-Bucket',    roleBucket);
+    res.setHeader('X-RateLimit-Limit',     max);
+    res.setHeader('X-RateLimit-Remaining', Math.max(0, max - count));
+    res.setHeader('X-RateLimit-Reset',     String(resetEpoch));
+
+    if (count > max) {
+      res.setHeader('Retry-After', ttlSeconds);
       this.logger.warn(
-        `Role throttle exceeded: bucket=${roleBucket} subject=${subject.id} ${bucket.count}/${max}`,
+        `Role throttle exceeded: bucket=${roleBucket} subject=${subject.id} ${count}/${max}`,
       );
       res.status(429).json({
         success: false,
         statusCode: 429,
         error: 'Too Many Requests',
         message: 'You have exceeded the rate limit for your account tier.',
-        retryAfterSeconds,
+        retryAfterSeconds: ttlSeconds,
       });
       return false;
     }
 
     return true;
-  }
-
-  /** Amortised eviction of idle buckets to bound memory usage. */
-  private pruneExpired(now: number) {
-    if (this.buckets.size < 10_000) return;
-    for (const [key, bucket] of this.buckets) {
-      if (now >= bucket.resetAt) this.buckets.delete(key);
-    }
   }
 }
