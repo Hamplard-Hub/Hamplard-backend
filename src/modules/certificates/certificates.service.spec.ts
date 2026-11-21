@@ -22,7 +22,8 @@ const mockPrisma = {
     updateMany: jest.fn(),
     findMany:   jest.fn(),
   },
-  user: { findUnique: jest.fn() },
+  user: { findUnique: jest.fn(), findFirst: jest.fn() },
+  adminAuditLog: { create: jest.fn() },
 };
 
 const mockStellar = {
@@ -390,6 +391,54 @@ describe('CertificatesService', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('issueAutomatic()', () => {
+    it('returns existing certificate if already issued (idempotent)', async () => {
+      const existing = { id: 'CERT-123', studentId: 's-1', courseId: 'c-1' };
+      mockPrisma.certificate.findFirst.mockResolvedValueOnce(existing);
+
+      const result = await service.issueAutomatic('s-1', 'c-1');
+      expect(result).toEqual(existing);
+      expect(mockPrisma.certificate.create).not.toHaveBeenCalled();
+    });
+
+    it('skips issuance if enrollment is not completed', async () => {
+      mockPrisma.certificate.findFirst.mockResolvedValueOnce(null);
+      mockPrisma.enrollment.findUnique.mockResolvedValueOnce({
+        status: 'ACTIVE',
+        course: { title: 'Test', category: 'General' },
+        student: { name: 'Student' },
+      });
+
+      const result = await service.issueAutomatic('s-1', 'c-1');
+      expect(result).toBeNull();
+      expect(mockPrisma.certificate.create).not.toHaveBeenCalled();
+    });
+
+    it('issues certificate automatically when enrollment is completed and exam passed', async () => {
+      mockPrisma.certificate.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+      mockPrisma.enrollment.findUnique.mockResolvedValueOnce({
+        status: 'COMPLETED',
+        course: { title: 'Test Course', category: 'General', instructorAddress: 'G123' },
+        student: { name: 'Student Doe' },
+      });
+      mockExams.hasPassedExam.mockResolvedValueOnce(true);
+      const created = {
+        id: 'CERT-NEW',
+        studentId: 's-1',
+        courseId: 'c-1',
+        issuedAt: new Date(),
+        student: { name: 'Student Doe' },
+        course: { title: 'Test Course', category: 'General', instructorAddress: 'G123' },
+      };
+      mockPrisma.certificate.create.mockResolvedValueOnce(created);
+      mockPrisma.certificate.update.mockResolvedValueOnce({ ...created, pdfUrl: '/uploads/cert.pdf' });
+
+      const result = await service.issueAutomatic('s-1', 'c-1');
+      expect(result).toBeDefined();
+      expect(mockNotifications.notifyUser).toHaveBeenCalled();
     });
   });
 });

@@ -7,6 +7,8 @@ import { CoursesService, CourseActor } from './courses.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
+import { SubmitCourseDto } from './dto/submit-course.dto';
+import { RejectCourseDto } from './dto/reject-course.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -106,9 +108,9 @@ export class CoursesController {
   submitForReview(
     @Param('id') id: string,
     @CurrentUser() user: CourseActor,
-    @Body() body: { txHash?: string },
+    @Body() dto: SubmitCourseDto,
   ) {
-    return this.coursesService.submitForReview(id, user, body.txHash);
+    return this.coursesService.submitForReview(id, user, dto.txHash);
   }
 
   // --------------------------------------------------------
@@ -143,9 +145,9 @@ export class CoursesController {
   reject(
     @Param('id') id: string,
     @CurrentUser('id') adminId: string,
-    @Body() body: { reason: string },
+    @Body() dto: RejectCourseDto,
   ) {
-    return this.coursesService.reject(id, adminId, body.reason);
+    return this.coursesService.reject(id, adminId, dto.reason);
   }
 
   // -------------------------------------------------------

@@ -11,7 +11,7 @@ describe('QueueService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new QueueService(queue as never);
+    service = new QueueService(queue as never, queue as never, queue as never);
   });
 
   it('rejects invalid job payloads before enqueueing', async () => {

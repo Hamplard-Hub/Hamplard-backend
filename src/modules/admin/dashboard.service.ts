@@ -1,7 +1,8 @@
 // dashboard.service.ts — issue #61: admin dashboard summary stats API
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import { DashboardQueryDto } from './dto/dashboard-query.dto';
 import { CourseStatus, EnrollmentStatus, UserRole } from '@prisma/client';
 
@@ -19,7 +20,10 @@ export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
   private cachedSummary: { data: SummaryStats; calculatedAt: Date } | null = null;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
+  ) {}
 
   async getSummary(query: DashboardQueryDto) {
     const { startDate, endDate } = query;
@@ -51,9 +55,16 @@ export class DashboardService {
 
   @Cron(CronExpression.EVERY_30_MINUTES)
   async handleScheduledRecalculation() {
-    this.logger.log('Recalculating admin dashboard summary stats...');
-    await this.recalculate();
-    this.logger.log('Admin dashboard summary stats recalculated.');
+    const doRecalculate = async () => {
+      this.logger.log('Recalculating admin dashboard summary stats...');
+      await this.recalculate();
+      this.logger.log('Admin dashboard summary stats recalculated.');
+    };
+
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('admin-dashboard-recalculation', doRecalculate);
+    }
+    return doRecalculate();
   }
 
   private async recalculate() {
