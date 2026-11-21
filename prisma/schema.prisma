@@ -1598,6 +1598,7 @@ enum AuditTargetType {
   COUPON
   ABUSE_REPORT
   TAG
+  CERTIFICATE
 }
 
 model AdminAuditLog {
