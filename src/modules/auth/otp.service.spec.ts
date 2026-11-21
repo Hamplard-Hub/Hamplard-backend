@@ -3,14 +3,31 @@ import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OtpService, TooManyRequestsException } from './otp.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisRateLimitService } from '../../common/redis-rate-limit/redis-rate-limit.service';
 
 // Stub the Africa's Talking SDK so sendOtp never makes a real HTTP request.
 const mockSmsSend = jest.fn().mockResolvedValue({ SMSMessageData: { Recipients: [] } });
 jest.mock('africastalking', () => jest.fn(() => ({ SMS: { send: mockSmsSend } })));
 
+// ---------------------------------------------------------------------------
+// In-memory Redis mock — increments a counter per key
+// ---------------------------------------------------------------------------
+
+class FakeRedisRateLimitService {
+  private counters = new Map<string, number>();
+
+  async fixedWindow(key: string, windowSeconds: number) {
+    const count = (this.counters.get(key) ?? 0) + 1;
+    this.counters.set(key, count);
+    return { count, ttlSeconds: windowSeconds };
+  }
+
+  reset() { this.counters.clear(); }
+}
+
 describe('OtpService', () => {
   let service: OtpService;
-  let prisma: PrismaService;
+  let fakeRl: FakeRedisRateLimitService;
 
   const mockPrismaService = {
     phoneOtp: {
@@ -28,30 +45,33 @@ describe('OtpService', () => {
   const mockConfigService = {
     get: jest.fn((key: string, defaultValue?: any) => {
       const config: Record<string, any> = {
-        NODE_ENV: 'test',
-        AFRICASTALKING_USERNAME: 'test_username',
-        AFRICASTALKING_API_KEY: 'test_api_key',
-        AFRICASTALKING_SENDER_ID: 'TestSender',
+        NODE_ENV:                    'test',
+        AFRICASTALKING_USERNAME:     'test_username',
+        AFRICASTALKING_API_KEY:      'test_api_key',
+        AFRICASTALKING_SENDER_ID:    'TestSender',
       };
       return config[key] ?? defaultValue;
     }),
   };
 
   beforeEach(async () => {
+    fakeRl = new FakeRedisRateLimitService();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OtpService,
-        { provide: PrismaService, useValue: mockPrismaService },
-        { provide: ConfigService, useValue: mockConfigService },
+        { provide: PrismaService,          useValue: mockPrismaService },
+        { provide: ConfigService,          useValue: mockConfigService },
+        { provide: RedisRateLimitService,  useValue: fakeRl },
       ],
     }).compile();
 
     service = module.get<OtpService>(OtpService);
-    prisma = module.get<PrismaService>(PrismaService);
   });
 
   afterEach(() => {
     jest.clearAllMocks();
+    fakeRl.reset();
   });
 
   describe('sendOtp', () => {
@@ -78,9 +98,7 @@ describe('OtpService', () => {
           phoneNumber: '+254712345678',
           isUsed: false,
         },
-        data: {
-          isUsed: true,
-        },
+        data: { isUsed: true },
       });
 
       expect(mockPrismaService.phoneOtp.create).toHaveBeenCalledWith({
@@ -98,19 +116,33 @@ describe('OtpService', () => {
       );
     });
 
-    it('should enforce rate limiting', async () => {
+    it('should enforce rate limiting via Redis fixed-window counter', async () => {
       mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 0 });
       mockPrismaService.phoneOtp.create.mockResolvedValue({} as any);
 
-      // First 3 requests should succeed
+      // First 3 requests should succeed (counter stays <= OTP_RATE_LIMIT_MAX_REQUESTS = 3).
       await service.sendOtp('user-123', '+254712345678', 'KE');
       await service.sendOtp('user-123', '+254712345678', 'KE');
       await service.sendOtp('user-123', '+254712345678', 'KE');
 
-      // Fourth request should be rate limited
+      // Fourth request: counter becomes 4 > 3, should be rate-limited.
       await expect(
         service.sendOtp('user-123', '+254712345678', 'KE'),
       ).rejects.toThrow(TooManyRequestsException);
+    });
+
+    it('should use a separate counter for a different phone number', async () => {
+      mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 0 });
+      mockPrismaService.phoneOtp.create.mockResolvedValue({} as any);
+
+      await service.sendOtp('user-123', '+254712345678', 'KE');
+      await service.sendOtp('user-123', '+254712345678', 'KE');
+      await service.sendOtp('user-123', '+254712345678', 'KE');
+
+      // A different phone number starts with counter = 0.
+      await expect(
+        service.sendOtp('user-456', '+254799999999', 'KE'),
+      ).resolves.toBeUndefined();
     });
   });
 
@@ -160,7 +192,7 @@ describe('OtpService', () => {
     it('should reject expired OTP', async () => {
       const expiredOtp = {
         ...mockOtpRecord,
-        expiresAt: new Date(Date.now() - 1000), // Expired 1 second ago
+        expiresAt: new Date(Date.now() - 1000),
       };
       mockPrismaService.phoneOtp.findFirst.mockResolvedValue(expiredOtp);
       mockPrismaService.phoneOtp.update.mockResolvedValue({} as any);
@@ -180,17 +212,12 @@ describe('OtpService', () => {
 
       expect(mockPrismaService.phoneOtp.update).toHaveBeenCalledWith({
         where: { id: 'otp-123' },
-        data: {
-          attemptCount: 1,
-        },
+        data: { attemptCount: 1 },
       });
     });
 
     it('should reject OTP after max attempts', async () => {
-      const maxAttemptsOtp = {
-        ...mockOtpRecord,
-        attemptCount: 5,
-      };
+      const maxAttemptsOtp = { ...mockOtpRecord, attemptCount: 5 };
       mockPrismaService.phoneOtp.findFirst.mockResolvedValue(maxAttemptsOtp);
       mockPrismaService.phoneOtp.update.mockResolvedValue({} as any);
 

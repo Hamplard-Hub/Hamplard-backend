@@ -8,7 +8,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
-import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
+import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType, EnrollmentStatus } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
@@ -339,7 +339,7 @@ export class CoursesService {
     };
   }
 
-  /** Returns true when the viewer has an active enrollment in the course. */
+  /** Returns true when the viewer has an active or completed enrollment in the course. */
   private async isEnrolled(
     courseId: string,
     viewer?: { userId?: string; stellarAddress?: string },
@@ -348,9 +348,10 @@ export class CoursesService {
     const enrollment = await this.prisma.enrollment.findFirst({
       where: {
         courseId,
+        status: { in: [EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED] },
         ...(viewer.userId
-          ? { userId: viewer.userId }
-          : { user: { stellarAddress: viewer.stellarAddress } }),
+          ? { studentId: viewer.userId }
+          : { student: { stellarAddress: viewer.stellarAddress } }),
       },
       select: { id: true },
     });
