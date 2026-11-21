@@ -10,6 +10,8 @@ import { CreateRefundDto } from './dto/create-refund.dto';
 import { ApproveRefundDto } from './dto/approve-refund.dto';
 import { RejectRefundDto } from './dto/reject-refund.dto';
 import { ProcessRefundDto } from './dto/process-refund.dto';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 
 /** Refund requests must be filed within this many days of enrollment. */
 const REFUND_ELIGIBILITY_WINDOW_DAYS = 14;
@@ -21,6 +23,7 @@ export class RefundsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stellar: StellarService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   // ----------------------------------------------------------
@@ -288,6 +291,18 @@ export class RefundsService {
     });
 
     this.logger.log(`Refund processed: ${id} (${isFullRefund ? 'full' : 'partial'})`);
+    await this.analytics.trackEvent(
+      {
+        eventType: SERVER_ANALYTICS_EVENTS.REFUND_PROCESSED,
+        properties: {
+          refundId: id,
+          enrollmentId: refund.enrollmentId,
+          amount: Number(refund.approvedAmount),
+          isFullRefund,
+        },
+      },
+      { userId: refund.studentId, source: 'server' },
+    );
     return updatedRefund;
   }
 

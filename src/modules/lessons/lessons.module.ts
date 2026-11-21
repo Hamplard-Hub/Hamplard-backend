@@ -5,11 +5,13 @@ import { LessonsService } from './lessons.service';
 import { DripScheduleService } from './drip-schedule.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { EnrollmentsModule } from '../enrollments/enrollments.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     NotificationsModule,
+    AnalyticsModule,
     forwardRef(() => EnrollmentsModule),
   ],
   controllers: [LessonsController],

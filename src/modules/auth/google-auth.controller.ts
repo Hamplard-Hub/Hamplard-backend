@@ -13,6 +13,8 @@ import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { Request, Response } from 'express';
 import { GoogleAuthService, GoogleIdentity } from './google-auth.service';
 import { GoogleAuthGuard } from './google-auth.guard';
+import { FeatureFlagGuard } from '../feature-flags/feature-flag.guard';
+import { RequireFeature } from '../feature-flags/require-feature.decorator';
 
 class GoogleTokenDto {
   @ApiProperty({ description: 'Google ID token returned by Google Sign-In' })
@@ -43,7 +45,8 @@ export class GoogleAuthController {
 
   /** Step 1 — Redirect the browser to Google's consent screen. */
   @Get()
-  @UseGuards(GoogleAuthGuard)
+  @RequireFeature('google_login')
+  @UseGuards(FeatureFlagGuard, GoogleAuthGuard)
   @ApiOperation({ summary: 'Start Google OAuth sign-in' })
   start() {}
 
@@ -54,7 +57,8 @@ export class GoogleAuthController {
    * frontend, which exchanges the code for tokens via POST /auth/google/exchange.
    */
   @Get('callback')
-  @UseGuards(GoogleAuthGuard)
+  @RequireFeature('google_login')
+  @UseGuards(FeatureFlagGuard, GoogleAuthGuard)
   @ApiOperation({ summary: 'Handle the Google OAuth callback and redirect to the frontend' })
   async callback(
     @Req() request: Request & { user: GoogleIdentity },
@@ -76,6 +80,8 @@ export class GoogleAuthController {
    * Codes are single-use and expire in 60 seconds.
    */
   @Post('exchange')
+  @RequireFeature('google_login')
+  @UseGuards(FeatureFlagGuard)
   @ApiOperation({
     summary: 'Exchange a one-time OAuth callback code for access and refresh tokens',
   })
@@ -92,6 +98,8 @@ export class GoogleAuthController {
    * ID token (e.g. One Tap).  Supports 2FA-enabled accounts via `totpCode`.
    */
   @Post('token')
+  @RequireFeature('google_login')
+  @UseGuards(FeatureFlagGuard)
   @ApiOperation({ summary: 'Validate a Google ID token and receive a platform JWT' })
   loginWithToken(@Body() dto: GoogleTokenDto, @Req() request: Request) {
     const deviceMeta = {

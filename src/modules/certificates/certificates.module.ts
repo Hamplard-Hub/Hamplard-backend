@@ -9,9 +9,10 @@ import { ExamsModule } from '../exams/exams.module';
 import { CertificateShareController } from './certificate-share.controller';
 import { CertificateShareService } from './certificate-share.service';
 import { UploadsModule } from '../uploads/uploads.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
-  imports: [NotificationsModule, ExamsModule, UploadsModule],
+  imports: [NotificationsModule, ExamsModule, UploadsModule, AnalyticsModule],
   controllers: [
     CertificateTemplatesController,
     CertificateShareController,

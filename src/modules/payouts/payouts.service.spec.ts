@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PayoutsService } from './payouts.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { KycService } from '../kyc/kyc.service';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PayoutStatus, UserRole } from '@prisma/client';
 
 describe('PayoutsService', () => {
@@ -11,12 +11,14 @@ describe('PayoutsService', () => {
 
   const mockPrisma = {
     user: { findUnique: jest.fn() },
+    enrollment: { findMany: jest.fn() },
     payout: {
       findMany: jest.fn(),
       count: jest.fn(),
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      aggregate: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -37,6 +39,11 @@ describe('PayoutsService', () => {
     service = module.get<PayoutsService>(PayoutsService);
     prisma = module.get(PrismaService);
     jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation((arg: any) =>
+      Array.isArray(arg) ? Promise.all(arg) : arg(mockPrisma),
+    );
+    mockPrisma.enrollment.findMany.mockResolvedValue([]);
+    mockPrisma.payout.aggregate.mockResolvedValue({ _sum: { amount: null } });
   });
 
   it('should prevent non-owners and non-admins from viewing payout history', async () => {
@@ -67,6 +74,32 @@ describe('PayoutsService', () => {
 
     expect(res.data).toHaveLength(1);
     expect(res.meta.total).toBe(1);
+  });
+
+  it('calculates the available balance from enrollment fee snapshots, refunds, and payouts', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'instructor-1' });
+    mockPrisma.enrollment.findMany.mockResolvedValue([
+      {
+        amountPaid: 125,
+        platformFeePercent: 20,
+        refunds: [{ approvedAmount: 10 }],
+      },
+    ]);
+    mockPrisma.payout.aggregate.mockResolvedValue({ _sum: { amount: 40 } });
+
+    await expect(
+      service.getInstructorBalance(
+        { id: 'instructor-1', role: UserRole.INSTRUCTOR },
+        'instructor-1',
+      ),
+    ).resolves.toEqual({
+      instructorId: 'instructor-1',
+      currency: 'USDC',
+      totalEarned: 100,
+      totalRefunded: 10,
+      totalPayouts: 40,
+      availableBalance: 50,
+    });
   });
 
   it('should track payout status transitions', async () => {
@@ -149,11 +182,32 @@ describe('PayoutsService', () => {
         amount: 100,
         status: PayoutStatus.PENDING,
       });
+      mockPrisma.enrollment.findMany.mockResolvedValue([
+        { amountPaid: 125, platformFeePercent: 20, refunds: [] },
+      ]);
 
       const res = await service.createPayout(dto);
 
       expect(res.id).toBe('pay-1');
       expect(mockPrisma.payout.create).toHaveBeenCalled();
+    });
+
+    it('rejects a payout that exceeds net earnings after fees, refunds, and prior payouts', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'instructor-1' });
+      mockKyc.getVerificationStatus.mockResolvedValue({ isVerified: true });
+      mockPrisma.enrollment.findMany.mockResolvedValue([
+        {
+          amountPaid: 125,
+          platformFeePercent: 20,
+          refunds: [{ approvedAmount: 10 }],
+        },
+      ]);
+      mockPrisma.payout.aggregate.mockResolvedValue({ _sum: { amount: 40 } });
+
+      await expect(
+        service.createPayout({ instructorId: 'instructor-1', amount: 51 }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.payout.create).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundException when the instructor does not exist', async () => {
