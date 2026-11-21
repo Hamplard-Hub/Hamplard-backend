@@ -20,6 +20,8 @@ describe('EventsController (Role Authorization)', () => {
       limit: 20,
       totalPages: 0,
     }),
+    findDeadLetterEvents: jest.fn().mockResolvedValue({ data: [], meta: { total: 0 } }),
+    retryDeadLetterEvent: jest.fn().mockResolvedValue({ id: 'event-1' }),
   };
 
   const mockJwtGuard = {
@@ -61,6 +63,16 @@ describe('EventsController (Role Authorization)', () => {
     expect(roles).toEqual([UserRole.ADMIN]);
   });
 
+  it('requires ADMIN for dead-letter list and retry endpoints', () => {
+    const reflector = new Reflector();
+    expect(
+      reflector.get<UserRole[]>(ROLES_KEY, EventsController.prototype.findDeadLetterEvents),
+    ).toEqual([UserRole.ADMIN]);
+    expect(
+      reflector.get<UserRole[]>(ROLES_KEY, EventsController.prototype.retryDeadLetterEvent),
+    ).toEqual([UserRole.ADMIN]);
+  });
+
   it('rejects student callers with 403 Forbidden', async () => {
     currentUserRole = UserRole.STUDENT;
 
@@ -86,5 +98,17 @@ describe('EventsController (Role Authorization)', () => {
 
     expect(response.status).toBe(200);
     expect(mockEventsService.findAll).toHaveBeenCalled();
+  });
+
+  it('allows admins to list and retry dead-lettered events', async () => {
+    currentUserRole = UserRole.ADMIN;
+
+    const listResponse = await request(app.getHttpServer()).get('/events/dead-lettered');
+    const retryResponse = await request(app.getHttpServer()).post('/events/event-1/retry');
+
+    expect(listResponse.status).toBe(200);
+    expect(retryResponse.status).toBe(201);
+    expect(mockEventsService.findDeadLetterEvents).toHaveBeenCalled();
+    expect(mockEventsService.retryDeadLetterEvent).toHaveBeenCalledWith('event-1');
   });
 });
