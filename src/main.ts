@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { Logger as PinoLogger } from 'nestjs-pino';
@@ -14,7 +15,7 @@ import { parseTrustProxy } from './common/config/env.util';
 async function bootstrap() {
   initializeSentry();
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     // rawBody: true makes the unparsed request body available as req.rawBody
     // (Buffer), which WebhookSignatureMiddleware needs for HMAC-SHA256 signing.
     rawBody: true,
@@ -56,12 +57,17 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new TransformInterceptor());
 
-  const swaggerConfig = buildSwaggerConfig();
+  const swaggerEnabled = config.get<string>('SWAGGER_ENABLED', 'false');
+  const nodeEnv = config.get<string>('NODE_ENV', 'development');
+  const isSwaggerEnabled = swaggerEnabled === 'true' || (nodeEnv !== 'production' && swaggerEnabled !== 'false');
 
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('docs', app, document, {
-    swaggerOptions: { persistAuthorization: true },
-  });
+  if (isSwaggerEnabled) {
+    const swaggerConfig = buildSwaggerConfig();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('docs', app, document, {
+      swaggerOptions: { persistAuthorization: true },
+    });
+  }
 
   await app.listen(port);
   logger.log(`Hamplard API running on http://localhost:${port}/${apiPrefix}`);

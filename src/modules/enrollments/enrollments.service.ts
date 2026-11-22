@@ -10,6 +10,8 @@ import { NotificationType, CourseStatus, Prisma } from '@prisma/client';
 import { FraudDetectionService, FraudCheckResult } from './fraud-detection.service';
 import { DripScheduleService } from '../lessons/drip-schedule.service';
 import { StellarService } from '../../common/stellar/stellar.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 
 @Injectable()
 export class EnrollmentsService {
@@ -22,6 +24,7 @@ export class EnrollmentsService {
     private readonly fraudDetection: FraudDetectionService,
     private readonly referrals: ReferralsService,
     private readonly stellar: StellarService,
+    private readonly analytics: AnalyticsService,
     @Inject(forwardRef(() => DripScheduleService))
     private readonly dripSchedule: DripScheduleService,
   ) {}
@@ -84,7 +87,7 @@ export class EnrollmentsService {
     });
 
     // ------------------------------------------------------------------
-    // STEP 2: Create enrollment record
+    // STEP 2: Create enrollment record with fee snapshot
     // ------------------------------------------------------------------
     let enrollment;
     try {
@@ -94,6 +97,7 @@ export class EnrollmentsService {
           courseId,
           txHash,
           amountPaid: new Prisma.Decimal(amountPaid),
+          platformFeePercent: course.platformFeePercent,
         },
         include: { course: true, student: true },
       });
@@ -113,6 +117,13 @@ export class EnrollmentsService {
       },
     });
 
+    await this.analytics.trackEvent(
+      {
+        eventType: SERVER_ANALYTICS_EVENTS.ENROLLMENT_CREATED,
+        properties: { enrollmentId: enrollment.id, courseId, amountPaid },
+      },
+      { userId: studentId, source: 'server' },
+    );
     await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, amountPaid);
 
     this.logger.log(`Enrollment created: ${studentId} → ${courseId} (payment ${txHash})`);

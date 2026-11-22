@@ -15,6 +15,7 @@ describe('PayoutsController (Role Authorization)', () => {
   const mockPayoutsService = {
     getInstructorPayoutHistory: jest.fn(),
     exportPayoutStatement: jest.fn(),
+    getInstructorBalance: jest.fn(),
     createPayout: jest.fn(),
     updatePayoutStatus: jest.fn(),
   };
@@ -90,6 +91,23 @@ describe('PayoutsController (Role Authorization)', () => {
 
     expect(response.status).toBe(403);
     expect(mockPayoutsService.updatePayoutStatus).not.toHaveBeenCalled();
+  });
+
+  it('exposes an authenticated instructor balance endpoint', async () => {
+    currentUserRole = UserRole.INSTRUCTOR;
+    mockPayoutsService.getInstructorBalance.mockResolvedValue({
+      instructorId: 'user-1',
+      availableBalance: 25,
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/payouts/instructor/user-1/balance');
+
+    expect(response.status).toBe(200);
+    expect(mockPayoutsService.getInstructorBalance).toHaveBeenCalledWith(
+      { id: 'user-1', role: UserRole.INSTRUCTOR },
+      'user-1',
+    );
   });
 
   it('allows admin callers to create a payout and update payout status', async () => {

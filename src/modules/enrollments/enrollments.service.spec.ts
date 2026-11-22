@@ -9,6 +9,7 @@ import { InvoicesService } from '../invoices/invoices.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { DripScheduleService } from '../lessons/drip-schedule.service';
 import { StellarService } from '../../common/stellar/stellar.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { CourseStatus, FraudFlagStatus, FraudRiskLevel } from '@prisma/client';
 
 describe('EnrollmentsService - Fraud HOLD handling', () => {
@@ -22,6 +23,7 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
       findMany: jest.fn(),
       create: jest.fn(),
       count: jest.fn(),
+      findMany: jest.fn(),
     },
     coursePrerequisite: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -30,8 +32,10 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    user: { findUnique: jest.fn().mockResolvedValue(null) },
     payment: {
       findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockResolvedValue({ id: 'payment-1' }),
     },
     enrollmentFraudFlag: {
       create: jest.fn(),
@@ -52,15 +56,18 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
 
   const mockInvoices = {
     generateInvoice: jest.fn().mockResolvedValue({}),
+    generateForEnrollment: jest.fn().mockResolvedValue({}),
   };
 
   const mockReferrals = {
     processReward: jest.fn().mockResolvedValue({}),
+    trackConversion: jest.fn().mockResolvedValue({}),
   };
 
   const mockDripSchedule = {
     calculateAndSyncUnlockSchedule: jest.fn().mockResolvedValue({}),
   };
+  const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -73,6 +80,7 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
         { provide: ReferralsService, useValue: mockReferrals },
         { provide: DripScheduleService, useValue: mockDripSchedule },
         { provide: StellarService, useValue: mockStellar },
+        { provide: AnalyticsService, useValue: mockAnalytics },
         {
           provide: ConfigService,
           useValue: {
@@ -127,6 +135,51 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
       500,
     );
     expect(mockPrisma.enrollment.create).not.toHaveBeenCalled();
+  });
+
+  it('records an enrollment analytics event after creating the enrollment', async () => {
+    mockPrisma.course.findUnique
+      .mockResolvedValueOnce({
+        id: 'course-1',
+        title: 'Course 1',
+        status: CourseStatus.ACTIVE,
+        platformFeePercent: 20,
+        instructorAddress: 'instructor-address',
+      })
+      .mockResolvedValueOnce({ id: 'course-1', title: 'Course 1' });
+    mockPrisma.enrollment.findUnique.mockResolvedValue(null);
+    mockPrisma.coursePrerequisite.findMany.mockResolvedValue([]);
+    mockPrisma.enrollment.create.mockResolvedValue({
+      id: 'enrollment-1',
+      studentId: 'student-1',
+      courseId: 'course-1',
+      course: { title: 'Course 1', instructorAddress: 'instructor-address' },
+      student: {},
+    });
+    mockPrisma.course.update.mockResolvedValue({});
+    mockStellar.getTransactionStatus.mockResolvedValue({
+      successful: true,
+      status: 'SUCCESS',
+    });
+    jest.spyOn(fraudDetection, 'processFraudCheck').mockResolvedValue({
+      action: 'ALLOW',
+      score: 0,
+      riskLevel: FraudRiskLevel.LOW,
+      reasons: [],
+    });
+
+    await service.create('student-1', 'course-1', 'tx-1', 100);
+
+    expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'enrollment_created',
+        properties: expect.objectContaining({
+          enrollmentId: 'enrollment-1',
+          courseId: 'course-1',
+        }),
+      }),
+      { userId: 'student-1', source: 'server' },
+    );
   });
 
   it('allows querying HELD fraud flags even when no enrollment exists', async () => {

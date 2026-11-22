@@ -1,4 +1,11 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { EventsService } from './events.service';
@@ -18,5 +25,19 @@ export class EventsController {
   @ApiOperation({ summary: 'List on-chain events with optional course filter' })
   findAll(@Query() query: QueryEventsDto) {
     return this.eventsService.findAll(query.courseId, query.page, query.limit);
+  }
+
+  @Get('dead-lettered')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'List chain events that exhausted automatic retries' })
+  findDeadLetterEvents(@Query() query: QueryEventsDto) {
+    return this.eventsService.findDeadLetterEvents(query.page, query.limit);
+  }
+
+  @Post(':id/retry')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Retry a dead-lettered chain event' })
+  retryDeadLetterEvent(@Param('id') id: string) {
+    return this.eventsService.retryDeadLetterEvent(id);
   }
 }

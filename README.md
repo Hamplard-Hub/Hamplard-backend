@@ -886,11 +886,44 @@ Student can share /certificates/verify/:id → public verification
 
 ## Setup
 
+### Option 1: Docker Compose (Recommended for Local Development)
+
+Run all services (PostgreSQL, Redis, Meilisearch, ClamAV, and the NestJS API) with a single command:
+
+```bash
+# 1. Copy environment template
+cp .env.example .env
+
+# 2. Build and start all containers
+docker compose up --build
+
+# Or run in detached mode:
+docker compose up -d
+```
+
+`docker compose up` automatically runs database migrations on startup. To populate demo seed data, run:
+
+```bash
+docker compose exec api npx prisma db seed
+```
+
+- API: `http://localhost:3000/api/v1`
+- Swagger Docs: `http://localhost:3000/docs`
+- Meilisearch: `http://localhost:7700`
+
+To stop the containers:
+```bash
+docker compose down
+```
+
+### Option 2: Manual Local Setup
+
 ```bash
 cp .env.example .env   # fill in your values
 npm install
 npx prisma migrate dev --name init
 npx prisma generate
+npx prisma db seed     # populate demo data
 npm run start:dev
 ```
 

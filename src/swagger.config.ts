@@ -35,5 +35,8 @@ export function buildSwaggerConfig(): Omit<OpenAPIObject, 'paths'> {
     .addTag('tags',         'Searchable tag management for courses')
     .addTag('feature-flags','Admin feature flag management and evaluation')
     .addTag('cron-monitor', 'Admin cron job run history and monitoring')
+    .addTag('admin',        'Admin operations: impersonation, audit logs')
+    .addTag('revenue',      'Revenue reports and analytics')
+    .addTag('moderation',   'Content moderation and abuse handling')
     .build();
 }

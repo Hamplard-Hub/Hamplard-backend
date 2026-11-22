@@ -60,85 +60,60 @@ export class RevenueReportService {
     if (courseId) where.courseId = courseId;
     if (instructorAddress) where.course = { instructorAddress };
 
-    const enrollments = await this.prisma.enrollment.findMany({
-      where,
-      select: {
-        amountPaid: true,
-        course: {
-          select: {
-            id: true,
-            title: true,
-            instructorAddress: true,
-            platformFeePercent: true,
-            instructor: { select: { id: true, name: true } },
-          },
-        },
-      },
-    });
+    // Use SQL aggregation with the fee snapshot from enrollment
+    const courseRows = await this.prisma.$queryRaw<CourseBucket[]>`
+      SELECT
+        c.id AS "courseId",
+        c.title AS "courseTitle",
+        c."instructorAddress",
+        u.id AS "instructorId",
+        u.name AS "instructorName",
+        COUNT(e.id)::int AS "enrollmentCount",
+        SUM(e."amountPaid")::decimal(20,2) AS "grossRevenue",
+        SUM(e."amountPaid" * e."platformFeePercent" / 100)::decimal(20,2) AS "platformFee",
+        SUM(e."amountPaid" * (100 - e."platformFeePercent") / 100)::decimal(20,2) AS "instructorNet"
+      FROM "enrollments" e
+      JOIN "courses" c ON e."courseId" = c.id
+      LEFT JOIN "users" u ON c."instructorAddress" = u."stellarAddress"
+      WHERE e."status" != 'REFUNDED'
+        ${courseId ? `AND e."courseId" = ${courseId}` : ''}
+        ${instructorAddress ? `AND c."instructorAddress" = ${instructorAddress}` : ''}
+        ${startDate && endDate ? `AND e."enrolledAt" BETWEEN ${new Date(startDate)} AND ${new Date(endDate)}` : ''}
+      GROUP BY c.id, c.title, c."instructorAddress", u.id, u.name
+      ORDER BY "grossRevenue" DESC
+    `;
 
-    const byCourse = new Map<string, CourseBucket>();
-    const byInstructor = new Map<string, InstructorBucket>();
+    // Get instructor-level aggregation
+    const instructorRows = await this.prisma.$queryRaw<InstructorBucket[]>`
+      SELECT
+        c."instructorAddress",
+        u.id AS "instructorId",
+        u.name AS "instructorName",
+        COUNT(DISTINCT c.id)::int AS "courseCount",
+        COUNT(e.id)::int AS "enrollmentCount",
+        SUM(e."amountPaid")::decimal(20,2) AS "grossRevenue",
+        SUM(e."amountPaid" * e."platformFeePercent" / 100)::decimal(20,2) AS "platformFee",
+        SUM(e."amountPaid" * (100 - e."platformFeePercent") / 100)::decimal(20,2) AS "instructorNet"
+      FROM "enrollments" e
+      JOIN "courses" c ON e."courseId" = c.id
+      LEFT JOIN "users" u ON c."instructorAddress" = u."stellarAddress"
+      WHERE e."status" != 'REFUNDED'
+        ${courseId ? `AND e."courseId" = ${courseId}` : ''}
+        ${instructorAddress ? `AND c."instructorAddress" = ${instructorAddress}` : ''}
+        ${startDate && endDate ? `AND e."enrolledAt" BETWEEN ${new Date(startDate)} AND ${new Date(endDate)}` : ''}
+      GROUP BY c."instructorAddress", u.id, u.name
+      ORDER BY "grossRevenue" DESC
+    `;
 
-    for (const enrollment of enrollments) {
-      const { course } = enrollment;
-      const amount = Number(enrollment.amountPaid);
-      const fee = amount * (course.platformFeePercent / 100);
-      const net = amount - fee;
+    const normalizedCourseRows = courseRows.map(b => this.normalizeBucket(b));
+    const normalizedInstructorRows = instructorRows.map(b => this.normalizeBucket(b));
 
-      const courseBucket = byCourse.get(course.id) ?? {
-        courseId: course.id,
-        courseTitle: course.title,
-        instructorAddress: course.instructorAddress,
-        instructorId: course.instructor?.id ?? null,
-        instructorName: course.instructor?.name ?? null,
-        enrollmentCount: 0,
-        grossRevenue: 0,
-        platformFee: 0,
-        instructorNet: 0,
-      };
-      courseBucket.enrollmentCount += 1;
-      courseBucket.grossRevenue += amount;
-      courseBucket.platformFee += fee;
-      courseBucket.instructorNet += net;
-      byCourse.set(course.id, courseBucket);
-
-      const instructorBucket = byInstructor.get(course.instructorAddress) ?? {
-        instructorAddress: course.instructorAddress,
-        instructorId: course.instructor?.id ?? null,
-        instructorName: course.instructor?.name ?? null,
-        courseCount: 0,
-        enrollmentCount: 0,
-        grossRevenue: 0,
-        platformFee: 0,
-        instructorNet: 0,
-      };
-      instructorBucket.enrollmentCount += 1;
-      instructorBucket.grossRevenue += amount;
-      instructorBucket.platformFee += fee;
-      instructorBucket.instructorNet += net;
-      byInstructor.set(course.instructorAddress, instructorBucket);
-    }
-
-    // courseCount per instructor — computed once buckets are complete
-    const coursesPerInstructor = new Map<string, Set<string>>();
-    for (const bucket of byCourse.values()) {
-      const set = coursesPerInstructor.get(bucket.instructorAddress) ?? new Set<string>();
-      set.add(bucket.courseId);
-      coursesPerInstructor.set(bucket.instructorAddress, set);
-    }
-    for (const [address, bucket] of byInstructor) {
-      bucket.courseCount = coursesPerInstructor.get(address)?.size ?? 0;
-    }
-
-    const courseRows = [...byCourse.values()].map((b) => this.normalizeBucket(b));
-    const instructorRows = [...byInstructor.values()].map((b) => this.normalizeBucket(b));
-
-    const platformTotals = courseRows.reduce(
+    const platformTotals = normalizedCourseRows.reduce(
       (acc, row) => ({
         enrollmentCount: acc.enrollmentCount + row.enrollmentCount,
-        grossRevenue: this.round(acc.grossRevenue + row.grossRevenue),
-        platformFee: this.round(acc.platformFee + row.platformFee),
-        instructorNet: this.round(acc.instructorNet + row.instructorNet),
+        grossRevenue: this.round(acc.grossRevenue + Number(row.grossRevenue)),
+        platformFee: this.round(acc.platformFee + Number(row.platformFee)),
+        instructorNet: this.round(acc.instructorNet + Number(row.instructorNet)),
       }),
       { enrollmentCount: 0, grossRevenue: 0, platformFee: 0, instructorNet: 0 },
     );
@@ -148,12 +123,12 @@ export class RevenueReportService {
       generatedAt: new Date(),
       currency: CURRENCY,
       platformTotals,
-      byInstructor: instructorRows,
-      byCourse: courseRows,
-      rows: courseRows,
+      byInstructor: normalizedInstructorRows,
+      byCourse: normalizedCourseRows,
+      rows: normalizedCourseRows,
     };
 
-    return format === 'csv' ? { ...report, csv: this.toCsv(courseRows) } : report;
+    return format === 'csv' ? { ...report, csv: this.toCsv(normalizedCourseRows) } : report;
   }
 
   private validatePeriod(startDate?: string, endDate?: string): void {

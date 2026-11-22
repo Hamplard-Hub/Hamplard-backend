@@ -3,7 +3,7 @@ import {
   BadRequestException, ForbiddenException, Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { Coupon, DiscountType, EnrollmentStatus, Prisma, UserRole } from '@prisma/client';
+import { Coupon, DiscountType, EnrollmentStatus, Prisma, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
 import { ValidateCouponDto } from './dto/validate-coupon.dto';
@@ -25,7 +25,7 @@ export class CouponsService {
   // CREATE
   // ----------------------------------------------------------
 
-  async create(actor: CouponActor, dto: CreateCouponDto) {
+  async create(actor: CouponActor, dto: CreateCouponDto, ipAddress?: string) {
     const userId = actor.id;
     const code = dto.code.toUpperCase().trim();
 
@@ -76,6 +76,18 @@ export class CouponsService {
       include: {
         createdBy: { select: { id: true, name: true, role: true } },
         course: { select: { id: true, title: true } },
+      },
+    });
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: userId,
+        action: AuditAction.COUPON_CREATED,
+        targetType: AuditTargetType.COUPON,
+        targetId: coupon.id,
+        metadata: { code: coupon.code, discountType: coupon.discountType, discountValue: Number(coupon.discountValue), courseId: coupon.courseId },
+        ipAddress,
       },
     });
 
@@ -137,7 +149,7 @@ export class CouponsService {
   // UPDATE / DEACTIVATE
   // ----------------------------------------------------------
 
-  async update(id: string, dto: UpdateCouponDto, actor: CouponActor) {
+  async update(id: string, dto: UpdateCouponDto, actor: CouponActor, ipAddress?: string) {
     const existing = await this.findOne(id, actor);
 
     // Re-scoping the coupon follows the same ownership rules as creation
@@ -172,15 +184,43 @@ export class CouponsService {
       throw new BadRequestException('Expiration date must be in the future');
     }
 
-    return this.prisma.coupon.update({
+    const updated = await this.prisma.coupon.update({
       where: { id },
       data: { ...dto },
     });
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: actor.id,
+        action: AuditAction.COUPON_UPDATED,
+        targetType: AuditTargetType.COUPON,
+        targetId: id,
+        metadata: { code: updated.code, changes: dto as any },
+        ipAddress,
+      },
+    });
+
+    return updated;
   }
 
-  async deactivate(id: string, actor: CouponActor) {
-    await this.findOne(id, actor);
-    return this.prisma.coupon.update({ where: { id }, data: { isActive: false } });
+  async deactivate(id: string, actor: CouponActor, ipAddress?: string) {
+    const coupon = await this.findOne(id, actor);
+    const updated = await this.prisma.coupon.update({ where: { id }, data: { isActive: false } });
+
+    // Audit log
+    await this.prisma.adminAuditLog.create({
+      data: {
+        actorId: actor.id,
+        action: AuditAction.COUPON_DEACTIVATED,
+        targetType: AuditTargetType.COUPON,
+        targetId: id,
+        metadata: { code: coupon.code, discountType: coupon.discountType, discountValue: Number(coupon.discountValue) },
+        ipAddress,
+      },
+    });
+
+    return updated;
   }
 
   // ----------------------------------------------------------

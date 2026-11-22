@@ -15,6 +15,14 @@ import {
 import { Type } from 'class-transformer';
 
 /** Allowed high-level analytics event types */
+export const SERVER_ANALYTICS_EVENTS = {
+  ENROLLMENT_CREATED: 'enrollment_created',
+  LESSON_COMPLETED: 'lesson_completed',
+  COURSE_COMPLETED: 'course_completed',
+  REFUND_PROCESSED: 'refund_processed',
+  CERTIFICATE_ISSUED: 'certificate_issued',
+} as const;
+
 export const ANALYTICS_EVENT_TYPES = [
   'page_view',
   'click',
@@ -26,6 +34,7 @@ export const ANALYTICS_EVENT_TYPES = [
   'video_play',
   'video_pause',
   'custom',
+  ...Object.values(SERVER_ANALYTICS_EVENTS),
 ] as const;
 
 export type AnalyticsEventType = (typeof ANALYTICS_EVENT_TYPES)[number] | string;

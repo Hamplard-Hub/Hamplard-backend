@@ -614,6 +614,7 @@ model Enrollment {
   studentId       String
   courseId        String
   amountPaid      Decimal          // USDC paid
+  platformFeePercent Int           @default(20) // Fee snapshot at enrollment time
   txHash          String?          // on-chain enrollment tx
   status          EnrollmentStatus @default(ACTIVE)
   progressPercent Int              @default(0)  // 0-100
@@ -806,6 +807,8 @@ model ChainEvent {
   processed  Boolean  @default(false)
   processedAt DateTime?
   handlerError String?
+  attemptCount Int      @default(0)
+  retryAt     DateTime?
   createdAt  DateTime @default(now())
 
   // Relations
@@ -814,6 +817,7 @@ model ChainEvent {
   @@index([courseId])
   @@index([eventName])
   @@index([processed])
+  @@index([processed, retryAt, attemptCount])
   @@unique([txHash, eventIndex])
   @@map("chain_events")
 }
@@ -1541,6 +1545,7 @@ enum AuditAction {
   // KYC
   KYC_APPROVED
   KYC_REJECTED
+  KYC_REVOKED
 
   // Disputes
   DISPUTE_RESOLVED
@@ -1553,11 +1558,14 @@ enum AuditAction {
   REFUND_PROCESSED
 
   // Payouts
+  PAYOUT_CREATED
   PAYOUT_PROCESSED
   PAYOUT_SCHEDULED
+  PAYOUT_STATUS_CHANGED
 
   // Coupons
   COUPON_CREATED
+  COUPON_UPDATED
   COUPON_DEACTIVATED
 
   // Abuse reports
@@ -1574,6 +1582,11 @@ enum AuditAction {
   TAG_DELETED
   TAG_MERGED
 
+  // Certificates
+  CERTIFICATE_ISSUED
+  CERTIFICATE_REVOKED
+  CERTIFICATE_TX_HASH_UPDATED
+
   // Generic admin note
   ADMIN_MANUAL_NOTE
 }
@@ -1588,6 +1601,7 @@ enum AuditTargetType {
   COUPON
   ABUSE_REPORT
   TAG
+  CERTIFICATE
 }
 
 model AdminAuditLog {

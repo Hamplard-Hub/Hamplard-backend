@@ -35,6 +35,15 @@ export class PayoutsController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('instructor/:instructorId/balance')
+  async getInstructorBalance(
+    @CurrentUser() user: { id: string; role: UserRole },
+    @Param('instructorId') instructorId: string,
+  ) {
+    return this.payoutsService.getInstructorBalance(user, instructorId);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('instructor/:instructorId/statement')
   async exportPayoutStatement(
     @CurrentUser() user: { id: string; role: UserRole },
