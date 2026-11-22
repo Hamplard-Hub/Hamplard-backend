@@ -8,6 +8,7 @@ import { CertificatePdfService } from './certificate-pdf.service';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { UploadsService } from '../uploads/uploads.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 
 const mockPrisma = {
   enrollment: {
@@ -23,6 +24,7 @@ const mockPrisma = {
     findMany:   jest.fn(),
   },
   user: { findUnique: jest.fn() },
+  adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
 };
 
 const mockStellar = {
@@ -47,6 +49,7 @@ const mockUploads = {
   })),
   readStoredFile: jest.fn(),
 };
+const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
 
 const MOCK_ENROLLMENT = {
   id:             'enroll-1',
@@ -72,6 +75,7 @@ describe('CertificatesService', () => {
         { provide: ExamsService,         useValue: mockExams },
         { provide: CertificatePdfService, useValue: mockPdf },
         { provide: UploadsService,        useValue: mockUploads },
+        { provide: AnalyticsService,      useValue: mockAnalytics },
       ],
     }).compile();
 
@@ -111,6 +115,10 @@ describe('CertificatesService', () => {
         expect.stringMatching(/^CERT-.+\.pdf$/),
       );
       expect(mockNotifications.notifyUser).toHaveBeenCalledTimes(1);
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'certificate_issued' }),
+        { userId: 'student-1', source: 'server' },
+      );
     });
 
     it('throws ForbiddenException if course not completed', async () => {

@@ -10,6 +10,7 @@ import {
   EventsService,
   EVENT_POLLER_CHECKPOINT_KEY,
   EVENT_POLLER_INTERVAL_NAME,
+  MAX_HANDLER_ATTEMPTS,
 } from './events.service';
 
 jest.mock('../notifications/notifications.service', () => ({
@@ -491,11 +492,99 @@ describe('EventsService — poller scheduling & re-entrancy (Issue #229)', () =>
   });
 });
 
+describe('EventsService — handler retries', () => {
+  it('records failed handler attempts and exposes exhausted events as dead letters', async () => {
+    const prisma = {
+      chainEvent: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'event-1',
+            eventName: 'course_paused',
+            payload: 'course-1',
+            attemptCount: 0,
+          },
+        ]),
+        update: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const courses = { pauseCourse: jest.fn().mockRejectedValue(new Error('database timeout')) };
+    const service = new EventsService(
+      prisma as any,
+      {} as any,
+      { notifyUser: jest.fn() } as any,
+      courses as any,
+      { get: jest.fn() } as any,
+      buildMockScheduler() as any,
+    );
+
+    await service.retryFailedEvents();
+
+    expect(prisma.chainEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'event-1' },
+        data: expect.objectContaining({
+          processed: false,
+          attemptCount: 1,
+          handlerError: 'database timeout',
+          retryAt: expect.any(Date),
+        }),
+      }),
+    );
+  });
+
+  it('marks exhausted failures as dead letters for admin listing', async () => {
+    const prisma = {
+      chainEvent: {
+        update: jest.fn().mockResolvedValue({}),
+        findMany: jest.fn().mockResolvedValue([{ id: 'event-1', attemptCount: 5 }]),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      $transaction: jest.fn((queries) => Promise.all(queries)),
+    };
+    const service = new EventsService(
+      prisma as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      buildMockScheduler() as any,
+    );
+
+    await (service as any).recordHandlerFailure(
+      'event-1',
+      'database timeout',
+      MAX_HANDLER_ATTEMPTS,
+    );
+    const result = await service.findDeadLetterEvents();
+
+    expect(prisma.chainEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          attemptCount: MAX_HANDLER_ATTEMPTS,
+          retryAt: null,
+        }),
+      }),
+    );
+    expect(prisma.chainEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          processed: false,
+          attemptCount: { gte: MAX_HANDLER_ATTEMPTS },
+        },
+      }),
+    );
+    expect(result.meta.total).toBe(1);
+  });
+});
+
 describe('EventsService — course status sync via CoursesService (Issue #232)', () => {
   let service: EventsService;
 
   const mockPrisma = {
-    chainEvent: { create: jest.fn().mockResolvedValue({}) },
+    chainEvent: {
+      create: jest.fn().mockResolvedValue({ id: 'event-1' }),
+      update: jest.fn().mockResolvedValue({}),
+    },
     course: { update: jest.fn(), updateMany: jest.fn() },
   };
   const mockCourses = {
@@ -508,6 +597,8 @@ describe('EventsService — course status sync via CoursesService (Issue #232)',
     (service as any).processEvent({ ledger: 101, topic: [eventName], value: courseId });
 
   beforeEach(async () => {
+    mockPrisma.chainEvent.create.mockResolvedValue({ id: 'event-1' });
+    mockPrisma.chainEvent.update.mockResolvedValue({});
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EventsService,
@@ -537,10 +628,19 @@ describe('EventsService — course status sync via CoursesService (Issue #232)',
     expect(mockPrisma.course.updateMany).not.toHaveBeenCalled();
   });
 
-  it('course_approved swallows sync failures so polling continues', async () => {
+  it('records course approval sync failures for retry', async () => {
     mockCourses.approveCourse.mockRejectedValueOnce(new Error('db down'));
 
     await expect(emit('course_approved', 'C-1')).resolves.toBe(true);
+    expect(mockPrisma.chainEvent.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          processed: false,
+          attemptCount: 1,
+          handlerError: 'db down',
+        }),
+      }),
+    );
   });
 });
 

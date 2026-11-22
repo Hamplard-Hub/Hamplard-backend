@@ -9,8 +9,13 @@ import {
   ANALYTICS_EVENT_TYPES,
   BatchTrackAnalyticsEventsDto,
   QueryAnalyticsEventsDto,
+  SERVER_ANALYTICS_EVENTS,
   TrackAnalyticsEventDto,
 } from './dto/track-analytics-event.dto';
+
+const SERVER_EVENT_TYPES = new Set<string>(
+  Object.values(SERVER_ANALYTICS_EVENTS),
+);
 
 @Injectable()
 export class AnalyticsService {
@@ -23,8 +28,18 @@ export class AnalyticsService {
    */
   async trackEvent(
     dto: TrackAnalyticsEventDto,
-    meta?: { ipAddress?: string; userAgent?: string; userId?: string },
+    meta?: {
+      ipAddress?: string;
+      userAgent?: string;
+      userId?: string;
+      source?: 'server';
+    },
   ) {
+    if (meta?.source !== 'server' && SERVER_EVENT_TYPES.has(dto.eventType)) {
+      throw new BadRequestException(
+        'This analytics event can only be recorded by the server',
+      );
+    }
     this.validateEventPayload(dto);
 
     const event = await this.prisma.analyticsEvent.create({
@@ -47,6 +62,11 @@ export class AnalyticsService {
     }
 
     for (const event of dto.events) {
+      if (SERVER_EVENT_TYPES.has(event.eventType)) {
+        throw new BadRequestException(
+          'Server-owned analytics events cannot be submitted by clients',
+        );
+      }
       this.validateEventPayload(event);
     }
 
