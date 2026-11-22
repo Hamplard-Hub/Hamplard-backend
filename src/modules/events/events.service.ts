@@ -1,4 +1,11 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -16,8 +23,12 @@ const COLD_START_LOOKBACK = 10;
 
 /** Max length of the persisted handler error string. */
 const MAX_HANDLER_ERROR_LENGTH = 500;
+export const MAX_HANDLER_ATTEMPTS = 5;
+const RETRY_BASE_DELAY_MS = 5_000;
+const RETRY_MAX_DELAY_MS = 5 * 60_000;
 /** SchedulerRegistry name of the poll interval (issue #229). */
 export const EVENT_POLLER_INTERVAL_NAME = 'stellar-event-poller';
+export const EVENT_RETRY_INTERVAL_NAME = 'stellar-event-retries';
 
 /** Poll interval used when EVENT_POLLING_INTERVAL_MS is unset or invalid. */
 export const DEFAULT_EVENT_POLLING_INTERVAL_MS = 5000;
@@ -85,11 +96,15 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     await this.initCheckpoint();
     this.startPolling();
+    this.startRetrying();
   }
 
   onModuleDestroy() {
     if (this.schedulerRegistry.doesExist('interval', EVENT_POLLER_INTERVAL_NAME)) {
       this.schedulerRegistry.deleteInterval(EVENT_POLLER_INTERVAL_NAME);
+    }
+    if (this.schedulerRegistry.doesExist('interval', EVENT_RETRY_INTERVAL_NAME)) {
+      this.schedulerRegistry.deleteInterval(EVENT_RETRY_INTERVAL_NAME);
     }
   }
 
@@ -109,6 +124,14 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     }, intervalMs);
     this.schedulerRegistry.addInterval(EVENT_POLLER_INTERVAL_NAME, interval);
     this.logger.log(`Event poller scheduled every ${intervalMs} ms`);
+  }
+
+  private startRetrying(): void {
+    if (this.schedulerRegistry.doesExist('interval', EVENT_RETRY_INTERVAL_NAME)) return;
+    const interval = setInterval(() => {
+      void this.retryFailedEvents();
+    }, RETRY_BASE_DELAY_MS);
+    this.schedulerRegistry.addInterval(EVENT_RETRY_INTERVAL_NAME, interval);
   }
 
   private async initCheckpoint() {
@@ -371,6 +394,16 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    await this.runEventHandler(chainEventId, eventName, payload, 0);
+    return true;
+  }
+
+  private async runEventHandler(
+    id: string,
+    eventName: string,
+    payload: any,
+    attemptCount: number,
+  ) {
     try {
       switch (eventName) {
         case 'course_registered':    await this.handleCourseRegistered(payload); break;
@@ -383,14 +416,88 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
         case 'certificate_revoked':  await this.handleCertificateRevoked(payload); break;
         default: this.logger.warn(`Unknown event: ${eventName}`);
       }
-      await this.markEventProcessed(chainEventId, true, null);
+      await this.markEventProcessed(id, true, null);
     } catch (error) {
-      const message = error?.message ?? String(error);
+      const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Handler for ${eventName} failed: ${message}`);
-      await this.markEventProcessed(chainEventId, false, message);
+      await this.recordHandlerFailure(id, message, attemptCount + 1);
+    }
+  }
+
+  async retryFailedEvents() {
+    try {
+      const events = await this.prisma.chainEvent.findMany({
+        where: {
+          processed: false,
+          attemptCount: { lt: MAX_HANDLER_ATTEMPTS },
+          OR: [{ retryAt: null }, { retryAt: { lte: new Date() } }],
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 100,
+      });
+
+      for (const event of events) {
+        await this.runEventHandler(
+          event.id,
+          event.eventName,
+          event.payload,
+          event.attemptCount,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        'Failed to retry chain event handlers',
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  async findDeadLetterEvents(page = 1, limit = 20) {
+    const parsedPage = Number(page);
+    const parsedLimit = Number(limit);
+    const safePage = Number.isFinite(parsedPage)
+      ? Math.max(1, Math.floor(parsedPage))
+      : 1;
+    const safeLimit = Number.isFinite(parsedLimit)
+      ? Math.min(100, Math.max(1, Math.floor(parsedLimit)))
+      : 20;
+    const where = {
+      processed: false,
+      attemptCount: { gte: MAX_HANDLER_ATTEMPTS },
+    };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.chainEvent.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (safePage - 1) * safeLimit,
+        take: safeLimit,
+      }),
+      this.prisma.chainEvent.count({ where }),
+    ]);
+    return {
+      data,
+      meta: {
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: Math.ceil(total / safeLimit),
+      },
+    };
+  }
+
+  async retryDeadLetterEvent(id: string) {
+    const event = await this.prisma.chainEvent.findUnique({ where: { id } });
+    if (!event) throw new NotFoundException('Chain event not found');
+    if (event.processed || event.attemptCount < MAX_HANDLER_ATTEMPTS) {
+      throw new BadRequestException('Only dead-lettered events can be retried');
     }
 
-    return true;
+    await this.prisma.chainEvent.update({
+      where: { id },
+      data: { attemptCount: 0, retryAt: null },
+    });
+    await this.runEventHandler(id, event.eventName, event.payload, 0);
+    return this.prisma.chainEvent.findUnique({ where: { id } });
   }
 
   // ----------------------------------------------------------
@@ -409,11 +516,7 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
     // Sync status — safety net for cases where admin called approve_course
     // on-chain without going through the backend endpoint. Issue #232: the
     // transition also indexes the course for search and purges list caches.
-    try {
-      await this.courses.approveCourse(courseId);
-    } catch (e) {
-      this.logger.warn(`Could not sync course approval for ${courseId}: ${e.message}`);
-    }
+    await this.courses.approveCourse(courseId);
   }
 
   private async handleCoursePaused(payload: any) {
@@ -612,8 +715,11 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
         );
         return null;
       }
-      this.logger.error('Failed to save raw event', error.message);
-      return null;
+      this.logger.error(
+        'Failed to save raw event',
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw error;
     }
   }
 
@@ -628,17 +734,44 @@ export class EventsService implements OnModuleInit, OnModuleDestroy {
         where: { id },
         data: {
           processed,
+          processedAt: processed ? new Date() : null,
           handlerError: handlerError
             ? handlerError.slice(0, MAX_HANDLER_ERROR_LENGTH)
             : null,
+          ...(processed && { retryAt: null }),
         },
       });
     } catch (error) {
       this.logger.error(
         `Failed to update processed flag for chain event ${id}`,
-        error.message,
+        error instanceof Error ? error.stack : String(error),
       );
+      throw error;
     }
+  }
+
+  private async recordHandlerFailure(
+    id: string,
+    message: string,
+    attemptCount: number,
+  ) {
+    const delay = Math.min(
+      RETRY_BASE_DELAY_MS * 2 ** (attemptCount - 1),
+      RETRY_MAX_DELAY_MS,
+    );
+    await this.prisma.chainEvent.update({
+      where: { id },
+      data: {
+        processed: false,
+        processedAt: null,
+        attemptCount,
+        retryAt:
+          attemptCount >= MAX_HANDLER_ATTEMPTS
+            ? null
+            : new Date(Date.now() + delay),
+        handlerError: message.slice(0, MAX_HANDLER_ERROR_LENGTH),
+      },
+    });
   }
 
   /**

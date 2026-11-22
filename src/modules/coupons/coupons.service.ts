@@ -196,7 +196,7 @@ export class CouponsService {
         action: AuditAction.COUPON_UPDATED,
         targetType: AuditTargetType.COUPON,
         targetId: id,
-        metadata: { code: updated.code, changes: dto },
+        metadata: { code: updated.code, changes: dto as any },
         ipAddress,
       },
     });

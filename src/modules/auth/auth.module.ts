@@ -20,6 +20,7 @@ import { SessionsService } from './sessions.service';
 import { TwoFactorController } from './two-factor.controller';
 import { TwoFactorService } from './two-factor.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
 import { ThrottlerModule } from '@nestjs/throttler';
 
@@ -36,6 +37,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
       }),
     }),
     ReferralsModule,
+    FeatureFlagsModule,
   ],
   controllers: [
     AuthController,

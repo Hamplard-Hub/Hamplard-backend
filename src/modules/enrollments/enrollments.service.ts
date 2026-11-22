@@ -10,6 +10,8 @@ import { NotificationType, CourseStatus, Prisma } from '@prisma/client';
 import { FraudDetectionService, FraudCheckResult } from './fraud-detection.service';
 import { DripScheduleService } from '../lessons/drip-schedule.service';
 import { StellarService } from '../../common/stellar/stellar.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 
 @Injectable()
 export class EnrollmentsService {
@@ -22,6 +24,7 @@ export class EnrollmentsService {
     private readonly fraudDetection: FraudDetectionService,
     private readonly referrals: ReferralsService,
     private readonly stellar: StellarService,
+    private readonly analytics: AnalyticsService,
     @Inject(forwardRef(() => DripScheduleService))
     private readonly dripSchedule: DripScheduleService,
   ) {}
@@ -121,6 +124,23 @@ export class EnrollmentsService {
     }
 
     await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, verifiedAmountPaid);
+    // Update course stats
+    await this.prisma.course.update({
+      where: { id: courseId },
+      data: {
+        totalEnrollments: { increment: 1 },
+        totalRevenue: { increment: new Prisma.Decimal(amountPaid) },
+      },
+    });
+
+    await this.analytics.trackEvent(
+      {
+        eventType: SERVER_ANALYTICS_EVENTS.ENROLLMENT_CREATED,
+        properties: { enrollmentId: enrollment.id, courseId, amountPaid },
+      },
+      { userId: studentId, source: 'server' },
+    );
+    await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, amountPaid);
 
     this.logger.log(`Enrollment created: ${studentId} → ${courseId} (payment ${txHash})`);
     return enrollment;
@@ -392,6 +412,48 @@ export class EnrollmentsService {
       this.prisma.enrollment.count({ where: { studentId } }),
     ]);
     return { data: enrollments, meta: { total, page, limit } };
+  }
+
+  async searchAdmin(query: {
+    studentId?: string;
+    courseId?: string;
+    txHash?: string;
+    status?: any;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+
+    const where: any = {};
+    if (query.studentId) where.studentId = query.studentId;
+    if (query.courseId) where.courseId = query.courseId;
+    if (query.txHash) where.txHash = { contains: query.txHash, mode: 'insensitive' };
+    if (query.status) where.status = query.status;
+
+    const [enrollments, total] = await this.prisma.$transaction([
+      this.prisma.enrollment.findMany({
+        where,
+        include: {
+          student: { select: { id: true, name: true, email: true, stellarAddress: true } },
+          course: { select: { id: true, title: true, price: true } },
+        },
+        orderBy: { enrolledAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.enrollment.count({ where }),
+    ]);
+
+    return {
+      data: enrollments,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async findOne(studentId: string, courseId: string) {

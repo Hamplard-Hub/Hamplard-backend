@@ -10,6 +10,7 @@ import { FraudDetectionService } from '../enrollments/fraud-detection.service';
 import { InvoicesService } from '../invoices/invoices.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { DripScheduleService } from '../lessons/drip-schedule.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { EventsService } from './events.service';
 
 /**
@@ -122,6 +123,7 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
         EnrollmentsService,
         EventsService,
         { provide: PrismaService, useValue: prisma },
+        { provide: AnalyticsService, useValue: { trackEvent: jest.fn().mockResolvedValue({}) } },
         { provide: StellarService, useValue: stellar },
         { provide: NotificationsService, useValue: { notifyUser: jest.fn().mockResolvedValue({}) } },
         { provide: CoursesService, useValue: {} },
