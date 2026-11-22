@@ -20,16 +20,19 @@ export class EnrollmentsController {
   /**
    * POST /api/v1/enrollments
    * Called by the frontend after the student's enroll() tx is confirmed on-chain.
+   * 
+   * Issue #403: amountPaid is no longer accepted from the request body.
+   * It is verified from the on-chain transaction instead.
    */
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Register on-chain enrollment in the DB' })
   create(
     @CurrentUser('id') studentId: string,
-    @Body() body: { courseId: string; txHash: string; amountPaid: number },
+    @Body() body: { courseId: string; txHash: string },
   ) {
     return this.enrollmentsService.create(
-      studentId, body.courseId, body.txHash, body.amountPaid,
+      studentId, body.courseId, body.txHash,
     );
   }
 

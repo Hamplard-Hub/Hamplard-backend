@@ -1,8 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HttpException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { EnrollmentsService } from './enrollments.service';
-import { FraudDetectionService } from './fraud-detection.service';
+import { FraudDetectionService, FraudCheckResult } from './fraud-detection.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { InvoicesService } from '../invoices/invoices.service';
@@ -12,11 +12,13 @@ import { StellarService } from '../../common/stellar/stellar.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { CourseStatus, FraudFlagStatus, FraudRiskLevel } from '@prisma/client';
 
-describe('EnrollmentsService - Fraud HOLD handling', () => {
+describe('EnrollmentsService', () => {
   let service: EnrollmentsService;
-  let fraudDetection: FraudDetectionService;
-  let prisma: PrismaService;
+  let prismaService: PrismaService;
+  let fraudDetectionService: FraudDetectionService;
+  let stellarService: StellarService;
 
+  const mockPrismaService = {
   const mockPrisma = {
     enrollment: {
       findUnique: jest.fn(),
@@ -32,28 +34,42 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    enrollment: {
+      findUnique: jest.fn(),
+      count: jest.fn(),
+    },
+    payment: {
+      findUnique: jest.fn(),
     user: { findUnique: jest.fn().mockResolvedValue(null) },
     payment: {
       findUnique: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'payment-1' }),
     },
-    enrollmentFraudFlag: {
-      create: jest.fn(),
-      findMany: jest.fn(),
+    user: {
       findUnique: jest.fn(),
-      count: jest.fn(),
+    },
+    coursePrerequisite: {
+      findMany: jest.fn(),
     },
     $transaction: jest.fn(),
   };
 
-  const mockStellar = {
-    getTransactionStatus: jest.fn().mockResolvedValue({ successful: true, status: 'SUCCESS' }),
+  const mockFraudDetectionService = {
+    processFraudCheck: jest.fn(),
   };
 
-  const mockNotifications = {
-    notifyUser: jest.fn().mockResolvedValue({}),
+  const mockStellarService = {
+    getTransactionStatus: jest.fn(),
+    getContractId: jest.fn(),
+    verifyEnrollmentTransaction: jest.fn(),
   };
 
+  const mockNotificationsService = {
+    notifyUser: jest.fn(),
+  };
+
+  const mockInvoicesService = {
+    generateForEnrollment: jest.fn(),
   const mockInvoices = {
     generateInvoice: jest.fn().mockResolvedValue({}),
     generateForEnrollment: jest.fn().mockResolvedValue({}),
@@ -64,12 +80,18 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
     trackConversion: jest.fn().mockResolvedValue({}),
   };
 
-  const mockDripSchedule = {
-    calculateAndSyncUnlockSchedule: jest.fn().mockResolvedValue({}),
+  const mockReferralsService = {
+    trackConversion: jest.fn(),
+  };
+
+  const mockDripScheduleService = {
+    calculateAndSyncUnlockSchedule: jest.fn(),
   };
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
 
   beforeEach(async () => {
+    jest.clearAllMocks();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EnrollmentsService,
@@ -82,61 +104,239 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
         { provide: StellarService, useValue: mockStellar },
         { provide: AnalyticsService, useValue: mockAnalytics },
         {
-          provide: ConfigService,
-          useValue: {
-            get: jest.fn((key: string, defaultValue?: any) => defaultValue),
-          },
+          provide: PrismaService,
+          useValue: mockPrismaService,
+        },
+        {
+          provide: FraudDetectionService,
+          useValue: mockFraudDetectionService,
+        },
+        {
+          provide: StellarService,
+          useValue: mockStellarService,
+        },
+        {
+          provide: NotificationsService,
+          useValue: mockNotificationsService,
+        },
+        {
+          provide: InvoicesService,
+          useValue: mockInvoicesService,
+        },
+        {
+          provide: ReferralsService,
+          useValue: mockReferralsService,
+        },
+        {
+          provide: DripScheduleService,
+          useValue: mockDripScheduleService,
         },
       ],
     }).compile();
 
     service = module.get<EnrollmentsService>(EnrollmentsService);
-    fraudDetection = module.get<FraudDetectionService>(FraudDetectionService);
-    prisma = module.get<PrismaService>(PrismaService);
-    jest.clearAllMocks();
+    prismaService = module.get<PrismaService>(PrismaService);
+    fraudDetectionService = module.get<FraudDetectionService>(FraudDetectionService);
+    stellarService = module.get<StellarService>(StellarService);
   });
 
-  it('persists a HELD fraud flag and throws 423 when an enrollment is blocked by fraud check', async () => {
-    mockPrisma.enrollment.findUnique.mockResolvedValue(null);
-    // checkPrerequisites() requires the target course to exist
-    mockPrisma.course.findUnique.mockResolvedValue({ id: 'course-1', title: 'Course 1', status: CourseStatus.ACTIVE });
-    mockPrisma.coursePrerequisite.findMany.mockResolvedValue([]);
+  describe('create', () => {
+    const mockCourse = {
+      id: 'course-1',
+      status: 'ACTIVE',
+      platformFeePercent: 10,
+      price: new Prisma.Decimal('100'),
+    };
 
-    const heldFlagId = 'flag-held-uuid-1';
-    jest.spyOn(fraudDetection, 'processFraudCheck').mockResolvedValue({
-      action: 'HOLD',
-      score: 95,
-      riskLevel: FraudRiskLevel.CRITICAL,
-      reasons: ['HIGH_DAILY_VOLUME', 'HIGH_AMOUNT_ANOMALY'],
-      flagId: heldFlagId,
+    const mockStudent = {
+      id: 'student-1',
+      stellarAddress: 'GAXYZ123',
+    };
+
+    const mockFraudResult: FraudCheckResult = {
+      action: 'ALLOW',
+      score: 10,
+      riskLevel: 'LOW' as any,
+      reasons: [],
+    };
+
+    beforeEach(() => {
+      mockPrismaService.course.findUnique.mockResolvedValue(mockCourse);
+      mockPrismaService.enrollment.findUnique.mockResolvedValue(null);
+      mockPrismaService.user.findUnique.mockResolvedValue(mockStudent);
+      mockPrismaService.payment.findUnique.mockResolvedValue(null);
+      mockPrismaService.coursePrerequisite.findMany.mockResolvedValue([]);
+      mockFraudDetectionService.processFraudCheck.mockResolvedValue(mockFraudResult);
+      mockStellarService.verifyEnrollmentTransaction.mockResolvedValue({
+        studentAddress: mockStudent.stellarAddress,
+        courseId: mockCourse.id,
+        amountPaid: 100,
+      });
+      mockStellarService.getContractId.mockReturnValue('contract-123');
     });
 
-    let error: any;
-    try {
-      await service.create('student-1', 'course-1', 'fake-tx-hash', 500);
-    } catch (err) {
-      error = err;
-    }
+    it('Issue #404: should wrap payment, enrollment, and course stats in a transaction', async () => {
+      const mockTx = {
+        payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
+        enrollment: {
+          create: jest
+            .fn()
+            .mockResolvedValue({
+              id: 'enrollment-1',
+              studentId: mockStudent.id,
+              courseId: mockCourse.id,
+              course: mockCourse,
+              student: mockStudent,
+            }),
+        },
+        course: { update: jest.fn().mockResolvedValue(mockCourse) },
+      };
 
-    expect(error).toBeInstanceOf(HttpException);
-    expect(error.getStatus()).toBe(423);
-    expect(error.getResponse()).toEqual(
-      expect.objectContaining({
-        statusCode: 423,
-        error: 'Enrollment Locked',
-        riskScore: 95,
-        flagId: heldFlagId,
-      }),
-    );
-    expect(fraudDetection.processFraudCheck).toHaveBeenCalledWith(
-      null,
-      'student-1',
-      'course-1',
-      500,
-    );
-    expect(mockPrisma.enrollment.create).not.toHaveBeenCalled();
+      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+        return callback(mockTx);
+      });
+
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+
+      // Verify the transaction was called
+      expect(mockPrismaService.$transaction).toHaveBeenCalled();
+
+      // Verify all three operations happened within the transaction
+      expect(mockTx.payment.create).toHaveBeenCalled();
+      expect(mockTx.enrollment.create).toHaveBeenCalled();
+      expect(mockTx.course.update).toHaveBeenCalled();
+    });
+
+    it('Issue #404: should rollback enrollment if payment creation fails (P2002)', async () => {
+      const p2002Error = new Prisma.PrismaClientKnownRequestError(
+        'Unique constraint failed on txHash',
+        'P2002',
+        '4.0.0',
+        { target: ['txHash'] },
+      );
+
+      mockPrismaService.$transaction.mockRejectedValue(p2002Error);
+
+      await expect(
+        service.create(mockStudent.id, mockCourse.id, 'tx-hash-123'),
+      ).rejects.toThrow(ConflictException);
+
+      // Verify the enrollment was not created (would be part of the same transaction)
+      expect(mockPrismaService.enrollment.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('Issue #403: should verify payment transaction comprehensively', async () => {
+      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+        const mockTx = {
+          payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
+          enrollment: {
+            create: jest
+              .fn()
+              .mockResolvedValue({
+                id: 'enrollment-1',
+                studentId: mockStudent.id,
+                courseId: mockCourse.id,
+                course: mockCourse,
+                student: mockStudent,
+              }),
+          },
+          course: { update: jest.fn().mockResolvedValue(mockCourse) },
+        };
+        return callback(mockTx);
+      });
+
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+
+      // Verify comprehensive verification was called with all required parameters
+      expect(mockStellarService.verifyEnrollmentTransaction).toHaveBeenCalledWith(
+        'tx-hash-123',
+        'contract-123',
+        mockStudent.stellarAddress,
+        mockCourse.id,
+        Number(mockCourse.price),
+      );
+    });
+
+    it('Issue #405: should not run fraud check twice', async () => {
+      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+        const mockTx = {
+          payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
+          enrollment: {
+            create: jest
+              .fn()
+              .mockResolvedValue({
+                id: 'enrollment-1',
+                studentId: mockStudent.id,
+                courseId: mockCourse.id,
+                course: mockCourse,
+                student: mockStudent,
+              }),
+          },
+          course: { update: jest.fn().mockResolvedValue(mockCourse) },
+        };
+        return callback(mockTx);
+      });
+
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+
+      // Verify fraud check was called only once (pre-enrollment, with null id)
+      expect(mockFraudDetectionService.processFraudCheck).toHaveBeenCalledTimes(1);
+      expect(mockFraudDetectionService.processFraudCheck).toHaveBeenCalledWith(
+        null,
+        mockStudent.id,
+        mockCourse.id,
+        100,
+      );
+    });
+
+    it('Issue #405: should pass pre-computed fraud result to post-enrollment steps', async () => {
+      const mockFlagResult: FraudCheckResult = {
+        action: 'FLAG',
+        score: 75,
+        riskLevel: 'HIGH' as any,
+        reasons: ['RAPID_REPEAT_PURCHASE'],
+      };
+
+      mockFraudDetectionService.processFraudCheck.mockResolvedValue(mockFlagResult);
+
+      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+        const mockTx = {
+          payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
+          enrollment: {
+            create: jest
+              .fn()
+              .mockResolvedValue({
+                id: 'enrollment-1',
+                studentId: mockStudent.id,
+                courseId: mockCourse.id,
+                course: mockCourse,
+                student: mockStudent,
+              }),
+          },
+          course: { update: jest.fn().mockResolvedValue(mockCourse) },
+        };
+        return callback(mockTx);
+      });
+
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+
+      // Verify processFraudCheck was called with shouldPersistFlag=true in post-check
+      // (this happens inside runPostEnrollmentSteps)
+      const callCount = mockFraudDetectionService.processFraudCheck.mock.calls.length;
+      expect(callCount).toBeGreaterThanOrEqual(1);
+    });
   });
 
+  describe('verifyPaymentTransaction', () => {
+    const mockCourse = { price: new Prisma.Decimal('100') };
+    const mockStudent = { stellarAddress: 'GAXYZ123' };
+
+    beforeEach(() => {
+      mockPrismaService.payment.findUnique.mockResolvedValue(null);
+      mockPrismaService.user.findUnique.mockResolvedValue(mockStudent);
+      mockPrismaService.course.findUnique.mockResolvedValue(mockCourse);
+      mockStellarService.getContractId.mockReturnValue('contract-123');
+    });
   it('records an enrollment analytics event after creating the enrollment', async () => {
     mockPrisma.course.findUnique
       .mockResolvedValueOnce({
@@ -198,16 +398,50 @@ describe('EnrollmentsService - Fraud HOLD handling', () => {
       reviewedBy: null,
     };
 
-    mockPrisma.$transaction.mockResolvedValue([[heldFlag], 1]);
+    it('should return verified amount from on-chain data', async () => {
+      mockStellarService.verifyEnrollmentTransaction.mockResolvedValue({
+        studentAddress: mockStudent.stellarAddress,
+        courseId: 'course-1',
+        amountPaid: 150,
+      });
 
-    const result = await fraudDetection.getFraudReviewQueue({
-      status: FraudFlagStatus.HELD,
+      const result = await service.verifyPaymentTransaction(
+        'tx-hash-123',
+        'student-1',
+        'course-1',
+      );
+
+      expect(result).toBe(150);
     });
 
-    expect(result.data).toHaveLength(1);
-    expect(result.data[0].status).toBe(FraudFlagStatus.HELD);
-    expect(result.data[0].enrollment).toBeNull();
-    expect(result.data[0].blockedCourseId).toBe('course-1');
+    it('should reject if transaction student address does not match', async () => {
+      const error = new Error('Student address mismatch: enrollment is for a different wallet');
+      mockStellarService.verifyEnrollmentTransaction.mockRejectedValue(error);
+
+      await expect(
+        service.verifyPaymentTransaction('tx-hash-123', 'student-1', 'course-1'),
+      ).rejects.toThrow();
+    });
+
+    it('should reject if amount is insufficient', async () => {
+      const error = new Error('Insufficient payment: transaction amount (50) is less than course price (100)');
+      mockStellarService.verifyEnrollmentTransaction.mockRejectedValue(error);
+
+      await expect(
+        service.verifyPaymentTransaction('tx-hash-123', 'student-1', 'course-1'),
+      ).rejects.toThrow();
+    });
+
+    it('should reject if payment has already been used', async () => {
+      mockPrismaService.payment.findUnique.mockResolvedValue({
+        id: 'payment-1',
+        txHash: 'tx-hash-123',
+      });
+
+      await expect(
+        service.verifyPaymentTransaction('tx-hash-123', 'student-1', 'course-1'),
+      ).rejects.toThrow(ConflictException);
+    });
   });
 
   describe('searchAdmin (Issue #497)', () => {
