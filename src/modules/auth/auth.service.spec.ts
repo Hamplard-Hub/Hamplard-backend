@@ -101,6 +101,26 @@ describe('AuthService', () => {
     expect(result.user).toEqual(user);
   });
 
+  it('rejects login for a deleted account and issues no tokens', async () => {
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      stellarAddress,
+      deletedAt: new Date(),
+    });
+
+    const service = buildService();
+    const nonce = await service.generateNonce(stellarAddress);
+    const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
+
+    await expect(
+      service.login({ stellarAddress, signedNonce: nonce, signature }),
+    ).rejects.toThrow('Account has been deleted');
+    expect(prisma.user.upsert).not.toHaveBeenCalled();
+    expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
+  });
+
   it('rejects login when signature verification fails', async () => {
     const keypair = Keypair.random();
     const wrongKeypair = Keypair.random();

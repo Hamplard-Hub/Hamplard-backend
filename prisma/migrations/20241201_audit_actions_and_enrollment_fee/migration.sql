@@ -7,6 +7,9 @@ ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'CERTIFICATE_ISSUED';
 ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'CERTIFICATE_TX_HASH_UPDATED';
 ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'CERTIFICATE_REVOKED';
 
+-- Add new AuditTargetType enum values
+ALTER TYPE "AuditTargetType" ADD VALUE IF NOT EXISTS 'CERTIFICATE';
+
 -- Add platformFeePercent to Enrollment table for fee snapshot
 ALTER TABLE "enrollments" ADD COLUMN "platformFeePercent" INTEGER NOT NULL DEFAULT 20;
 

@@ -3,9 +3,11 @@ import { NotFoundException, ForbiddenException, BadRequestException } from '@nes
 import { UserRole } from '@prisma/client';
 import { LessonsService } from './lessons.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 
 describe('LessonsService (Ownership & IDOR Protection)', () => {
   let service: LessonsService;
+  const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
 
   const mockPrisma = {
     course: {
@@ -26,6 +28,7 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       update: jest.fn(),
     },
     lessonProgress: {
+      findUnique: jest.fn(),
       upsert: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
@@ -37,6 +40,7 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       providers: [
         LessonsService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: AnalyticsService, useValue: mockAnalytics },
       ],
     }).compile();
 
@@ -263,6 +267,10 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
 
       expect(result.completed).toBe(true);
       expect(mockPrisma.lessonProgress.upsert).toHaveBeenCalled();
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'lesson_completed' }),
+        { userId: 'student-1', source: 'server' },
+      );
     });
   });
 

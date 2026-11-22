@@ -20,6 +20,7 @@ import { SessionsService } from './sessions.service';
 import { TwoFactorController } from './two-factor.controller';
 import { TwoFactorService } from './two-factor.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
 import { ThrottlerModule } from '@nestjs/throttler';
 import { RedisRateLimitModule } from '../../common/redis-rate-limit/redis-rate-limit.module';
@@ -38,6 +39,7 @@ import { RedisRateLimitModule } from '../../common/redis-rate-limit/redis-rate-l
       }),
     }),
     ReferralsModule,
+    FeatureFlagsModule,
   ],
   controllers: [
     AuthController,

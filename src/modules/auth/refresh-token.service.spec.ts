@@ -183,6 +183,18 @@ describe('RefreshTokenService', () => {
       });
     });
 
+    it('refuses to rotate for a deleted account and revokes its family', async () => {
+      mockPrisma.refreshToken.findUnique.mockResolvedValue(activeRecord(1));
+      mockPrisma.user.findUnique.mockResolvedValue({ ...user, deletedAt: new Date() });
+
+      await expect(service.rotate('refresh-1')).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(mockPrisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { familyId: 'family-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(mockPrisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
     it('detects reuse of an already-consumed refresh token', async () => {
       mockPrisma.refreshToken.findUnique.mockResolvedValue({
         ...activeRecord(1),

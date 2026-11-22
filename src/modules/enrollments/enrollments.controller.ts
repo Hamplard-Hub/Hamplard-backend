@@ -2,10 +2,13 @@ import {
   Controller, Get, Post, Body, Param, UseGuards, HttpCode, HttpStatus, Query,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
 import { EnrollmentsService } from './enrollments.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+import { AdminSearchEnrollmentsDto } from './dto/admin-search-enrollments.dto';
 
 @ApiTags('enrollments')
 @ApiBearerAuth()
@@ -17,16 +20,19 @@ export class EnrollmentsController {
   /**
    * POST /api/v1/enrollments
    * Called by the frontend after the student's enroll() tx is confirmed on-chain.
+   * 
+   * Issue #403: amountPaid is no longer accepted from the request body.
+   * It is verified from the on-chain transaction instead.
    */
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Register on-chain enrollment in the DB' })
   create(
     @CurrentUser('id') studentId: string,
-    @Body() body: { courseId: string; txHash: string; amountPaid: number },
+    @Body() body: { courseId: string; txHash: string },
   ) {
     return this.enrollmentsService.create(
-      studentId, body.courseId, body.txHash, body.amountPaid,
+      studentId, body.courseId, body.txHash,
     );
   }
 
@@ -37,6 +43,14 @@ export class EnrollmentsController {
     @Query() pagination: PaginationQueryDto,
   ) {
     return this.enrollmentsService.findByStudent(studentId, pagination.page, pagination.limit);
+  }
+
+  @Get('admin')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Search enrollments by student, course, txHash, or status (Admin only)' })
+  searchAdmin(@Query() query: AdminSearchEnrollmentsDto) {
+    return this.enrollmentsService.searchAdmin(query);
   }
 
   @Get(':courseId')

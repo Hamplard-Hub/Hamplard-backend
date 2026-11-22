@@ -1,9 +1,15 @@
 // invoices.service.ts
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
-import PDFDocument from 'pdfkit';
+import PDFDocument = require('pdfkit');
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { NotificationsService } from '../notifications/notifications.service';
+
+export interface InvoiceRequester {
+  id: string;
+  role: UserRole;
+}
 
 @Injectable()
 export class InvoicesService {
@@ -68,6 +74,69 @@ export class InvoicesService {
 
     this.logger.log(`Invoice #${invoice.invoiceNumber} generated for enrollment ${enrollmentId}`);
     return invoice;
+  }
+
+  /**
+   * Paginated list of the authenticated student's own invoices, newest first.
+   * Always scoped by the caller's id — never by a client-supplied value.
+   */
+  async findMine(studentId: string, page = 1, limit = 20) {
+    const where = { studentId };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.invoice.findMany({
+        where,
+        select: {
+          id: true,
+          invoiceNumber: true,
+          enrollmentId: true,
+          courseId: true,
+          amount: true,
+          txHash: true,
+          emailSent: true,
+          issuedAt: true,
+          course: { select: { id: true, title: true } },
+        },
+        orderBy: { issuedAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.invoice.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Renders an invoice PDF on demand for its owner or an admin.
+   * A non-owner gets a 404 (not 403) so invoice ids can't be probed for existence.
+   */
+  async getPdfForDownload(
+    invoiceId: string,
+    user: InvoiceRequester,
+  ): Promise<{ buffer: Buffer; filename: string }> {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { course: true, student: true },
+    });
+
+    const isAdmin = user.role === UserRole.ADMIN;
+    if (!invoice || (!isAdmin && invoice.studentId !== user.id)) {
+      throw new NotFoundException('Invoice not found');
+    }
+
+    const buffer = await this.renderInvoicePdf({
+      invoiceNumber: invoice.invoiceNumber,
+      studentName: invoice.student.name ?? invoice.student.stellarAddress ?? invoice.student.email,
+      courseTitle: invoice.course.title,
+      amount: Number(invoice.amount),
+      txHash: invoice.txHash,
+      issuedAt: invoice.issuedAt,
+    });
+
+    return { buffer, filename: `invoice-${invoice.invoiceNumber}.pdf` };
   }
 
   /**

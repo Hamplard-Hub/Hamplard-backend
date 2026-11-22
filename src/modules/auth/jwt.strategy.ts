@@ -13,6 +13,8 @@ interface UserCacheEntry {
   isBanned: boolean;
   isSuspended: boolean;
   suspendedUntil: string | null;
+  deactivatedAt: string | null;
+  deletedAt: string | null;
 }
 
 @Injectable()
@@ -64,6 +66,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           isBanned: true,
           isSuspended: true,
           suspendedUntil: true,
+          deactivatedAt: true,
+          deletedAt: true,
         },
       });
 
@@ -79,6 +83,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         isBanned: dbUser.isBanned,
         isSuspended: dbUser.isSuspended,
         suspendedUntil: dbUser.suspendedUntil ? dbUser.suspendedUntil.toISOString() : null,
+        deactivatedAt: dbUser.deactivatedAt ? dbUser.deactivatedAt.toISOString() : null,
+        deletedAt: dbUser.deletedAt ? dbUser.deletedAt.toISOString() : null,
       };
 
       if (this.cacheService) {
@@ -89,6 +95,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           expiresAt: Date.now() + 30000,
         });
       }
+    }
+
+    // Issues #74/#75 — deleted accounts are dead; deactivated ones are flagged
+    // so JwtAuthGuard can restrict them to the reactivation route.
+    if (user.deletedAt) {
+      throw new UnauthorizedException('Account has been deleted');
     }
 
     if (user.isBanned) {
@@ -109,6 +121,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       role: user.role,
       isBanned: user.isBanned,
       isSuspended: user.isSuspended,
+      isDeactivated: Boolean(user.deactivatedAt),
       jti: payload.jti,
     };
   }

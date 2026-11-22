@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { Logger as PinoLogger } from 'nestjs-pino';
@@ -14,7 +15,7 @@ import { parseTrustProxy } from './common/config/env.util';
 async function bootstrap() {
   initializeSentry();
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     // rawBody: true makes the unparsed request body available as req.rawBody
     // (Buffer), which WebhookSignatureMiddleware needs for HMAC-SHA256 signing.
     rawBody: true,
