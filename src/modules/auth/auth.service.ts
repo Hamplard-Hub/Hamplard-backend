@@ -177,6 +177,11 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { stellarAddress } });
     const isNewUser = !existing;
 
+    // Issues #74/#75 — a deleted account can never authenticate.
+    if (existing?.deletedAt) {
+      throw new UnauthorizedException('Account has been deleted');
+    }
+
     // ---- 6b. Validate 2FA code when the account has it enabled ----
     if (existing?.twoFactorEnabled) {
       if (!totpCode) {

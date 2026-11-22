@@ -177,6 +177,11 @@ export class GoogleAuthService {
 
     const existing = existingByGoogle ?? existingByEmail;
 
+    // Issues #74/#75 — a deleted account can never authenticate.
+    if (existing?.deletedAt) {
+      throw new UnauthorizedException('Account has been deleted');
+    }
+
     // ---- Enforce 2FA for Google logins on 2FA-enabled accounts ----
     if (existing?.twoFactorEnabled) {
       // We cannot interactively prompt for a TOTP here during the OAuth redirect
@@ -263,6 +268,11 @@ export class GoogleAuthService {
     }
 
     const existing = existingByGoogle ?? existingByEmail;
+
+    // Issues #74/#75 — a deleted account can never authenticate.
+    if (existing?.deletedAt) {
+      throw new UnauthorizedException('Account has been deleted');
+    }
 
     if (!existing?.twoFactorEnabled) {
       // Account does not have 2FA — fall through to the normal login path.
