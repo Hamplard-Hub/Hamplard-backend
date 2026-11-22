@@ -9,32 +9,62 @@ import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import axios from 'axios';
 import { CaptchaService } from './captcha.service';
+import { RedisRateLimitService } from '../../common/redis-rate-limit/redis-rate-limit.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 async function expectHttpStatus(promise: Promise<unknown>, status: number) {
   const error = await promise.then(
-    () => {
-      throw new Error('Expected promise to reject');
-    },
+    () => { throw new Error('Expected promise to reject'); },
     (err) => err,
   );
   expect(error).toBeInstanceOf(HttpException);
   expect((error as HttpException).getStatus()).toBe(status);
 }
 
+// ---------------------------------------------------------------------------
+// In-memory Redis mock for captcha attempt state
+// ---------------------------------------------------------------------------
+
+class FakeRedisRateLimitService {
+  private store = new Map<string, unknown>();
+
+  async getJson<T>(key: string): Promise<T | null> {
+    return (this.store.get(key) as T) ?? null;
+  }
+
+  async setJson(key: string, value: unknown, _ttl?: number): Promise<void> {
+    this.store.set(key, value);
+  }
+
+  async del(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+
+  reset() { this.store.clear(); }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 describe('CaptchaService', () => {
   let service: CaptchaService;
+  let fakeRl: FakeRedisRateLimitService;
+
   const configMap: Record<string, string | number> = {
-    CAPTCHA_SECRET_KEY: 'test-secret',
-    CAPTCHA_VERIFY_URL: 'https://captcha.test/siteverify',
-    CAPTCHA_TIMEOUT_MS: 2000,
-    CAPTCHA_MAX_FAILURES: 3,
+    CAPTCHA_SECRET_KEY:           'test-secret',
+    CAPTCHA_VERIFY_URL:           'https://captcha.test/siteverify',
+    CAPTCHA_TIMEOUT_MS:           2000,
+    CAPTCHA_MAX_FAILURES:         3,
     CAPTCHA_BLOCK_DURATION_SECONDS: 900,
   };
 
-  async function createService(overrides: Record<string, string | number | undefined> = {}) {
+  async function createService(
+    overrides: Record<string, string | number | undefined> = {},
+  ) {
+    fakeRl = new FakeRedisRateLimitService();
     const merged = { ...configMap, ...overrides };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -46,6 +76,10 @@ describe('CaptchaService', () => {
               merged[key] !== undefined ? merged[key] : defaultValue,
             ),
           },
+        },
+        {
+          provide: RedisRateLimitService,
+          useValue: fakeRl,
         },
       ],
     }).compile();
@@ -60,6 +94,7 @@ describe('CaptchaService', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    fakeRl?.reset();
   });
 
   it('accepts a token after the provider confirms success', async () => {
@@ -82,27 +117,23 @@ describe('CaptchaService', () => {
   it('rejects an invalid token without treating client flags as proof', async () => {
     mockedAxios.post.mockResolvedValue({ status: 200, data: { success: false } });
 
-    await expect(service.verifyBeforeNonce('bad-token', '2.2.2.2')).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(service.verifyBeforeNonce('bad-token', '2.2.2.2'))
+      .rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('rejects a missing token and counts it as a failed attempt', async () => {
-    await expect(service.verifyBeforeNonce(undefined, '3.3.3.3')).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(service.verifyBeforeNonce(undefined, '3.3.3.3'))
+      .rejects.toBeInstanceOf(BadRequestException);
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
   it('blocks the IP after repeated failed verifications', async () => {
     mockedAxios.post.mockResolvedValue({ status: 200, data: { success: false } });
 
-    await expect(service.verifyBeforeNonce('t1', '4.4.4.4')).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
-    await expect(service.verifyBeforeNonce('t2', '4.4.4.4')).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(service.verifyBeforeNonce('t1', '4.4.4.4'))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(service.verifyBeforeNonce('t2', '4.4.4.4'))
+      .rejects.toBeInstanceOf(UnauthorizedException);
     await expectHttpStatus(
       service.verifyBeforeNonce('t3', '4.4.4.4'),
       HttpStatus.TOO_MANY_REQUESTS,
@@ -133,26 +164,27 @@ describe('CaptchaService', () => {
     await service.verifyBeforeNonce('t2', '6.6.6.6').catch(() => undefined);
     await service.verifyBeforeNonce('t3', '6.6.6.6').catch(() => undefined);
 
+    // Simulate time advancing past the block window.
+    // getState() resets the state when blockedUntil has passed.
     (Date.now as jest.Mock).mockReturnValue(now + 901_000);
     mockedAxios.post.mockResolvedValue({ status: 200, data: { success: true } });
 
-    await expect(service.verifyBeforeNonce('good-token', '6.6.6.6')).resolves.toBeUndefined();
+    await expect(service.verifyBeforeNonce('good-token', '6.6.6.6'))
+      .resolves.toBeUndefined();
   });
 
   it('does not issue success when the provider request fails', async () => {
     mockedAxios.post.mockRejectedValue(new Error('ECONNRESET'));
 
-    await expect(service.verifyBeforeNonce('token', '7.7.7.7')).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
-    );
+    await expect(service.verifyBeforeNonce('token', '7.7.7.7'))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
   it('does not treat a provider HTTP error as a successful verification', async () => {
     mockedAxios.post.mockResolvedValue({ status: 500, data: { success: true } });
 
-    await expect(service.verifyBeforeNonce('token', '8.8.8.8')).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
-    );
+    await expect(service.verifyBeforeNonce('token', '8.8.8.8'))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
   it('does not increment failure blocks when the provider is down', async () => {
@@ -169,9 +201,8 @@ describe('CaptchaService', () => {
   it('fails closed when the CAPTCHA secret is not configured', async () => {
     service = await createService({ CAPTCHA_SECRET_KEY: '' });
 
-    await expect(service.verifyBeforeNonce('token', '10.10.10.10')).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
-    );
+    await expect(service.verifyBeforeNonce('token', '10.10.10.10'))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
@@ -186,8 +217,9 @@ describe('CaptchaService', () => {
     await service.verifyBeforeNonce('bad', '11.11.11.11').catch(() => undefined);
     await expect(service.verifyBeforeNonce('good', '11.11.11.11')).resolves.toBeUndefined();
 
-    await expect(service.verifyBeforeNonce('bad-again', '11.11.11.11')).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    // After success the failure count is cleared, so one more bad attempt
+    // is not yet a block — just an UnauthorizedException.
+    await expect(service.verifyBeforeNonce('bad-again', '11.11.11.11'))
+      .rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

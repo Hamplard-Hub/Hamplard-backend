@@ -23,11 +23,13 @@ import { CacheService } from '../../common/cache/cache.service';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
 import { ThrottlerModule } from '@nestjs/throttler';
+import { RedisRateLimitModule } from '../../common/redis-rate-limit/redis-rate-limit.module';
 
 @Module({
   imports: [
     PassportModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
+    RedisRateLimitModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
