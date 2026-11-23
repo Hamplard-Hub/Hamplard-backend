@@ -28,6 +28,11 @@ import { Prisma } from '@prisma/client';
 @Injectable()
 export class FeatureFlagsService {
   private readonly logger = new Logger(FeatureFlagsService.name);
+  private readonly evaluationCache = new Map<
+    string,
+    { enabled: boolean; expiresAt: number }
+  >();
+  private readonly evaluationCacheTtlMs = 5_000;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -56,6 +61,7 @@ export class FeatureFlagsService {
     });
 
     this.logger.log(`Feature flag created: "${flag.key}" (enabled=${flag.enabled})`);
+    this.invalidateEvaluationCache(flag.key);
     return flag;
   }
 
@@ -93,6 +99,7 @@ export class FeatureFlagsService {
     this.logger.log(
       `Feature flag updated: "${flag.key}" (enabled=${flag.enabled}, rollout=${flag.rolloutPercent}%)`,
     );
+    this.invalidateEvaluationCache(key);
     return flag;
   }
 
@@ -100,6 +107,7 @@ export class FeatureFlagsService {
     await this.findOne(key); // ensure it exists
     await this.prisma.featureFlag.delete({ where: { key } });
     this.logger.log(`Feature flag deleted: "${key}"`);
+    this.invalidateEvaluationCache(key);
     return { message: `Feature flag "${key}" deleted` };
   }
 
@@ -159,11 +167,34 @@ export class FeatureFlagsService {
     key: string,
     context: { userId?: string; role?: string } = {},
   ): Promise<boolean> {
+    const cacheKey = `${key}:${context.userId ?? 'anonymous'}:${context.role ?? 'none'}`;
+    const cached = this.evaluationCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.enabled;
+    }
+    if (cached) this.evaluationCache.delete(cacheKey);
+
     try {
       const { enabled } = await this.evaluate(key, context);
+      this.evaluationCache.set(cacheKey, {
+        enabled,
+        expiresAt: Date.now() + this.evaluationCacheTtlMs,
+      });
       return enabled;
     } catch {
+      this.evaluationCache.set(cacheKey, {
+        enabled: false,
+        expiresAt: Date.now() + this.evaluationCacheTtlMs,
+      });
       return false;
+    }
+  }
+
+  private invalidateEvaluationCache(key: string) {
+    for (const cacheKey of this.evaluationCache.keys()) {
+      if (cacheKey.startsWith(`${key}:`)) {
+        this.evaluationCache.delete(cacheKey);
+      }
     }
   }
 

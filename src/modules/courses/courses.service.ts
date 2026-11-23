@@ -8,7 +8,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
-import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
+import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType, EnrollmentStatus } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
@@ -339,7 +339,7 @@ export class CoursesService {
     };
   }
 
-  /** Returns true when the viewer has an active enrollment in the course. */
+  /** Returns true when the viewer has an active or completed enrollment in the course. */
   private async isEnrolled(
     courseId: string,
     viewer?: { userId?: string; stellarAddress?: string },
@@ -348,9 +348,10 @@ export class CoursesService {
     const enrollment = await this.prisma.enrollment.findFirst({
       where: {
         courseId,
+        status: { in: [EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED] },
         ...(viewer.userId
-          ? { userId: viewer.userId }
-          : { user: { stellarAddress: viewer.stellarAddress } }),
+          ? { studentId: viewer.userId }
+          : { student: { stellarAddress: viewer.stellarAddress } }),
       },
       select: { id: true },
     });
@@ -621,6 +622,65 @@ export class CoursesService {
     await this.prisma.coursePrerequisite.delete({ where: { id: link.id } });
     this.logger.log(`Prerequisite removed: ${prerequisiteId} ↛ ${courseId}`);
     return { message: 'Prerequisite removed successfully' };
+  }
+
+  /**
+   * Issue #498 — returns paginated list of students enrolled in a course.
+   * Accessible by the course instructor or an ADMIN.
+   * Email/phone are excluded to respect student privacy.
+   */
+  async getStudentRoster(courseId: string, user: CourseActor, page = 1, limit = 20) {
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
+    this.assertCourseOwner(course, user);
+
+    const [enrollments, total] = await this.prisma.$transaction([
+      this.prisma.enrollment.findMany({
+        where: { courseId },
+        select: {
+          id: true,
+          enrolledAt: true,
+          progressPercent: true,
+          updatedAt: true,
+          status: true,
+          student: {
+            select: {
+              id: true,
+              name: true,
+              avatarUrl: true,
+            },
+          },
+        },
+        orderBy: { enrolledAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.enrollment.count({ where: { courseId } }),
+    ]);
+
+    const students = enrollments.map((e) => ({
+      enrollmentId: e.id,
+      studentId: e.student.id,
+      name: e.student.name || 'Anonymous Student',
+      avatarUrl: e.student.avatarUrl,
+      enrolledAt: e.enrolledAt,
+      progress: e.progressPercent,
+      lastActivity: e.updatedAt,
+      status: e.status,
+    }));
+
+    return {
+      data: students,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   /**

@@ -280,6 +280,9 @@ model User {
   twoFactorEnabled       Boolean   @default(false)
   twoFactorEnabledAt     DateTime?
   twoFactorRecoveryCodes String[]  @default([])
+  // Issues #74/#75 — account lifecycle
+  deactivatedAt  DateTime?  // set while the account is voluntarily deactivated
+  deletedAt      DateTime?  // set once the account has been anonymised (irreversible)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -807,6 +810,8 @@ model ChainEvent {
   processed  Boolean  @default(false)
   processedAt DateTime?
   handlerError String?
+  attemptCount Int      @default(0)
+  retryAt     DateTime?
   createdAt  DateTime @default(now())
 
   // Relations
@@ -815,6 +820,7 @@ model ChainEvent {
   @@index([courseId])
   @@index([eventName])
   @@index([processed])
+  @@index([processed, retryAt, attemptCount])
   @@unique([txHash, eventIndex])
   @@map("chain_events")
 }

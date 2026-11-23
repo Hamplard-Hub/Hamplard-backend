@@ -58,6 +58,32 @@ describe('AnalyticsService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
+    it('prevents clients from spoofing server-owned events but accepts server tracking', async () => {
+      await expect(
+        service.trackEvent({ eventType: 'enrollment_created' }),
+      ).rejects.toThrow(BadRequestException);
+
+      mockPrisma.analyticsEvent.create.mockResolvedValue({
+        id: 'evt-server',
+        eventType: 'enrollment_created',
+      });
+      await expect(
+        service.trackEvent(
+          { eventType: 'enrollment_created' },
+          { userId: 'student-1', source: 'server' },
+        ),
+      ).resolves.toMatchObject({ eventType: 'enrollment_created' });
+    });
+
+    it('rejects server-owned events from client batch submissions', async () => {
+      await expect(
+        service.trackEventsBatch({
+          events: [{ eventType: 'course_completed' }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.analyticsEvent.createMany).not.toHaveBeenCalled();
+    });
+
     it('attributes events to the authenticated meta userId, not a client-supplied id', async () => {
       mockPrisma.analyticsEvent.create.mockResolvedValue({
         id: 'evt-2',

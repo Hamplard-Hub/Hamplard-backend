@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { Keypair } from '@stellar/stellar-sdk';
 import { AuthService } from './auth.service';
 
@@ -65,6 +65,7 @@ describe('AuthService', () => {
       jti: 'access-jti',
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
+    twoFactor.verifyLoginCode.mockResolvedValue(true);
   });
 
   it('succeeds and issues tokens when signature and nonce are valid', async () => {
@@ -99,6 +100,26 @@ describe('AuthService', () => {
     expect(result.accessToken).toBe('access-jwt');
     expect(result.refreshToken).toBe('refresh-jwt');
     expect(result.user).toEqual(user);
+  });
+
+  it('rejects login for a deleted account and issues no tokens', async () => {
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      stellarAddress,
+      deletedAt: new Date(),
+    });
+
+    const service = buildService();
+    const nonce = await service.generateNonce(stellarAddress);
+    const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
+
+    await expect(
+      service.login({ stellarAddress, signedNonce: nonce, signature }),
+    ).rejects.toThrow('Account has been deleted');
+    expect(prisma.user.upsert).not.toHaveBeenCalled();
+    expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
   });
 
   it('rejects login when signature verification fails', async () => {
@@ -207,6 +228,26 @@ describe('AuthService', () => {
         UnauthorizedException,
       );
 
+      expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('propagates the per-account TOTP lockout from the two-factor service', async () => {
+      const keypair = Keypair.random();
+      const service = buildService();
+      const payload = await signedLoginPayload(service, keypair);
+      prisma.user.findUnique.mockResolvedValue(twoFactorUser(payload.stellarAddress));
+      twoFactor.verifyLoginCode.mockRejectedValue(
+        new HttpException(
+          'Too many failed two-factor attempts. Try again later.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        ),
+      );
+
+      await expect(service.login({ ...payload, totpCode: '000000' })).rejects.toMatchObject({
+        status: HttpStatus.TOO_MANY_REQUESTS,
+      });
+
+      expect(twoFactor.verifyLoginCode).toHaveBeenCalledWith('user-2fa', '000000');
       expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
     });
 

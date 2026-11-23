@@ -10,10 +10,12 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { InvoicesModule } from '../invoices/invoices.module';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { LessonsModule } from '../lessons/lessons.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
   imports: [
     ConfigModule,
+    AnalyticsModule,
     NotificationsModule,
     InvoicesModule,
     ReferralsModule,

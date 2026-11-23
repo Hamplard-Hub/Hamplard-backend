@@ -10,6 +10,7 @@ import { ExamsModule } from '../exams/exams.module';
 import { CertificateShareController } from './certificate-share.controller';
 import { CertificateShareService } from './certificate-share.service';
 import { UploadsModule } from '../uploads/uploads.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 import { CERTIFICATE_ISSUANCE_QUEUE } from '../../common/queue/queue.constants';
 import { CertificateIssuanceProcessor } from './certificate-issuance.processor';
 
@@ -18,6 +19,7 @@ import { CertificateIssuanceProcessor } from './certificate-issuance.processor';
     NotificationsModule,
     ExamsModule,
     UploadsModule,
+    AnalyticsModule,
     BullModule.registerQueue({ name: CERTIFICATE_ISSUANCE_QUEUE }),
   ],
   controllers: [

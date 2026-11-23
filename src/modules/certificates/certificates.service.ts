@@ -50,6 +50,8 @@ export interface CertificateRequester {
 import { CertificateRenderData } from './certificate-template.types';
 import { v4 as uuidv4 } from 'uuid';
 import { CertificatePdfService } from '../certificates/certificate-pdf.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 
 @Injectable()
 export class CertificatesService {
@@ -62,6 +64,7 @@ export class CertificatesService {
     private readonly examsService: ExamsService,
     private readonly pdfService: CertificatePdfService,
     private readonly uploads: UploadsService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   /**
@@ -224,6 +227,14 @@ export class CertificatesService {
     }
 
     this.logger.log(`Certificate issued: ${certificateId} for student ${studentId}, PDF: ${pdfUrl}`);
+
+    await this.analytics.trackEvent(
+      {
+        eventType: SERVER_ANALYTICS_EVENTS.CERTIFICATE_ISSUED,
+        properties: { certificateId, courseId },
+      },
+      { userId: studentId, source: 'server' },
+    );
 
     await this.notifications.notifyUser(
       studentId,

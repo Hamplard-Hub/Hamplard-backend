@@ -3,6 +3,7 @@ import { Injectable, BadRequestException, Logger, Optional } from '@nestjs/commo
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
+import { DistributedLockService } from '../../common/scheduling/distributed-lock.service';
 import { DashboardQueryDto } from './dto/dashboard-query.dto';
 import { CourseStatus, EnrollmentStatus, UserRole } from '@prisma/client';
 
@@ -22,6 +23,7 @@ export class DashboardService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly lockService: DistributedLockService,
     @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {}
 
@@ -56,9 +58,12 @@ export class DashboardService {
   @Cron(CronExpression.EVERY_30_MINUTES)
   async handleScheduledRecalculation() {
     const doRecalculate = async () => {
-      this.logger.log('Recalculating admin dashboard summary stats...');
-      await this.recalculate();
-      this.logger.log('Admin dashboard summary stats recalculated.');
+      // Issue #310: Use distributed lock to prevent duplicate runs across instances
+      await this.lockService.withLock('dashboard-stats-recalc', 35 * 60 * 1000, async () => {
+        this.logger.log('Recalculating admin dashboard summary stats...');
+        await this.recalculate();
+        this.logger.log('Admin dashboard summary stats recalculated.');
+      });
     };
 
     if (this.cronMonitor) {

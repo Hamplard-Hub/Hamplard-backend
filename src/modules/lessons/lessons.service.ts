@@ -4,6 +4,8 @@ import {
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 import { CertificatesService } from '../certificates/certificates.service';
 import { QueueService } from '../../common/queue/queue.service';
 
@@ -13,6 +15,7 @@ export class LessonsService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly analytics: AnalyticsService,
     @Optional() private readonly certificatesService?: CertificatesService,
     @Optional() private readonly queueService?: QueueService,
   ) {}
@@ -209,7 +212,15 @@ export class LessonsService {
     lessonId: string,
     watchedSecs?: number,
   ) {
-    await this.verifyEnrollmentAndLesson(studentId, enrollmentId, lessonId);
+    const enrollment = await this.verifyEnrollmentAndLesson(
+      studentId,
+      enrollmentId,
+      lessonId,
+    );
+    const existingProgress = await this.prisma.lessonProgress.findUnique({
+      where: { enrollmentId_lessonId: { enrollmentId, lessonId } },
+      select: { completed: true },
+    });
 
     const progress = await this.prisma.lessonProgress.upsert({
       where: { enrollmentId_lessonId: { enrollmentId, lessonId } },
@@ -228,7 +239,29 @@ export class LessonsService {
     });
 
     // Recalculate enrollment progress
-    await this.recalculateProgress(enrollmentId);
+    const progressPercent = await this.recalculateProgress(enrollmentId);
+    if (!existingProgress?.completed) {
+      await this.analytics.trackEvent(
+        {
+          eventType: SERVER_ANALYTICS_EVENTS.LESSON_COMPLETED,
+          properties: {
+            enrollmentId,
+            lessonId,
+            courseId: enrollment.courseId,
+          },
+        },
+        { userId: studentId, source: 'server' },
+      );
+    }
+    if (progressPercent === 100 && enrollment.status !== 'COMPLETED') {
+      await this.analytics.trackEvent(
+        {
+          eventType: SERVER_ANALYTICS_EVENTS.COURSE_COMPLETED,
+          properties: { enrollmentId, courseId: enrollment.courseId },
+        },
+        { userId: studentId, source: 'server' },
+      );
+    }
 
     return progress;
   }

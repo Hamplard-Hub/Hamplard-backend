@@ -130,7 +130,8 @@ export class BundlesService {
       );
     }
 
-    await this.enrollments.verifyPaymentTransaction(dto.txHash);
+    // Verify payment transaction (basic check for bundles - issue #403)
+    await this.enrollments.verifyPaymentTransactionBasic(dto.txHash);
 
     const courses = bundle.courses.map(({ course }) => course);
     const allocations = this.allocateBundlePrice(bundle.price, courses);

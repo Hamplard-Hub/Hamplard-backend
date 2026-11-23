@@ -1,5 +1,8 @@
 import { StellarService, CONTRACT_EVENT_PAGE_LIMIT } from './stellar.service';
 
+// Note: StellarService.verifyEnrollmentTransaction is removed (dead code, unsafe).
+// Enrollment verification should match on txHash, the `student_enrolled` topic and the student address.
+
 describe('StellarService.fetchContractEvents', () => {
   it('uses the last event paging token instead of startLedger for the next page', async () => {
     const service = new StellarService({} as any);

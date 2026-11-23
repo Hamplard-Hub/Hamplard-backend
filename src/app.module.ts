@@ -9,9 +9,12 @@ import { PrismaModule }  from './common/prisma/prisma.module';
 import { StellarModule } from './common/stellar/stellar.module';
 import { CacheModule }   from './common/cache/cache.module';
 import { QueueModule }   from './common/queue/queue.module';
+import { RedisRateLimitModule } from './common/redis-rate-limit/redis-rate-limit.module';
+import { SchedulingModule } from './common/scheduling/scheduling.module';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { WebhookSignatureMiddleware } from './common/middleware/webhook-signature.middleware';
 import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
+import { validate, AppConfigModule } from './common/config';
 
 import { AuthModule }         from './modules/auth/auth.module';
 import { UsersModule }        from './modules/users/users.module';
@@ -53,7 +56,12 @@ import { CronMonitorModule }  from './modules/cron-monitor/cron-monitor.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+      validate,
+    }),
+    AppConfigModule,
 
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
@@ -72,6 +80,8 @@ import { CronMonitorModule }  from './modules/cron-monitor/cron-monitor.module';
     StellarModule,
     CacheModule,
     QueueModule,
+    RedisRateLimitModule,
+    SchedulingModule,
 
     AuthModule,
     UsersModule,

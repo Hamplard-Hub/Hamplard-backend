@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsString, Min } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateEnrollmentDto {
   @ApiProperty({ description: 'ID of the course enrolled in' })
@@ -12,8 +12,9 @@ export class CreateEnrollmentDto {
   @IsString()
   txHash: string;
 
-  @ApiProperty({ description: 'Amount paid in USDC' })
+  @ApiPropertyOptional({ description: 'Amount paid in USDC' })
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  amountPaid: number;
+  amountPaid?: number;
 }

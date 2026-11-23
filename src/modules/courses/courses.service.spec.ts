@@ -31,6 +31,8 @@ const mockPrisma = {
   },
   enrollment: {
     findFirst: jest.fn(),
+    findMany: jest.fn(),
+    count: jest.fn(),
   },
   $getTransactionClient: jest.fn(),
   $transaction: jest.fn(),
@@ -290,7 +292,8 @@ describe('CoursesService', () => {
 
   it('returns full content for enrolled callers', async () => {
     mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
-    mockPrisma.enrollment.findFirst.mockResolvedValue({ studentId: 'student-1' });
+    // Enrollment record uses studentId (not userId) per the Prisma schema fix.
+    mockPrisma.enrollment.findFirst.mockResolvedValue({ id: 'enroll-1', studentId: 'student-1' });
 
     const result = await service.findOne('COURSE-TAILORING-001', {
       userId: 'student-1',
@@ -299,6 +302,41 @@ describe('CoursesService', () => {
     const paid = result.modules[0].lessons[1] as any;
     expect(paid.videoUrl).toBe(PAID_LESSON.videoUrl);
     expect(paid.content).toBe(PAID_LESSON.content);
+  });
+
+  it('strips paid content for a non-enrolled student (enrollment.findFirst returns null)', async () => {
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
+    // No enrollment record — simulates a student who has NOT purchased the course.
+    mockPrisma.enrollment.findFirst.mockResolvedValue(null);
+
+    const result = await service.findOne('COURSE-TAILORING-001', {
+      userId: 'non-enrolled-student',
+      role: 'STUDENT',
+    });
+    const lessons = result.modules[0].lessons as any[];
+    const paid = lessons.find((l: any) => l.id === 'lesson-paid');
+    // Paid content must be stripped.
+    expect(paid.videoUrl).toBeUndefined();
+    expect(paid.content).toBeUndefined();
+    // Outline metadata is still present.
+    expect(paid.title).toBe(PAID_LESSON.title);
+    expect(paid.isFree).toBe(false);
+  });
+
+  it('queries enrollment using studentId (not userId) and filters to ACTIVE/COMPLETED', async () => {
+    mockPrisma.course.findUnique.mockResolvedValue(activeCourseWithCurriculum());
+    mockPrisma.enrollment.findFirst.mockResolvedValue({ id: 'enroll-1', studentId: 'student-1' });
+
+    await service.findOne('COURSE-TAILORING-001', { userId: 'student-1' });
+
+    expect(mockPrisma.enrollment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          studentId: 'student-1',
+          status: { in: ['ACTIVE', 'COMPLETED'] },
+        }),
+      }),
+    );
   });
 
   it('throws NotFoundException when course not found', async () => {
@@ -570,6 +608,52 @@ describe('CoursesService status transitions (issue #232)', () => {
         await expect(service.removePrerequisite(MOCK_COURSE.id, user, 'PREREQ-1'))
           .resolves.toEqual({ message: 'Prerequisite removed successfully' });
         expect(mockPrisma.coursePrerequisite.delete).toHaveBeenCalledWith({ where: { id: 'link-1' } });
+      });
+    });
+
+    describe('getStudentRoster() (issue #498)', () => {
+      beforeEach(() => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
+        mockPrisma.$transaction.mockResolvedValue([
+          [
+            {
+              id: 'enr-1',
+              enrolledAt: new Date('2026-01-01'),
+              progressPercent: 75,
+              updatedAt: new Date('2026-01-02'),
+              status: 'ACTIVE',
+              student: {
+                id: 'student-1',
+                name: 'Alice Student',
+                avatarUrl: 'https://example.com/avatar.png',
+              },
+            },
+          ],
+          1,
+        ]);
+      });
+
+      it('returns 403 for a non-owner instructor', async () => {
+        await expect(service.getStudentRoster(MOCK_COURSE.id, NON_OWNER, 1, 20))
+          .rejects.toThrow(ForbiddenException);
+      });
+
+      it.each([['owner', OWNER], ['admin', ADMIN]])('returns student roster for %s without email/phone', async (_label, user) => {
+        const result = await service.getStudentRoster(MOCK_COURSE.id, user, 1, 20);
+        expect(result.data).toHaveLength(1);
+        expect(result.data[0]).toEqual({
+          enrollmentId: 'enr-1',
+          studentId: 'student-1',
+          name: 'Alice Student',
+          avatarUrl: 'https://example.com/avatar.png',
+          enrolledAt: expect.any(Date),
+          progress: 75,
+          lastActivity: expect.any(Date),
+          status: 'ACTIVE',
+        });
+        expect((result.data[0] as any).email).toBeUndefined();
+        expect((result.data[0] as any).phoneNumber).toBeUndefined();
+        expect(result.meta.total).toBe(1);
       });
     });
   });
