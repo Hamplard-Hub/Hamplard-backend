@@ -139,9 +139,9 @@ export class AuthService {
       );
     }
 
-    // ---- 2. Look up the stored nonce from Redis ----
+    // ---- 2. Atomically read and consume the stored nonce from Redis ----
     const key = this.nonceRedisKey(stellarAddress);
-    const storedNonce = await this.cache.get<string>(key);
+    const storedNonce = await this.cache.getDel<string>(key);
 
     if (!storedNonce) {
       throw new UnauthorizedException(
@@ -151,8 +151,8 @@ export class AuthService {
 
     // ---- 3. Nonce integrity check ----
     // The client must sign the exact nonce string the server issued.
-    // We do NOT consume the nonce yet — only after the signature passes.
     if (signedNonce !== storedNonce) {
+      await this.cache.set(key, storedNonce, NONCE_TTL_SECONDS);
       throw new UnauthorizedException(
         'Nonce mismatch: the signed nonce does not match the issued nonce for this address.',
       );
@@ -162,18 +162,14 @@ export class AuthService {
     const isValid = this.verifySignature(stellarAddress, signedNonce, signature);
 
     if (!isValid) {
-      // Do NOT consume the nonce on a bad signature to prevent DoS where an
-      // attacker submits a wrong signature to lock out the legitimate owner.
+      await this.cache.set(key, storedNonce, NONCE_TTL_SECONDS);
       throw new UnauthorizedException(
         'Signature verification failed: the provided signature is not a valid Ed25519 ' +
         'signature of the nonce by the claimed Stellar address.',
       );
     }
 
-    // ---- 5. Consume nonce — only after valid signature (single-use enforcement) ----
-    await this.cache.del(key);
-
-    // ---- 6. Upsert user ----
+    // ---- 5. Upsert user ----
     const existing = await this.prisma.user.findUnique({ where: { stellarAddress } });
     const isNewUser = !existing;
 

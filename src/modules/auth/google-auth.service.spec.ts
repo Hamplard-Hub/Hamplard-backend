@@ -29,7 +29,12 @@ describe('GoogleAuthService', () => {
   const config = { get: jest.fn((key: string) => key === 'GOOGLE_CLIENT_ID' ? 'google-client-id' : 'google-client-secret') };
   const cacheMap = new Map<string, any>();
   const cache = {
-    get: jest.fn(async (key: string) => cacheMap.get(key)),
+    get: jest.fn(async (key: string) => cacheMap.get(key) ?? null),
+    getDel: jest.fn(async (key: string) => {
+      const value = cacheMap.get(key) ?? null;
+      cacheMap.delete(key);
+      return value;
+    }),
     set: jest.fn(async (key: string, val: any) => cacheMap.set(key, val)),
     del: jest.fn(async (key: string) => cacheMap.delete(key)),
   };
@@ -59,6 +64,7 @@ describe('GoogleAuthService', () => {
   };
 
   beforeEach(() => {
+    cacheMap.clear();
     jest.clearAllMocks();
     config.get.mockImplementation((key: string) =>
       key === 'GOOGLE_CLIENT_ID' ? 'google-client-id' : 'google-client-secret',
@@ -77,6 +83,30 @@ describe('GoogleAuthService', () => {
 
     expect(await service.consumeOAuthState(state)).toBe(true);
     expect(await service.consumeOAuthState(state)).toBe(false);
+  });
+
+  it('allows only one of two parallel OAuth state exchanges', async () => {
+    const service = buildService();
+    const state = await service.createOAuthState();
+
+    const results = await Promise.all([
+      service.consumeOAuthState(state),
+      service.consumeOAuthState(state),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('allows only one of two parallel one-time code exchanges', async () => {
+    const service = buildService();
+    const code = await service.createAuthCode({ accessToken: 'one', refreshToken: 'two' });
+
+    const results = await Promise.all([
+      service.consumeAuthCode(code),
+      service.consumeAuthCode(code),
+    ]);
+
+    expect(results.filter((value) => value !== null)).toHaveLength(1);
   });
 
   it('rejects an ID token when Google signature verification fails', async () => {

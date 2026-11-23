@@ -80,10 +80,7 @@ export class GoogleAuthService {
 
   async consumeOAuthState(state: string): Promise<boolean> {
     const key = `google:oauth:state:${state}`;
-    const exists = await this.cache.get<string>(key);
-    if (!exists) return false;
-    await this.cache.del(key);
-    return true;
+    return (await this.cache.getDel<string>(key)) !== null;
   }
 
   // ------------------------------------------------------------------
@@ -102,10 +99,7 @@ export class GoogleAuthService {
 
   async consumeAuthCode(code: string): Promise<object | null> {
     const key = `google:auth:code:${code}`;
-    const tokens = await this.cache.get<object>(key);
-    if (!tokens) return null;
-    await this.cache.del(key);
-    return tokens;
+    return await this.cache.getDel<object>(key);
   }
 
   /** Returns the FRONTEND_URL to redirect to after a successful OAuth callback. */
