@@ -16,6 +16,7 @@ import { Cacheable } from '../../common/cache/cache.decorator';
 import { HttpCacheInterceptor } from '../../common/cache/cache.interceptor';
 
 import { QueryCoursesDto } from './dto/query-courses.dto';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
 @ApiTags('courses')
 @Controller('courses')
@@ -193,5 +194,25 @@ export class CoursesController {
     @CurrentUser() user: CourseActor,
   ) {
     return this.coursesService.removePrerequisite(id, user, prerequisiteId);
+  }
+
+  // -------------------------------------------------------
+  // STUDENT ROSTER (issue #498)
+  // -------------------------------------------------------
+
+  @Get(':id/students')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get paginated student roster for a course (owner or admin only)',
+    description: 'Lists enrolled students with progress and last activity without exposing email/phone.',
+  })
+  getStudents(
+    @Param('id') id: string,
+    @CurrentUser() user: CourseActor,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.coursesService.getStudentRoster(id, user, pagination.page, pagination.limit);
   }
 }
