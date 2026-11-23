@@ -391,6 +391,7 @@ model Session {
   id           String    @id @default(uuid())
   userId       String
   jti          String    @unique // matches the `jti` claim embedded in the JWT
+  familyId     String?
   deviceLabel  String?   // parsed friendly label, e.g. "Chrome on Windows"
   userAgent    String?
   ipAddress    String?
@@ -403,6 +404,7 @@ model Session {
   user User @relation("UserSessions", fields: [userId], references: [id])
 
   @@index([userId])
+  @@index([familyId])
   @@map("sessions")
 }
 

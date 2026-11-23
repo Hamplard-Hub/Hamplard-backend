@@ -31,6 +31,7 @@ export interface TokenUser {
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
+  familyId?: string;
 }
 
 interface RefreshTokenPayload {
@@ -100,7 +101,7 @@ export class RefreshTokenService {
       `Issued refresh token for user ${user.id} (family ${family}, generation ${generation})`,
     );
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, familyId: family };
   }
 
   async rotate(rawRefreshToken: string): Promise<TokenPair> {
@@ -139,6 +140,15 @@ export class RefreshTokenService {
 
     if (record.expiresAt.getTime() <= Date.now()) {
       throw new UnauthorizedException('Refresh token expired');
+    }
+
+    // Reject refresh for families whose linked session has been revoked (issue #416)
+    const revokedSession = await this.prisma.session.findFirst({
+      where: { familyId: record.familyId, revokedAt: { not: null } },
+    });
+    if (revokedSession) {
+      await this.revokeFamily(record.familyId);
+      throw new UnauthorizedException('Refresh token has been revoked');
     }
 
     const user = await this.prisma.user.findUnique({ where: { id: record.userId } });

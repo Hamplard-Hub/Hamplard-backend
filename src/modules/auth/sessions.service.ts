@@ -1,4 +1,5 @@
 // sessions.service.ts — issue #69: session and device management
+// issue #416: session revocation linked to refresh-token family
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
@@ -37,12 +38,14 @@ export class SessionsService {
     jti: string;
     expiresAt: Date;
     meta?: DeviceMetadata;
+    familyId?: string;
   }) {
-    const { userId, jti, expiresAt, meta } = params;
+    const { userId, jti, expiresAt, meta, familyId } = params;
     return this.prisma.session.create({
       data: {
         userId,
         jti,
+        familyId,
         expiresAt,
         userAgent: meta?.userAgent,
         ipAddress: meta?.ipAddress,
@@ -94,10 +97,19 @@ export class SessionsService {
       return { id: session.id, revoked: true, revokedAt: session.revokedAt };
     }
 
+    const now = new Date();
     const updated = await this.prisma.session.update({
       where: { id: sessionId },
-      data: { revokedAt: new Date() },
+      data: { revokedAt: now },
     });
+
+    // Revoke the linked refresh-token family so stolen refresh tokens cannot continue refreshing (issue #416)
+    if (session.familyId) {
+      await this.prisma.refreshToken.updateMany({
+        where: { familyId: session.familyId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+    }
 
     return { id: updated.id, revoked: true, revokedAt: updated.revokedAt };
   }
@@ -106,10 +118,41 @@ export class SessionsService {
     const where: any = { userId, revokedAt: null };
     if (currentJti) where.jti = { not: currentJti };
 
+    // Find sessions to revoke along with their familyIds
+    const sessionsToRevoke = await this.prisma.session.findMany({
+      where,
+      select: { id: true, familyId: true },
+    });
+
+    const now = new Date();
     const result = await this.prisma.session.updateMany({
       where,
-      data: { revokedAt: new Date() },
+      data: { revokedAt: now },
     });
+
+    const familyIds = sessionsToRevoke
+      .map((s) => s.familyId)
+      .filter((fid): fid is string => Boolean(fid));
+
+    let currentFamilyId: string | null = null;
+    if (currentJti) {
+      const currentSession = await this.prisma.session.findUnique({
+        where: { jti: currentJti },
+        select: { familyId: true },
+      });
+      currentFamilyId = currentSession?.familyId ?? null;
+    }
+
+    const targetFamilyIds = currentFamilyId
+      ? familyIds.filter((fid) => fid !== currentFamilyId)
+      : familyIds;
+
+    if (targetFamilyIds.length > 0) {
+      await this.prisma.refreshToken.updateMany({
+        where: { familyId: { in: targetFamilyIds }, revokedAt: null },
+        data: { revokedAt: now },
+      });
+    }
 
     return { revoked: true, revokedCount: result.count };
   }
