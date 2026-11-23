@@ -10,6 +10,10 @@ import { SessionsService, DeviceMetadata } from './sessions.service';
 import { SafeUser, toSafeUser } from '../users/user-serializer';
 import { TwoFactorService } from './two-factor.service';
 import { CacheService } from '../../common/cache/cache.service';
+import {
+  issueSessionedTokenPair,
+  trackAccessTokenSession,
+} from './sessioned-token';
 import { randomBytes } from 'crypto';
 
 /**
@@ -216,7 +220,13 @@ export class AuthService {
     }
 
     // ---- 8. Issue rotating refresh pair and track the access-token session ----
-    const tokens = await this.issueSessionedTokenPair(user, deviceMeta);
+    const tokens = await issueSessionedTokenPair(
+      this.refreshTokens,
+      this.jwt,
+      this.sessions,
+      user,
+      deviceMeta,
+    );
 
     this.logger.log(`User authenticated: ${stellarAddress} (${user.role})`);
     // Issue #234 — never return the TOTP secret or recovery-code hashes
@@ -225,32 +235,7 @@ export class AuthService {
 
   async refresh(refreshToken: string, deviceMeta?: DeviceMetadata): Promise<TokenPair> {
     const tokens = await this.refreshTokens.rotate(refreshToken);
-    await this.trackAccessTokenSession(tokens.accessToken, deviceMeta);
+    await trackAccessTokenSession(this.jwt, this.sessions, tokens.accessToken, deviceMeta);
     return tokens;
-  }
-
-  private async issueSessionedTokenPair(
-    user: { id: string; stellarAddress: string | null; googleId?: string | null; role: string },
-    deviceMeta?: DeviceMetadata,
-  ): Promise<TokenPair> {
-    const tokens = await this.refreshTokens.issueTokenPair(user);
-    await this.trackAccessTokenSession(tokens.accessToken, deviceMeta);
-    return tokens;
-  }
-
-  private async trackAccessTokenSession(accessToken: string, deviceMeta?: DeviceMetadata) {
-    const decoded = this.jwt.decode(accessToken) as { exp?: number; jti?: string; sub?: string } | null;
-    if (!decoded?.jti || !decoded.sub) return;
-
-    const expiresAt = decoded.exp
-      ? new Date(decoded.exp * 1000)
-      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-    await this.sessions.createSession({
-      userId: decoded.sub,
-      jti: decoded.jti,
-      expiresAt,
-      meta: deviceMeta,
-    });
   }
 }
