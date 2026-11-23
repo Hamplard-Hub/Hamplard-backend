@@ -200,21 +200,44 @@ export class OtpService {
       );
     }
 
+    // Reserve an attempt atomically before checking the submitted code.
+    const attempt = await this.prisma.phoneOtp.updateMany({
+      where: {
+        id: otpRecord.id,
+        isUsed: false,
+        attemptCount: { lt: OTP_MAX_ATTEMPTS },
+      },
+      data: { attemptCount: { increment: 1 } },
+    });
+
+    if (attempt.count !== 1) {
+      await this.prisma.phoneOtp.updateMany({
+        where: {
+          id: otpRecord.id,
+          isUsed: false,
+          attemptCount: { gte: OTP_MAX_ATTEMPTS },
+        },
+        data: { isUsed: true },
+      });
+      throw new UnauthorizedException(
+        'Maximum verification attempts exceeded. Please request a new OTP.',
+      );
+    }
+
     // Constant-time HMAC comparison — storedHash vs hash(submitted)
     const isValid = this.verifyOtpHash(otpCode, otpRecord.otp);
 
     if (!isValid) {
-      // Increment attempt count
-      await this.prisma.phoneOtp.update({
-        where: { id: otpRecord.id },
-        data: {
-          attemptCount: otpRecord.attemptCount + 1,
+      await this.prisma.phoneOtp.updateMany({
+        where: {
+          id: otpRecord.id,
+          isUsed: false,
+          attemptCount: { gte: OTP_MAX_ATTEMPTS },
         },
+        data: { isUsed: true },
       });
-
-      const remainingAttempts = OTP_MAX_ATTEMPTS - (otpRecord.attemptCount + 1);
       throw new UnauthorizedException(
-        `Invalid OTP. ${remainingAttempts} attempts remaining.`,
+        'Invalid OTP.',
       );
     }
 
