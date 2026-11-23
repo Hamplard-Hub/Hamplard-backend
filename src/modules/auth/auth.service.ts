@@ -229,6 +229,14 @@ export class AuthService {
     return tokens;
   }
 
+  async logout(userId: string, jti?: string) {
+    return this.sessions.logoutCurrentSession(userId, jti);
+  }
+
+  async logoutAll(userId: string) {
+    return this.sessions.logoutAll(userId);
+  }
+
   private async issueSessionedTokenPair(
     user: { id: string; stellarAddress: string | null; googleId?: string | null; role: string },
     deviceMeta?: DeviceMetadata,
@@ -239,7 +247,12 @@ export class AuthService {
   }
 
   private async trackAccessTokenSession(accessToken: string, deviceMeta?: DeviceMetadata) {
-    const decoded = this.jwt.decode(accessToken) as { exp?: number; jti?: string; sub?: string } | null;
+    const decoded = this.jwt.decode(accessToken) as {
+      exp?: number;
+      jti?: string;
+      sub?: string;
+      familyId?: string;
+    } | null;
     if (!decoded?.jti || !decoded.sub) return;
 
     const expiresAt = decoded.exp
@@ -249,6 +262,7 @@ export class AuthService {
     await this.sessions.createSession({
       userId: decoded.sub,
       jti: decoded.jti,
+      refreshFamilyId: decoded.familyId,
       expiresAt,
       meta: deviceMeta,
     });
