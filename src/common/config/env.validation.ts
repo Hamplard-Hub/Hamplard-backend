@@ -261,6 +261,19 @@ export class EnvironmentVariables {
   @IsOptional()
   CAPTCHA_BLOCK_DURATION_SECONDS: number = 900;
 
+  // TOTP verification (per-account lockout — issue #426)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  TOTP_MAX_FAILED_ATTEMPTS: number = 5;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(60)
+  @IsOptional()
+  TOTP_LOCKOUT_SECONDS: number = 900;
+
   // Uploads & Storage
   @IsString()
   @IsOptional()

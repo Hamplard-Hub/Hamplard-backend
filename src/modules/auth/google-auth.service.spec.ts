@@ -1,4 +1,4 @@
-import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { HttpException, HttpStatus, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { GoogleAuthService, GoogleIdentity } from './google-auth.service';
 
 describe('GoogleAuthService', () => {
@@ -35,6 +35,7 @@ describe('GoogleAuthService', () => {
   const twoFactor = {
     isEnabled: jest.fn().mockResolvedValue(false),
     verifyLoginTotp: jest.fn().mockResolvedValue(true),
+    verifyLoginCode: jest.fn().mockResolvedValue(true),
   };
 
   const buildService = () =>
@@ -66,6 +67,7 @@ describe('GoogleAuthService', () => {
       jti: 'access-jti',
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
+    twoFactor.verifyLoginCode.mockResolvedValue(true);
   });
 
   it('creates and consumes single-use OAuth state values', async () => {
@@ -183,6 +185,37 @@ describe('GoogleAuthService', () => {
     expect(result.user).not.toHaveProperty('twoFactorRecoveryCodes');
     expect(result.user).toMatchObject({ id: 'user-2fa', twoFactorEnabled: true });
     expect(JSON.stringify(result)).not.toContain('JBSWY3DPEHPK3PXP');
+  });
+
+  it('propagates the per-account TOTP lockout on Google ID-token login', async () => {
+    const service = buildService();
+    (service as any).googleClient.verifyIdToken = jest.fn().mockResolvedValue({
+      getPayload: () => ({
+        sub: identity.googleId,
+        email: identity.email,
+        email_verified: true,
+        iss: 'https://accounts.google.com',
+      }),
+    });
+    prisma.user.findUnique.mockResolvedValueOnce({
+      id: 'user-2fa',
+      googleId: identity.googleId,
+      email: identity.email,
+      twoFactorEnabled: true,
+    });
+    twoFactor.verifyLoginCode.mockRejectedValue(
+      new HttpException(
+        'Too many failed two-factor attempts. Try again later.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      ),
+    );
+
+    await expect(service.loginWithIdTokenAndTotp('id-token', '000000')).rejects.toMatchObject({
+      status: HttpStatus.TOO_MANY_REQUESTS,
+    });
+
+    expect(twoFactor.verifyLoginCode).toHaveBeenCalledWith('user-2fa', '000000');
+    expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
   });
 
   describe('when Google credentials are configured', () => {
