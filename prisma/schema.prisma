@@ -304,6 +304,7 @@ model User {
   fraudFlags          EnrollmentFraudFlag[] @relation("StudentFraudFlags")
   fraudReviewed       EnrollmentFraudFlag[] @relation("FraudReviewedBy")
   refundRequests      Refund[]
+  refundReviews       Refund[]              @relation("RefundReviewer")
   bundlesCreated      Bundle[]              @relation("InstructorBundles")
   bundleEnrollments   BundleEnrollment[]
   invoices            Invoice[]
@@ -1326,6 +1327,8 @@ model Refund {
   isPartial       Boolean      @default(false)
   status          RefundStatus @default(PENDING)
   adminNote       String?
+  reviewedById    String?
+  reviewedAt      DateTime?
   txHash          String?      // on-chain refund transaction, set once processed
   processedAt     DateTime?
   createdAt       DateTime     @default(now())
@@ -1334,10 +1337,12 @@ model Refund {
   // Relations
   enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
   student    User       @relation(fields: [studentId], references: [id])
+  reviewedBy User?      @relation("RefundReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
 
   @@index([enrollmentId])
   @@index([studentId])
   @@index([status])
+  @@index([reviewedById])
   @@map("refunds")
 }
 
