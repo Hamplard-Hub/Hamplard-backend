@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -182,6 +183,19 @@ export class GoogleAuthService {
       throw new UnauthorizedException('Account has been deleted');
     }
 
+    if (existing?.isBanned) {
+      await this.refreshTokens.revokeUserFamilies(existing.id);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (existing?.isSuspended) {
+      const suspendedUntil = existing.suspendedUntil ? new Date(existing.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.refreshTokens.revokeUserFamilies(existing.id);
+        throw new ForbiddenException('User is suspended');
+      }
+    }
+
     // ---- Enforce 2FA for Google logins on 2FA-enabled accounts ----
     if (existing?.twoFactorEnabled) {
       // We cannot interactively prompt for a TOTP here during the OAuth redirect
@@ -197,23 +211,23 @@ export class GoogleAuthService {
     try {
       const user = existing
         ? await this.prisma.user.update({
-            where: { id: existing.id },
-            data: {
-              googleId: identity.googleId,
-              email: existing.email ?? identity.email,
-              name: existing.name ?? identity.name,
-              avatarUrl: existing.avatarUrl ?? identity.avatarUrl,
-            },
-          })
+          where: { id: existing.id },
+          data: {
+            googleId: identity.googleId,
+            email: existing.email ?? identity.email,
+            name: existing.name ?? identity.name,
+            avatarUrl: existing.avatarUrl ?? identity.avatarUrl,
+          },
+        })
         : await this.prisma.user.create({
-            data: {
-              googleId: identity.googleId,
-              email: identity.email,
-              name: identity.name,
-              avatarUrl: identity.avatarUrl,
-              role: 'STUDENT',
-            },
-          });
+          data: {
+            googleId: identity.googleId,
+            email: identity.email,
+            name: identity.name,
+            avatarUrl: identity.avatarUrl,
+            role: 'STUDENT',
+          },
+        });
 
       const tokens = await this.refreshTokens.issueTokenPair(user);
       const decoded = this.jwt.decode(tokens.accessToken) as { exp?: number; jti?: string } | null;
@@ -272,6 +286,19 @@ export class GoogleAuthService {
     // Issues #74/#75 — a deleted account can never authenticate.
     if (existing?.deletedAt) {
       throw new UnauthorizedException('Account has been deleted');
+    }
+
+    if (existing?.isBanned) {
+      await this.refreshTokens.revokeUserFamilies(existing.id);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (existing?.isSuspended) {
+      const suspendedUntil = existing.suspendedUntil ? new Date(existing.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.refreshTokens.revokeUserFamilies(existing.id);
+        throw new ForbiddenException('User is suspended');
+      }
     }
 
     if (!existing?.twoFactorEnabled) {
