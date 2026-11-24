@@ -5,12 +5,13 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
-import { RefundStatus, EnrollmentStatus, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
+import { RefundStatus, EnrollmentStatus, UserRole, AuditAction, AuditTargetType, NotificationType } from '@prisma/client';
 import { CreateRefundDto } from './dto/create-refund.dto';
 import { ApproveRefundDto } from './dto/approve-refund.dto';
 import { RejectRefundDto } from './dto/reject-refund.dto';
 import { ProcessRefundDto } from './dto/process-refund.dto';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 
 /** Refund requests must be filed within this many days of enrollment. */
@@ -24,6 +25,7 @@ export class RefundsService {
     private readonly prisma: PrismaService,
     private readonly stellar: StellarService,
     private readonly analytics: AnalyticsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ----------------------------------------------------------
@@ -91,6 +93,14 @@ export class RefundsService {
     });
 
     this.logger.log(`Refund requested: ${refund.id} for enrollment ${dto.enrollmentId}`);
+
+    // Issue #338 — surface the request in the admin refund queue
+    await this.notifications.notifyAdmins(
+      NotificationType.REFUND_REQUESTED,
+      'New refund request',
+      `A student requested a refund of ${requestedAmount} USDC`,
+      { refundId: refund.id, enrollmentId: dto.enrollmentId, studentId, requestedAmount },
+    );
     return refund;
   }
 

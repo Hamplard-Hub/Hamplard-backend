@@ -1,6 +1,7 @@
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { RefundsService } from './refunds.service';
 
 describe('RefundsService server analytics', () => {
@@ -25,6 +26,7 @@ describe('RefundsService server analytics', () => {
   };
   const stellar = { getTransactionStatus: jest.fn() };
   const analytics = { trackEvent: jest.fn() };
+  const notifications = { notifyAdmins: jest.fn().mockResolvedValue([]) };
   let service: RefundsService;
 
   beforeEach(() => {
@@ -33,6 +35,7 @@ describe('RefundsService server analytics', () => {
       prisma as unknown as PrismaService,
       stellar as unknown as StellarService,
       analytics as unknown as AnalyticsService,
+      notifications as unknown as NotificationsService,
     );
     prisma.refund.findUnique.mockResolvedValue(refund);
     prisma.refund.update.mockResolvedValue({ ...refund, status: 'PROCESSED' });

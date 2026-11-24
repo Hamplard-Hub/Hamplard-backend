@@ -126,8 +126,15 @@ export class CoursesService {
       data: { status: CourseStatus.PENDING, txHash: txHash ?? course.txHash },
     });
 
-    // Notify all admins (simplified — notify the single admin address)
     this.logger.log(`Course ${courseId} submitted for review`);
+
+    // Issue #338 — notify every admin that a course is waiting for review
+    await this.notifications.notifyAdmins(
+      NotificationType.COURSE_SUBMITTED_FOR_REVIEW,
+      'Course submitted for review',
+      `"${course.title}" by ${course.instructor?.name ?? 'an instructor'} is awaiting review`,
+      { courseId, instructorId: course.instructor?.id, instructorAddress: course.instructorAddress },
+    );
     return updated;
   }
 
@@ -381,6 +388,7 @@ export class CoursesService {
             return {
               ...base,
               videoUrl: lesson.videoUrl,
+              videoRenditions: lesson.videoRenditions,
               content: lesson.content,
               resourceUrl: lesson.resourceUrl,
             };

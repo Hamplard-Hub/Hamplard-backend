@@ -7,7 +7,7 @@ import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CourseStatus, UserRole } from '@prisma/client';
+import { CourseStatus, NotificationType, UserRole } from '@prisma/client';
 
 const mockPrisma = {
   course: {
@@ -45,6 +45,7 @@ const ADMIN    = { id: 'admin-id',      stellarAddress: 'GADMIN', role: UserRole
 
 const mockNotifications = {
   notifyUser: jest.fn().mockResolvedValue({}),
+  notifyAdmins: jest.fn().mockResolvedValue([]),
 };
 
 const mockSearchService = {
@@ -566,6 +567,16 @@ describe('CoursesService status transitions (issue #232)', () => {
       it.each([['owner', OWNER], ['admin', ADMIN]])('succeeds for the %s', async (_label, user) => {
         const result = await service.submitForReview(MOCK_COURSE.id, user);
         expect(result.status).toBe(CourseStatus.PENDING);
+      });
+
+      it('notifies admins that the course is awaiting review (issue #338)', async () => {
+        await service.submitForReview(MOCK_COURSE.id, OWNER);
+        expect(mockNotifications.notifyAdmins).toHaveBeenCalledWith(
+          NotificationType.COURSE_SUBMITTED_FOR_REVIEW,
+          'Course submitted for review',
+          expect.any(String),
+          expect.objectContaining({ courseId: MOCK_COURSE.id }),
+        );
       });
     });
 
