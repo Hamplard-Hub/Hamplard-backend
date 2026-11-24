@@ -1,7 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Queue, Job } from 'bullmq';
-import * as ffmpeg from 'fluent-ffmpeg';
+import ffmpeg = require('@modernized/fluent-ffmpeg');
 import * as path from 'path';
 import * as fs from 'fs';
 import { ConfigService } from '@nestjs/config';

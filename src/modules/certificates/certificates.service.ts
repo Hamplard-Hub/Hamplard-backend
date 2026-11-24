@@ -48,7 +48,7 @@ export interface CertificateRequester {
   role: UserRole;
 }
 import { CertificateRenderData } from './certificate-template.types';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { CertificatePdfService } from '../certificates/certificate-pdf.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
@@ -105,7 +105,7 @@ export class CertificatesService {
     if (existing) throw new ForbiddenException('Certificate already issued for this enrollment');
 
     // Generate a unique certificate ID
-    const certificateId = `CERT-${uuidv4().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
+    const certificateId = `CERT-${randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
 
     // Create DB record
     let certificate;

@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StartImpersonationDto } from './dto/start-impersonation.dto';
 import { AuditAction, AuditTargetType } from '@prisma/client';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 export interface ImpersonationAuditLog {
   sessionId: string;
@@ -41,7 +41,7 @@ export class ImpersonationService {
     const durationSeconds = dto.durationSeconds ?? 3600;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + durationSeconds * 1000);
-    const sessionId = uuidv4();
+    const sessionId = randomUUID();
 
     const accessToken = this.jwtService.sign(
       {
