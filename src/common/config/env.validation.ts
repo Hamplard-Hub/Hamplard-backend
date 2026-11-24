@@ -30,6 +30,13 @@ export enum LogLevel {
   Silent = 'silent',
 }
 
+export enum StellarNetwork {
+  Testnet = 'testnet',
+  Mainnet = 'mainnet',
+  Futurenet = 'futurenet',
+  Standalone = 'standalone',
+}
+
 export class EnvironmentVariables {
   // Server
   @IsEnum(Environment)
@@ -110,13 +117,13 @@ export class EnvironmentVariables {
   GOOGLE_CALLBACK_URL: string = 'http://localhost:3000/api/v1/auth/google/callback';
 
   // Stellar
-  @IsString()
+  @IsEnum(StellarNetwork)
   @IsOptional()
-  STELLAR_NETWORK: string = 'testnet';
+  STELLAR_NETWORK: StellarNetwork = StellarNetwork.Testnet;
 
   @IsString()
   @IsOptional()
-  STELLAR_RPC_URL: string = 'https://soroban-testnet.stellar.org';
+  STELLAR_RPC_URL?: string;
 
   @IsString()
   @IsOptional()
