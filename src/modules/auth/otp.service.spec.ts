@@ -165,6 +165,7 @@ describe('OtpService', () => {
 
     it('should verify valid OTP and update user', async () => {
       mockPrismaService.phoneOtp.findFirst.mockResolvedValue(mockOtpRecord);
+      mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 1 });
       mockPrismaService.phoneOtp.update.mockResolvedValue({} as any);
       mockPrismaService.user.update.mockResolvedValue({} as any);
 
@@ -204,15 +205,19 @@ describe('OtpService', () => {
 
     it('should reject invalid OTP and increment attempt count', async () => {
       mockPrismaService.phoneOtp.findFirst.mockResolvedValue(mockOtpRecord);
-      mockPrismaService.phoneOtp.update.mockResolvedValue({} as any);
+      mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 1 });
 
       await expect(
         service.verifyOtp('user-123', '+254712345678', '999999'),
       ).rejects.toThrow(UnauthorizedException);
 
-      expect(mockPrismaService.phoneOtp.update).toHaveBeenCalledWith({
-        where: { id: 'otp-123' },
-        data: { attemptCount: 1 },
+      expect(mockPrismaService.phoneOtp.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'otp-123',
+          isUsed: false,
+          attemptCount: { lt: 5 },
+        },
+        data: { attemptCount: { increment: 1 } },
       });
     });
 
@@ -224,6 +229,40 @@ describe('OtpService', () => {
       await expect(
         service.verifyOtp('user-123', '+254712345678', '123456'),
       ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('locks the OTP after five attempts despite ten concurrent wrong guesses', async () => {
+      let attemptCount = 0;
+      let isUsed = false;
+      mockPrismaService.phoneOtp.findFirst.mockImplementation(async () => ({
+        ...mockOtpRecord,
+        attemptCount,
+        isUsed,
+      }));
+      mockPrismaService.phoneOtp.updateMany.mockImplementation(async ({ where, data }) => {
+        if (data.attemptCount?.increment && !isUsed && attemptCount < 5) {
+          attemptCount += data.attemptCount.increment;
+          return { count: 1 };
+        }
+
+        if (data.isUsed && !isUsed && attemptCount >= 5) {
+          isUsed = true;
+          return { count: 1 };
+        }
+
+        return { count: 0 };
+      });
+
+      const attempts = await Promise.allSettled(
+        Array.from({ length: 10 }, () =>
+          service.verifyOtp('user-123', '+254712345678', '999999'),
+        ),
+      );
+
+      expect(attemptCount).toBe(5);
+      expect(isUsed).toBe(true);
+      expect(attempts.every((attempt) => attempt.status === 'rejected')).toBe(true);
+      expect(mockPrismaService.user.update).not.toHaveBeenCalled();
     });
   });
 

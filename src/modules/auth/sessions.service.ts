@@ -36,16 +36,19 @@ export class SessionsService {
   async createSession(params: {
     userId: string;
     jti: string;
+    refreshFamilyId?: string;
     expiresAt: Date;
     meta?: DeviceMetadata;
     familyId?: string;
   }) {
     const { userId, jti, expiresAt, meta, familyId } = params;
+    const { userId, jti, refreshFamilyId, expiresAt, meta } = params;
     return this.prisma.session.create({
       data: {
         userId,
         jti,
         familyId,
+        refreshFamilyId,
         expiresAt,
         userAgent: meta?.userAgent,
         ipAddress: meta?.ipAddress,
@@ -155,5 +158,62 @@ export class SessionsService {
     }
 
     return { revoked: true, revokedCount: result.count };
+  }
+
+  async logoutCurrentSession(userId: string, jti?: string) {
+    if (!jti) {
+      return { revoked: true, revokedCount: 0 };
+    }
+
+    const session = await this.prisma.session.findUnique({ where: { jti } });
+    if (!session || session.userId !== userId) {
+      return { revoked: true, revokedCount: 0 };
+    }
+
+    const revokedAt = new Date();
+    const sessionUpdate = this.prisma.session.updateMany({
+      where: {
+        userId,
+        ...(session.refreshFamilyId
+          ? { refreshFamilyId: session.refreshFamilyId }
+          : { jti }),
+        revokedAt: null,
+      },
+      data: { revokedAt },
+    });
+
+    if (session.refreshFamilyId) {
+      const [sessionResult] = await this.prisma.$transaction([
+        sessionUpdate,
+        this.prisma.refreshToken.updateMany({
+          where: { familyId: session.refreshFamilyId, revokedAt: null },
+          data: { revokedAt },
+        }),
+      ]);
+      return { revoked: true, revokedCount: sessionResult.count };
+    }
+
+    const sessionResult = await sessionUpdate;
+    return { revoked: true, revokedCount: sessionResult.count };
+  }
+
+  async logoutAll(userId: string) {
+    const revokedAt = new Date();
+    const [sessions, refreshTokens] = await this.prisma.$transaction([
+      this.prisma.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt },
+      }),
+    ]);
+
+    return {
+      revoked: true,
+      revokedSessionCount: sessions.count,
+      revokedRefreshTokenCount: refreshTokens.count,
+    };
   }
 }
