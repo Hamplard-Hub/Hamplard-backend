@@ -58,13 +58,17 @@ describe('DataExportController', () => {
   });
 
   describe('listMyExports()', () => {
-    it('lists jobs for the authenticated user only', async () => {
-      service.listMyExports.mockResolvedValue([{ id: 'job-1' }] as any);
+    it('lists paginated jobs for the authenticated user only', async () => {
+      const paginated = {
+        data: [{ id: 'job-1' }],
+        meta: { total: 1, page: 2, limit: 10, totalPages: 1 },
+      };
+      service.listMyExports.mockResolvedValue(paginated as any);
 
-      const result = await controller.listMyExports('user-1', { page: 1, limit: 20 });
+      const result = await controller.listMyExports('user-1', { page: 2, limit: 10 });
 
-      expect(result).toEqual([{ id: 'job-1' }] as any);
-      expect(service.listMyExports).toHaveBeenCalledWith('user-1');
+      expect(result).toEqual(paginated as any);
+      expect(service.listMyExports).toHaveBeenCalledWith('user-1', 2, 10);
     });
   });
 

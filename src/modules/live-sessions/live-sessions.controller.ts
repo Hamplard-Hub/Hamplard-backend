@@ -15,6 +15,7 @@ import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
 @Controller('live-sessions')
 export class LiveSessionsController {
@@ -58,6 +59,7 @@ export class LiveSessionsController {
   @UseGuards(OptionalJwtAuthGuard)
   async getUpcomingSessions(
     @Req() req: any,
+    @Query() pagination: PaginationQueryDto,
     @Query('courseId') courseId?: string,
     @Query('instructorAddress') instructorAddress?: string,
   ) {
@@ -65,6 +67,8 @@ export class LiveSessionsController {
       courseId,
       instructorAddress,
       req.user,
+      pagination.page,
+      pagination.limit,
     );
   }
 
