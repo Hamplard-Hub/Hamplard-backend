@@ -73,6 +73,7 @@ export class RefreshTokenService {
       googleId: user.googleId,
       role: user.role,
       jti: accessJti,
+      familyId: family,
     });
     const refreshToken = this.jwt.sign(
       {

@@ -238,4 +238,43 @@ export class AuthService {
     await trackAccessTokenSession(this.jwt, this.sessions, tokens.accessToken, deviceMeta);
     return tokens;
   }
+
+  async logout(userId: string, jti?: string) {
+    return this.sessions.logoutCurrentSession(userId, jti);
+  }
+
+  async logoutAll(userId: string) {
+    return this.sessions.logoutAll(userId);
+  }
+
+  private async issueSessionedTokenPair(
+    user: { id: string; stellarAddress: string | null; googleId?: string | null; role: string },
+    deviceMeta?: DeviceMetadata,
+  ): Promise<TokenPair> {
+    const tokens = await this.refreshTokens.issueTokenPair(user);
+    await this.trackAccessTokenSession(tokens.accessToken, deviceMeta);
+    return tokens;
+  }
+
+  private async trackAccessTokenSession(accessToken: string, deviceMeta?: DeviceMetadata) {
+    const decoded = this.jwt.decode(accessToken) as {
+      exp?: number;
+      jti?: string;
+      sub?: string;
+      familyId?: string;
+    } | null;
+    if (!decoded?.jti || !decoded.sub) return;
+
+    const expiresAt = decoded.exp
+      ? new Date(decoded.exp * 1000)
+      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    await this.sessions.createSession({
+      userId: decoded.sub,
+      jti: decoded.jti,
+      refreshFamilyId: decoded.familyId,
+      expiresAt,
+      meta: deviceMeta,
+    });
+  }
 }
