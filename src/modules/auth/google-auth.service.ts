@@ -15,6 +15,7 @@ import { SessionsService, DeviceMetadata } from './sessions.service';
 import { toSafeUser } from '../users/user-serializer';
 import { CacheService } from '../../common/cache/cache.service';
 import { TwoFactorService } from './two-factor.service';
+import { issueSessionedTokenPair } from './sessioned-token';
 
 export interface GoogleIdentity {
   googleId: string;
@@ -215,19 +216,13 @@ export class GoogleAuthService {
             },
           });
 
-      const tokens = await this.refreshTokens.issueTokenPair(user);
-      const decoded = this.jwt.decode(tokens.accessToken) as { exp?: number; jti?: string } | null;
-      if (decoded?.jti) {
-        const expiresAt = decoded.exp
-          ? new Date(decoded.exp * 1000)
-          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        await this.sessions.createSession({
-          userId: user.id,
-          jti: decoded.jti,
-          expiresAt,
-          meta: deviceMeta,
-        });
-      }
+      const tokens = await issueSessionedTokenPair(
+        this.refreshTokens,
+        this.jwt,
+        this.sessions,
+        user,
+        deviceMeta,
+      );
 
       // Issue #234 — never return the TOTP secret or recovery-code hashes
       return { ...tokens, user: toSafeUser(user) };
@@ -296,19 +291,13 @@ export class GoogleAuthService {
         },
       });
 
-      const tokens = await this.refreshTokens.issueTokenPair(user);
-      const decoded = this.jwt.decode(tokens.accessToken) as { exp?: number; jti?: string } | null;
-      if (decoded?.jti) {
-        const expiresAt = decoded.exp
-          ? new Date(decoded.exp * 1000)
-          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        await this.sessions.createSession({
-          userId: user.id,
-          jti: decoded.jti,
-          expiresAt,
-          meta: deviceMeta,
-        });
-      }
+      const tokens = await issueSessionedTokenPair(
+        this.refreshTokens,
+        this.jwt,
+        this.sessions,
+        user,
+        deviceMeta,
+      );
 
       return { ...tokens, user: toSafeUser(user) };
     } catch (error) {

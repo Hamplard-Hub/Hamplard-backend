@@ -10,6 +10,10 @@ import { SessionsService, DeviceMetadata } from './sessions.service';
 import { SafeUser, toSafeUser } from '../users/user-serializer';
 import { TwoFactorService } from './two-factor.service';
 import { CacheService } from '../../common/cache/cache.service';
+import {
+  issueSessionedTokenPair,
+  trackAccessTokenSession,
+} from './sessioned-token';
 import { randomBytes } from 'crypto';
 
 /**
@@ -216,7 +220,13 @@ export class AuthService {
     }
 
     // ---- 8. Issue rotating refresh pair and track the access-token session ----
-    const tokens = await this.issueSessionedTokenPair(user, deviceMeta);
+    const tokens = await issueSessionedTokenPair(
+      this.refreshTokens,
+      this.jwt,
+      this.sessions,
+      user,
+      deviceMeta,
+    );
 
     this.logger.log(`User authenticated: ${stellarAddress} (${user.role})`);
     // Issue #234 — never return the TOTP secret or recovery-code hashes
@@ -225,7 +235,7 @@ export class AuthService {
 
   async refresh(refreshToken: string, deviceMeta?: DeviceMetadata): Promise<TokenPair> {
     const tokens = await this.refreshTokens.rotate(refreshToken);
-    await this.trackAccessTokenSession(tokens.accessToken, deviceMeta);
+    await trackAccessTokenSession(this.jwt, this.sessions, tokens.accessToken, deviceMeta);
     return tokens;
   }
 
