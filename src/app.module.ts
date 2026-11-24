@@ -1,7 +1,6 @@
 import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TerminusModule } from '@nestjs/terminus';
 
@@ -62,17 +61,6 @@ import { CronMonitorModule }  from './modules/cron-monitor/cron-monitor.module';
       validate,
     }),
     AppConfigModule,
-
-    ThrottlerModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => [
-        {
-          ttl:   config.get<number>('THROTTLE_TTL', 60) * 1000,
-          limit: config.get<number>('THROTTLE_LIMIT', 100),
-        },
-      ],
-    }),
 
     ScheduleModule.forRoot(),
     TerminusModule,

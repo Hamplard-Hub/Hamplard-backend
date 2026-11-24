@@ -5,9 +5,10 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { CaptchaService } from './captcha.service';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { PrismaService } from '../../common/prisma/prisma.service';
 
 describe('AuthController Throttling (Integration)', () => {
-  let app: INestApplication;
+  let app: INestApplication | undefined;
 
   const authService = {
     generateNonce: jest.fn().mockReturnValue('mock-nonce'),
@@ -33,6 +34,7 @@ describe('AuthController Throttling (Integration)', () => {
       providers: [
         { provide: AuthService, useValue: authService },
         { provide: CaptchaService, useValue: captchaService },
+        { provide: PrismaService, useValue: {} },
       ],
     }).compile();
 
@@ -41,7 +43,7 @@ describe('AuthController Throttling (Integration)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    if (app) await app.close();
   });
 
   it('allows requests within limit on /auth/nonce and returns 429 when limit is exceeded', async () => {
