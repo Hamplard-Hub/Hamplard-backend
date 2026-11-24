@@ -19,11 +19,11 @@ export class CacheService implements OnModuleDestroy {
     this.redis = redisUrl
       ? new Redis(redisUrl, { lazyConnect: false, maxRetriesPerRequest: 2 })
       : new Redis({
-          host: this.config.get<string>('REDIS_HOST', 'localhost'),
-          port: this.config.get<number>('REDIS_PORT', 6379),
-          password: this.config.get<string>('REDIS_PASSWORD') || undefined,
-          maxRetriesPerRequest: 2,
-        });
+        host: this.config.get<string>('REDIS_HOST', 'localhost'),
+        port: this.config.get<number>('REDIS_PORT', 6379),
+        password: this.config.get<string>('REDIS_PASSWORD') || undefined,
+        maxRetriesPerRequest: 2,
+      });
 
     this.redis.on('error', (err) => {
       this.logger.warn(`Redis connection error: ${err.message}`);
@@ -59,6 +59,23 @@ export class CacheService implements OnModuleDestroy {
       return JSON.parse(raw) as T;
     } catch (err) {
       this.logger.warn(`Cache read failed for "${key}": ${(err as Error).message}`);
+      this.misses += 1;
+      return null;
+    }
+  }
+
+  /** Atomically reads and deletes a key using Redis GETDEL. */
+  async getDel<T = unknown>(key: string): Promise<T | null> {
+    try {
+      const raw = await this.redis.call('GETDEL', key) as string | null;
+      if (raw === null) {
+        this.misses += 1;
+        return null;
+      }
+      this.hits += 1;
+      return JSON.parse(raw) as T;
+    } catch (err) {
+      this.logger.warn(`Cache atomic read/delete failed for "${key}": ${(err as Error).message}`);
       this.misses += 1;
       return null;
     }

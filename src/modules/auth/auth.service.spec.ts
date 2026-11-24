@@ -42,7 +42,12 @@ describe('AuthService', () => {
   const config = { get: jest.fn(() => null) };
   const cacheMap = new Map<string, any>();
   const cache = {
-    get: jest.fn(async (key: string) => cacheMap.get(key)),
+    get: jest.fn(async (key: string) => cacheMap.get(key) ?? null),
+    getDel: jest.fn(async (key: string) => {
+      const value = cacheMap.get(key) ?? null;
+      cacheMap.delete(key);
+      return value;
+    }),
     set: jest.fn(async (key: string, val: any) => cacheMap.set(key, val)),
     del: jest.fn(async (key: string) => cacheMap.delete(key)),
   };
@@ -60,6 +65,7 @@ describe('AuthService', () => {
     );
 
   beforeEach(() => {
+    cacheMap.clear();
     jest.clearAllMocks();
     jwt.decode.mockReturnValue({
       sub: 'user-1',
@@ -306,5 +312,29 @@ describe('AuthService', () => {
     expect(prisma.user.upsert).not.toHaveBeenCalled();
     expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
     expect(refreshTokens.revokeUserFamilies).toHaveBeenCalledWith('restricted-user');
+  });
+
+  it('allows only one of two parallel login nonce exchanges', async () => {
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+    const user = {
+      id: 'user-1',
+      stellarAddress,
+      googleId: null,
+      role: 'STUDENT',
+    };
+    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.upsert.mockResolvedValue(user);
+
+    const service = buildService();
+    const nonce = await service.generateNonce(stellarAddress);
+    const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
+
+    const results = await Promise.allSettled([
+      service.login({ stellarAddress, signedNonce: nonce, signature }),
+      service.login({ stellarAddress, signedNonce: nonce, signature }),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
   });
 });
