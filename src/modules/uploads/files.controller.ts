@@ -18,8 +18,9 @@ import { UploadsService } from './uploads.service';
  * Serves stored uploads (issue #282).
  *
  * Public files are streamed directly. Files under private folders (kyc/,
- * certificates/) require a valid, unexpired `expires` + `signature` pair as
- * issued by CdnService for private assets.
+ * certificates/, and lesson media under courses/<id>/lessons/ — issue #335)
+ * require a valid, unexpired `expires` + `signature` pair as issued by
+ * CdnService for private assets.
  *
  * Registered after UploadsController so its specific GET routes
  * (video-jobs/:jobId, scans/:fileId) take precedence over this wildcard.

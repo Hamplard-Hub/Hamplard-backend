@@ -10,9 +10,10 @@ import { CourseAutosaveService } from './course-autosave.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { FeeCalculatorModule } from '../billing/fee-calculator.module';
 import { SearchModule } from '../search/search.module';
+import { UploadsModule } from '../uploads/uploads.module';
 
 @Module({
-  imports: [NotificationsModule, FeeCalculatorModule, SearchModule],
+  imports: [NotificationsModule, FeeCalculatorModule, SearchModule, UploadsModule],
   controllers: [SearchController, CourseAutosaveController, CoursesController, RecommendationsController],
   providers: [CoursesService, CourseAutosaveService, RecommendationsService, SearchService],
   exports: [CoursesService, CourseAutosaveService, RecommendationsService, SearchService],

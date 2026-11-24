@@ -58,6 +58,21 @@ const DEFAULT_MAX_FILE_SIZE_MB = 500;
 /** Top-level storage folders that are never served without a valid signature */
 export const PRIVATE_UPLOAD_FOLDERS = ['kyc', 'certificates'];
 
+/**
+ * Lesson media (videos, transcodes) lives under courses/<courseId>/lessons/
+ * and is paid content, so it is private too — served only through
+ * short-lived signed URLs issued after enrollment / drip checks (issue #335).
+ */
+const PRIVATE_LESSON_MEDIA_PATTERN = /^courses\/[^/]+\/lessons\//;
+
+/** Whether a path relative to the upload dir must only be served when signed. */
+export function isPrivateUploadPath(relativePath: string): boolean {
+  return (
+    PRIVATE_UPLOAD_FOLDERS.includes(relativePath.split('/')[0])
+    || PRIVATE_LESSON_MEDIA_PATTERN.test(relativePath)
+  );
+}
+
 export interface StoredFileInfo {
   absolutePath: string;
   /** Path relative to the upload dir, using forward slashes */
@@ -233,7 +248,7 @@ export class UploadsService {
     return {
       originPath: `/uploads/${relativePath}`,
       relativePath,
-      isPrivate: PRIVATE_UPLOAD_FOLDERS.includes(relativePath.split('/')[0]),
+      isPrivate: isPrivateUploadPath(relativePath),
     };
   }
 
@@ -285,6 +300,8 @@ export class UploadsService {
       thumbnailAtSecs,
     );
 
+    // Stored as an origin path only — lesson media is private (issue #335), so
+    // students get a short-lived signed URL from GET /lessons/:id instead.
     const originUrl = `/uploads/${subfolder}/${filename}`;
     return { jobId, originUrl, thumbnail };
   }
