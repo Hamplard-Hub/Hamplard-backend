@@ -4,10 +4,14 @@ import { UserRole } from '@prisma/client';
 import { LessonsService } from './lessons.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { DripScheduleService } from './drip-schedule.service';
 
 describe('LessonsService (Ownership & IDOR Protection)', () => {
   let service: LessonsService;
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
+  const mockDripSchedule = {
+    isLessonUnlocked: jest.fn(),
+  };
 
   const mockPrisma = {
     course: {
@@ -41,6 +45,7 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         LessonsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: AnalyticsService, useValue: mockAnalytics },
+        { provide: DripScheduleService, useValue: mockDripSchedule },
       ],
     }).compile();
 
@@ -229,6 +234,8 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         .mockResolvedValueOnce({
           id: 'enrollment-1',
           studentId: 'student-1',
+          courseId: 'course-1',
+          status: 'ACTIVE',
           course: {
             modules: [
               {
@@ -240,15 +247,11 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         .mockResolvedValueOnce({
           id: 'enrollment-1',
           studentId: 'student-1',
-          course: {
-            modules: [
-              {
-                lessons: [{ id: 'lesson-1' }, { id: 'lesson-2' }],
-              },
-            ],
-          },
+          status: 'ACTIVE',
         });
 
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
+      mockPrisma.lessonProgress.findUnique.mockResolvedValue(null);
       mockPrisma.lessonProgress.upsert.mockResolvedValue({
         id: 'lp-1',
         enrollmentId: 'enrollment-1',
@@ -300,11 +303,18 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
     });
 
     it('successfully updates watch progress when called by owner student', async () => {
-      mockPrisma.enrollment.findUnique.mockResolvedValue({
-        id: 'enrollment-1',
-        studentId: 'student-1',
-        course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
-      });
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
 
       mockPrisma.lessonProgress.upsert.mockResolvedValue({
         id: 'lp-1',
@@ -326,6 +336,197 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         create: { enrollmentId: 'enrollment-1', lessonId: 'lesson-1', watchedSecs: 45 },
         update: { watchedSecs: 45 },
       });
+    });
+  });
+
+  // ========================================================================
+  // ISSUE #437: Drip-locked lessons and enrollment status validation
+  // ========================================================================
+
+  describe('markLessonComplete() drip-lock protection', () => {
+    it('throws ForbiddenException if lesson is locked by drip schedule', async () => {
+      mockPrisma.enrollment.findUnique.mockResolvedValue({
+        id: 'enrollment-1',
+        studentId: 'student-1',
+        status: 'ACTIVE',
+        course: { modules: [{ lessons: [{ id: 'lesson-2' }] }] },
+      });
+
+      // Lesson is locked by drip schedule
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(false);
+
+      await expect(
+        service.markLessonComplete('student-1', 'enrollment-1', 'lesson-2', 300),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(mockDripSchedule.isLessonUnlocked).toHaveBeenCalledWith(
+        'enrollment-1',
+        'lesson-2',
+      );
+    });
+
+    it('rejects marking complete on refunded enrollment', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'REFUNDED',
+          course: {
+            modules: [{ lessons: [{ id: 'lesson-1' }] }],
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'REFUNDED',
+        });
+
+      await expect(
+        service.markLessonComplete('student-1', 'enrollment-1', 'lesson-1', 300),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects marking complete on completed enrollment', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'COMPLETED',
+          course: {
+            modules: [{ lessons: [{ id: 'lesson-1' }] }],
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'COMPLETED',
+        });
+
+      await expect(
+        service.markLessonComplete('student-1', 'enrollment-1', 'lesson-1', 300),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('allows marking complete when enrollment is ACTIVE and lesson is unlocked', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          courseId: 'course-1',
+          status: 'ACTIVE',
+          course: {
+            modules: [
+              {
+                lessons: [{ id: 'lesson-1' }, { id: 'lesson-2' }],
+              },
+            ],
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
+
+      mockPrisma.lessonProgress.findUnique.mockResolvedValue(null);
+      mockPrisma.lessonProgress.upsert.mockResolvedValue({
+        id: 'lp-1',
+        enrollmentId: 'enrollment-1',
+        lessonId: 'lesson-1',
+        completed: true,
+        watchedSecs: 300,
+      });
+      mockPrisma.lessonProgress.count.mockResolvedValue(1);
+      mockPrisma.enrollment.update.mockResolvedValue({});
+
+      const result = await service.markLessonComplete(
+        'student-1',
+        'enrollment-1',
+        'lesson-1',
+        300,
+      );
+
+      expect(result.completed).toBe(true);
+      expect(mockDripSchedule.isLessonUnlocked).toHaveBeenCalledWith(
+        'enrollment-1',
+        'lesson-1',
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalled();
+    });
+  });
+
+  describe('updateWatchProgress() drip-lock protection', () => {
+    it('throws ForbiddenException if lesson is locked by drip schedule', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-2' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(false);
+
+      await expect(
+        service.updateWatchProgress('student-1', 'enrollment-1', 'lesson-2', 45),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects watch progress on refunded enrollment', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'REFUNDED',
+        });
+
+      await expect(
+        service.updateWatchProgress('student-1', 'enrollment-1', 'lesson-1', 45),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('allows watch progress when enrollment is ACTIVE and lesson is unlocked', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
+
+      mockPrisma.lessonProgress.upsert.mockResolvedValue({
+        id: 'lp-1',
+        enrollmentId: 'enrollment-1',
+        lessonId: 'lesson-1',
+        watchedSecs: 45,
+      });
+
+      const result = await service.updateWatchProgress(
+        'student-1',
+        'enrollment-1',
+        'lesson-1',
+        45,
+      );
+
+      expect(result.watchedSecs).toBe(45);
+      expect(mockDripSchedule.isLessonUnlocked).toHaveBeenCalledWith(
+        'enrollment-1',
+        'lesson-1',
+      );
     });
   });
 });
