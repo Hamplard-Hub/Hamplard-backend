@@ -1,5 +1,5 @@
 // auth.service.ts
-import { Injectable, UnauthorizedException, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -41,7 +41,7 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenService,
     private readonly twoFactor: TwoFactorService,
     private readonly cache: CacheService,
-  ) {}
+  ) { }
 
   // ------------------------------------------------------------------
   // NONCE GENERATION
@@ -186,7 +186,21 @@ export class AuthService {
       throw new UnauthorizedException('Account has been deleted');
     }
 
-    // ---- 6b. Validate 2FA code when the account has it enabled ----
+    // ---- 6b. Reject banned or suspended users before 2FA or token issuance ----
+    if (existing?.isBanned) {
+      await this.refreshTokens.revokeUserFamilies(existing.id);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (existing?.isSuspended) {
+      const suspendedUntil = existing.suspendedUntil ? new Date(existing.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.refreshTokens.revokeUserFamilies(existing.id);
+        throw new ForbiddenException('User is suspended');
+      }
+    }
+
+    // ---- 6c. Validate 2FA code when the account has it enabled ----
     if (existing?.twoFactorEnabled) {
       if (!totpCode) {
         throw new UnauthorizedException('Two-factor authentication code required');

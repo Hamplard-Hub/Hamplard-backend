@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomUUID } from 'crypto';
@@ -148,6 +148,19 @@ export class RefreshTokenService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
+    if (user.isBanned) {
+      await this.revokeFamily(record.familyId);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (user.isSuspended) {
+      const suspendedUntil = user.suspendedUntil ? new Date(user.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.revokeFamily(record.familyId);
+        throw new ForbiddenException('User is suspended');
+      }
+    }
+
     const consumed = await this.prisma.refreshToken.updateMany({
       where: { id: record.id, consumedAt: null, revokedAt: null },
       data: { consumedAt: new Date() },
@@ -165,6 +178,13 @@ export class RefreshTokenService {
   async revokeFamily(familyId: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  async revokeUserFamilies(userId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
   }
