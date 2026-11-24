@@ -1,6 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
-import { InjectRedis } from '@nestjs-modules/ioredis';
 
 /**
  * Distributed Lock Service (issue #310)
@@ -33,7 +32,7 @@ export class DistributedLockService {
   private readonly lockValuePrefix = 'instance:';
 
   constructor(
-    @InjectRedis() private readonly redis: Redis,
+    @Inject('default_IORedisModuleKey') private readonly redis: Redis,
   ) {}
 
   /**
@@ -56,7 +55,7 @@ export class DistributedLockService {
 
     try {
       // Redis SET NX PX: set key only if it doesn't exist, with TTL
-      const result = await this.redis.set(key, value, 'NX', 'PX', ttlMs);
+      const result = await (this.redis.set as any)(key, value, 'NX', 'PX', ttlMs);
       const acquired = result === 'OK';
 
       if (acquired) {

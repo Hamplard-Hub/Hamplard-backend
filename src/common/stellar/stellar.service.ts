@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Networks,
-  SorobanRpc,
+  rpc,
   Contract,
   TransactionBuilder,
   BASE_FEE,
@@ -31,7 +31,7 @@ export const CONTRACT_EVENT_PAGE_LIMIT = 100;
 export class StellarService implements OnModuleInit {
   private readonly logger = new Logger(StellarService.name);
 
-  private rpcClient: SorobanRpc.Server;
+  private rpcClient: rpc.Server;
   private networkPassphrase: string;
   private contractId: string;
 
@@ -41,7 +41,7 @@ export class StellarService implements OnModuleInit {
     const rpcUrl     = this.config.get<string>('STELLAR_RPC_URL');
     const networkName = this.config.get<string>('STELLAR_NETWORK', 'testnet');
 
-    this.rpcClient = new SorobanRpc.Server(rpcUrl, { allowHttp: true });
+    this.rpcClient = new rpc.Server(rpcUrl, { allowHttp: true });
     this.contractId = this.config.get<string>('HAMPLARD_CONTRACT_ID');
     this.networkPassphrase =
       networkName === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
@@ -54,7 +54,7 @@ export class StellarService implements OnModuleInit {
   // RPC ACCESS
   // ----------------------------------------------------------
 
-  getClient(): SorobanRpc.Server      { return this.rpcClient; }
+  getClient(): rpc.Server      { return this.rpcClient; }
   getNetworkPassphrase(): string       { return this.networkPassphrase; }
   getContractId(): string              { return this.contractId; }
 
@@ -71,7 +71,7 @@ export class StellarService implements OnModuleInit {
   async fetchContractEvents(
     startLedger: number,
     cursor?: string,
-  ): Promise<SorobanRpc.Api.GetEventsResponse> {
+  ): Promise<rpc.Api.GetEventsResponse> {
     try {
       return await this.rpcClient.getEvents({
         ...(cursor ? { cursor } : { startLedger }),
@@ -116,10 +116,10 @@ export class StellarService implements OnModuleInit {
         .build();
 
       const simulation = await this.rpcClient.simulateTransaction(tx);
-      if (SorobanRpc.Api.isSimulationError(simulation)) {
+      if (rpc.Api.isSimulationError(simulation)) {
         throw new Error(`Simulation error: ${simulation.error}`);
       }
-      if (SorobanRpc.Api.isSimulationSuccess(simulation) && simulation.result) {
+      if (rpc.Api.isSimulationSuccess(simulation) && simulation.result) {
         return scValToNative(simulation.result.retval);
       }
       return null;
@@ -176,7 +176,7 @@ export class StellarService implements OnModuleInit {
       const result = await this.rpcClient.getTransaction(txHash);
       return {
         status: result.status,
-        successful: result.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS,
+        successful: result.status === rpc.Api.GetTransactionStatus.SUCCESS,
       };
     } catch (error) {
       // NOT_FOUND means the hash doesn't exist in the ledger
@@ -219,7 +219,7 @@ export class StellarService implements OnModuleInit {
       const result = await this.rpcClient.getTransaction(txHash);
 
       // 1. Tx must have succeeded
-      if (result.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
         this.logger.warn(`Enrollment tx ${txHash} status: ${result.status}`);
         throw new Error(`Transaction did not succeed (status: ${result.status})`);
       }
