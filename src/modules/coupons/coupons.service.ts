@@ -336,6 +336,12 @@ export class CouponsService {
           data: { couponId: coupon.id, userId, courseId, discount: discountAmount },
         });
 
+        // Issue #332: record the discount source on the enrollment snapshot.
+        await tx.enrollment.update({
+          where: { id: enrollment.id },
+          data: { discountSource: 'COUPON', discountAmount },
+        });
+
         return {
           ...redemption,
           enrollmentId: enrollment.id,

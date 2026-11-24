@@ -7,6 +7,7 @@ import { CoursesService, CourseActor } from './courses.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
+import { ChangeCourseStatusDto } from './dto/change-course-status.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -110,6 +111,26 @@ export class CoursesController {
     @Body() body: { txHash?: string },
   ) {
     return this.coursesService.submitForReview(id, user, body.txHash);
+  }
+
+  @Patch(':id/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Pause, republish or archive a course (owner or admin)',
+    description:
+      'PAUSED/ARCHIVED courses are removed from the catalog and search but stay ' +
+      'accessible to already-enrolled students. Only admins may restore an ARCHIVED ' +
+      'course (to PAUSED) or republish a course that was never approved.',
+  })
+  changeStatus(
+    @Param('id') id: string,
+    @CurrentUser() user: CourseActor,
+    @Body() dto: ChangeCourseStatusDto,
+  ) {
+    return this.coursesService.changeStatus(id, user, dto.status, dto.reason);
   }
 
   // --------------------------------------------------------

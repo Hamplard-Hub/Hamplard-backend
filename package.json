@@ -11,11 +11,13 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --no-error-on-unmatched-pattern",
+    "lint:fix": "eslint \"{src,apps,libs,test}/**/*.ts\" --no-error-on-unmatched-pattern --fix",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1098.0",

@@ -618,6 +618,13 @@ model Enrollment {
   courseId        String
   amountPaid      Decimal          // USDC paid
   platformFeePercent Int           @default(20) // Fee snapshot at enrollment time
+  // Pricing snapshot captured when the enrollment is verified (#332) so
+  // reports and payouts never change retroactively with course edits.
+  listPrice         Decimal?       // course list price at purchase
+  platformFeeAmount Decimal?       // platform fee in USDC at purchase
+  taxAmount         Decimal        @default(0) // tax portion of amountPaid
+  discountAmount    Decimal        @default(0) // listPrice - (amountPaid - taxAmount), never negative
+  discountSource    String?        // COUPON | REFERRAL | BUNDLE | null
   txHash          String?          // on-chain enrollment tx
   status          EnrollmentStatus @default(ACTIVE)
   progressPercent Int              @default(0)  // 0-100

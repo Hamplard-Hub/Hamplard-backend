@@ -12,6 +12,7 @@ import { DripScheduleService } from '../lessons/drip-schedule.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
+import { buildPricingSnapshot } from './pricing-snapshot';
 
 @Injectable()
 export class EnrollmentsService {
@@ -99,7 +100,7 @@ export class EnrollmentsService {
             courseId,
             txHash,
             amountPaid: new Prisma.Decimal(verifiedAmountPaid),
-            platformFeePercent: course.platformFeePercent,
+            ...buildPricingSnapshot(course, verifiedAmountPaid),
           },
           include: { course: true, student: true },
         });
@@ -123,24 +124,14 @@ export class EnrollmentsService {
       throw error;
     }
 
-    await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, verifiedAmountPaid);
-    // Update course stats
-    await this.prisma.course.update({
-      where: { id: courseId },
-      data: {
-        totalEnrollments: { increment: 1 },
-        totalRevenue: { increment: new Prisma.Decimal(amountPaid) },
-      },
-    });
-
     await this.analytics.trackEvent(
       {
         eventType: SERVER_ANALYTICS_EVENTS.ENROLLMENT_CREATED,
-        properties: { enrollmentId: enrollment.id, courseId, amountPaid },
+        properties: { enrollmentId: enrollment.id, courseId, amountPaid: verifiedAmountPaid },
       },
       { userId: studentId, source: 'server' },
     );
-    await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, amountPaid);
+    await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, verifiedAmountPaid);
 
     this.logger.log(`Enrollment created: ${studentId} → ${courseId} (payment ${txHash})`);
     return enrollment;
