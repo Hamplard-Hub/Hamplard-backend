@@ -9,6 +9,17 @@ import { KycStatus, NotificationType, AuditAction, AuditTargetType } from '@pris
 import { SubmitKycDto } from './dto/submit-kyc.dto';
 import { ReviewKycDto } from './dto/review-kyc.dto';
 
+/**
+ * Issue #442 — lifetime of the signed URLs handed to admins reviewing KYC
+ * documents. Deliberately much shorter than the CDN default
+ * (CDN_SIGNED_URL_TTL_SECONDS, 1h): long enough to open the files during a
+ * review, short enough that a leaked link to an identity document dies fast.
+ * Reloading the review screen issues fresh URLs.
+ */
+export const KYC_REVIEW_URL_TTL_SECONDS = 15 * 60;
+
+type StoredKycPaths = { id: string; documentUrl: string; additionalUrl: string | null };
+
 @Injectable()
 export class KycService {
   private readonly logger = new Logger(KycService.name);
@@ -105,8 +116,8 @@ export class KycService {
     };
   }
 
-  /** Admin: list all KYC submissions */
-  async findAll(page = 1, limit = 20, status?: KycStatus) {
+  /** Admin: list all KYC submissions, with short-lived signed document URLs. */
+  async findAll(adminId: string, page = 1, limit = 20, status?: KycStatus) {
     const where: any = {};
     if (status) where.status = status;
 
@@ -124,10 +135,25 @@ export class KycService {
       this.prisma.kycSubmission.count({ where }),
     ]);
 
-    return { data: submissions, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
+    const data = submissions.map((submission) => this.withSignedDocumentUrls(submission));
+    this.logDocumentAccess(adminId, data);
+
+    return { data, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
   }
 
-  async findOne(id: string) {
+  /** Admin: single KYC submission, with short-lived signed document URLs. */
+  async findOne(id: string, adminId: string) {
+    const submission = await this.findSubmissionOrThrow(id);
+    const signed = this.withSignedDocumentUrls(submission);
+    this.logDocumentAccess(adminId, [signed]);
+    return signed;
+  }
+
+  /**
+   * Internal lookup used by review/revoke. Returns the stored record as-is
+   * (raw origin paths) and never signs URLs.
+   */
+  private async findSubmissionOrThrow(id: string) {
     const submission = await this.prisma.kycSubmission.findUnique({
       where: { id },
       include: {
@@ -139,12 +165,53 @@ export class KycService {
     return submission;
   }
 
+  /**
+   * Replaces the stored private origin paths with signed, short-lived CDN URLs
+   * in the *response only* (same shape as submit()). The database keeps the
+   * stable origin paths; signed URLs are never persisted.
+   */
+  private withSignedDocumentUrls<T extends StoredKycPaths>(submission: T) {
+    const document = this.uploads.getDeliveryUrls(
+      submission.documentUrl,
+      'private',
+      KYC_REVIEW_URL_TTL_SECONDS,
+    );
+    const additional = submission.additionalUrl
+      ? this.uploads.getDeliveryUrls(submission.additionalUrl, 'private', KYC_REVIEW_URL_TTL_SECONDS)
+      : null;
+
+    return {
+      ...submission,
+      documentUrl: document.cdnUrl,
+      documentDelivery: document,
+      additionalUrl: additional?.cdnUrl ?? null,
+      additionalDelivery: additional,
+    };
+  }
+
+  /**
+   * Access trail for signed KYC document URLs. Logs who received links to
+   * which submissions and when they expire — never the URLs, signatures or
+   * file paths themselves.
+   */
+  private logDocumentAccess(
+    adminId: string,
+    submissions: Array<{ id: string; documentDelivery: { expiresAt?: string } }>,
+  ): void {
+    if (!submissions.length) return;
+    this.logger.log(
+      `KYC document URLs signed for admin ${adminId}: submissions [${submissions
+        .map((s) => s.id)
+        .join(', ')}] (ttl ${KYC_REVIEW_URL_TTL_SECONDS}s, expires ${submissions[0].documentDelivery.expiresAt})`,
+    );
+  }
+
   // ----------------------------------------------------------
   // ADMIN REVIEW
   // ----------------------------------------------------------
 
   async review(id: string, adminId: string, dto: ReviewKycDto, ipAddress?: string) {
-    const submission = await this.findOne(id);
+    const submission = await this.findSubmissionOrThrow(id);
 
     const acceptedReviewStatuses: KycStatus[] = [
       KycStatus.PENDING,
@@ -225,7 +292,7 @@ export class KycService {
 
   /** Admin: revoke an instructor's existing approval and block future payouts. */
   async revoke(id: string, adminId: string, adminNotes?: string, ipAddress?: string) {
-    const submission = await this.findOne(id);
+    const submission = await this.findSubmissionOrThrow(id);
     if (submission.status !== KycStatus.APPROVED) {
       throw new BadRequestException('Only an approved KYC submission can be revoked');
     }

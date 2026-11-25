@@ -312,8 +312,9 @@ export class UploadsService {
   getDeliveryUrls(
     originPath: string,
     visibility: CdnAssetVisibility = 'public',
+    expiresInSeconds?: number,
   ): UploadResult {
-    return this.toUploadResult(originPath, visibility);
+    return this.toUploadResult(originPath, visibility, expiresInSeconds);
   }
 
   // ----------------------------------------------------------
@@ -323,8 +324,10 @@ export class UploadsService {
   private toUploadResult(
     originPath: string,
     visibility: CdnAssetVisibility,
+    expiresInSeconds?: number,
   ): UploadResult {
-    const delivery = this.cdn.attachCdnUrls(originPath, { visibility });
+    // expiresInSeconds only applies to private assets; undefined → CDN default TTL.
+    const delivery = this.cdn.attachCdnUrls(originPath, { visibility, expiresInSeconds });
     return {
       ...delivery,
       url: delivery.cdnUrl,
