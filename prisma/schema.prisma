@@ -375,6 +375,8 @@ model RefreshToken {
 
   @@index([familyId])
   @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
   @@map("refresh_tokens")
 }
 
@@ -422,6 +424,8 @@ model Session {
   @@index([userId])
   @@index([familyId])
   @@index([refreshFamilyId])
+  @@index([expiresAt])
+  @@index([revokedAt])
   @@map("sessions")
 }
 
