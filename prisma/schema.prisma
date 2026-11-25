@@ -277,6 +277,8 @@ model User {
   avatarUrl      String?
   role           UserRole  @default(STUDENT)
   isVerified     Boolean   @default(false)
+  // Partial uniqueness for active verified accounts is enforced by the
+  // users_active_verified_phone_key SQL migration (not expressible in Prisma 5).
   phoneNumber    String?
   phoneCountryCode String?
   isPhoneVerified Boolean  @default(false)
