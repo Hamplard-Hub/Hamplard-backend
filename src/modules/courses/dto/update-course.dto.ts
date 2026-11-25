@@ -1,4 +1,5 @@
-import { IsString, IsOptional, IsNumber, Min } from 'class-validator';
+import { IsString, IsOptional, IsNumber, Min, IsUrl } from 'class-validator';
+import { getUrlValidationOptions } from '../../../common/validators/url-validation';
 
 export class UpdateCourseDto {
   @IsOptional() @IsString() title?: string;
@@ -6,7 +7,7 @@ export class UpdateCourseDto {
   @IsOptional() @IsString() category?: string;
   @IsOptional() @IsString() level?: string;
   @IsOptional() @IsString() language?: string;
-  @IsOptional() @IsString() thumbnailUrl?: string;
-  @IsOptional() @IsString() previewVideoUrl?: string;
+  @IsOptional() @IsUrl(getUrlValidationOptions()) thumbnailUrl?: string;
+  @IsOptional() @IsUrl(getUrlValidationOptions()) previewVideoUrl?: string;
   @IsOptional() @IsNumber() @Min(0) price?: number;
 }
