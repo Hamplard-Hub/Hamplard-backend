@@ -15,7 +15,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "search:reindex": "ts-node -r tsconfig-paths/register src/scripts/reindex-search.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1098.0",

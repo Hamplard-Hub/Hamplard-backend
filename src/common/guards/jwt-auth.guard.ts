@@ -40,27 +40,29 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
             }
         }
 
-        // Issue #69 — reject requests carrying a revoked/expired session token.
-        // Tokens issued before session tracking existed carry no `jti` and are let through.
-        if (user.jti) {
-            const session = await this.prisma.session.findUnique({
-                where: { jti: user.jti },
-                select: { revokedAt: true, expiresAt: true },
-            });
-
-            if (session) {
-                if (session.revokedAt) {
-                    throw new UnauthorizedException('Session has been revoked');
-                }
-                if (session.expiresAt <= new Date()) {
-                    throw new UnauthorizedException('Session has expired');
-                }
-
-                this.prisma.session
-                    .update({ where: { jti: user.jti }, data: { lastActiveAt: new Date() } })
-                    .catch(() => undefined);
-            }
+        // Issue #69 / #417 — reject requests without a jti or with a missing/revoked/expired session.
+        if (!user.jti) {
+            throw new UnauthorizedException('Session token missing jti');
         }
+
+        const session = await this.prisma.session.findUnique({
+            where: { jti: user.jti },
+            select: { revokedAt: true, expiresAt: true },
+        });
+
+        if (!session) {
+            throw new UnauthorizedException('Session not found');
+        }
+        if (session.revokedAt) {
+            throw new UnauthorizedException('Session has been revoked');
+        }
+        if (session.expiresAt <= new Date()) {
+            throw new UnauthorizedException('Session has expired');
+        }
+
+        this.prisma.session
+            .update({ where: { jti: user.jti }, data: { lastActiveAt: new Date() } })
+            .catch(() => undefined);
 
         return true;
     }
