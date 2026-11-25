@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { Keypair } from '@stellar/stellar-sdk';
 import { AuthService } from './auth.service';
 
@@ -32,6 +32,7 @@ describe('AuthService', () => {
       accessToken: 'access-jwt-2',
       refreshToken: 'refresh-jwt-2',
     }),
+    revokeUserFamilies: jest.fn().mockResolvedValue(undefined),
   };
 
   const twoFactor = {
@@ -41,7 +42,12 @@ describe('AuthService', () => {
   const config = { get: jest.fn(() => null) };
   const cacheMap = new Map<string, any>();
   const cache = {
-    get: jest.fn(async (key: string) => cacheMap.get(key)),
+    get: jest.fn(async (key: string) => cacheMap.get(key) ?? null),
+    getDel: jest.fn(async (key: string) => {
+      const value = cacheMap.get(key) ?? null;
+      cacheMap.delete(key);
+      return value;
+    }),
     set: jest.fn(async (key: string, val: any) => cacheMap.set(key, val)),
     del: jest.fn(async (key: string) => cacheMap.delete(key)),
   };
@@ -59,6 +65,7 @@ describe('AuthService', () => {
     );
 
   beforeEach(() => {
+    cacheMap.clear();
     jest.clearAllMocks();
     jwt.decode.mockReturnValue({
       sub: 'user-1',
@@ -286,5 +293,48 @@ describe('AuthService', () => {
       expect(result.user).toMatchObject({ id: 'user-2fa', twoFactorEnabled: true });
       expect(JSON.stringify(result)).not.toContain('JBSWY3DPEHPK3PXP');
     });
+  });
+
+  it.each([
+    ['banned', { isBanned: true, isSuspended: false, suspendedUntil: null }, 'User is banned'],
+    ['currently suspended', { isBanned: false, isSuspended: true, suspendedUntil: new Date(Date.now() + 60_000) }, 'User is suspended'],
+  ])('rejects %s users with 403 and issues no tokens', async (_label, restriction, message) => {
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+    prisma.user.findUnique.mockResolvedValue({ id: 'restricted-user', stellarAddress, ...restriction });
+
+    const service = buildService();
+    const nonce = await service.generateNonce(stellarAddress);
+    const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
+
+    await expect(service.login({ stellarAddress, signedNonce: nonce, signature }))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.user.upsert).not.toHaveBeenCalled();
+    expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
+    expect(refreshTokens.revokeUserFamilies).toHaveBeenCalledWith('restricted-user');
+  });
+
+  it('allows only one of two parallel login nonce exchanges', async () => {
+    const keypair = Keypair.random();
+    const stellarAddress = keypair.publicKey();
+    const user = {
+      id: 'user-1',
+      stellarAddress,
+      googleId: null,
+      role: 'STUDENT',
+    };
+    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.upsert.mockResolvedValue(user);
+
+    const service = buildService();
+    const nonce = await service.generateNonce(stellarAddress);
+    const signature = keypair.sign(Buffer.from(nonce, 'utf-8')).toString('base64');
+
+    const results = await Promise.allSettled([
+      service.login({ stellarAddress, signedNonce: nonce, signature }),
+      service.login({ stellarAddress, signedNonce: nonce, signature }),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
   });
 });

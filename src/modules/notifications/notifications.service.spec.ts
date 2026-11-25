@@ -39,6 +39,7 @@ describe('NotificationsService', () => {
     },
     user: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -165,6 +166,54 @@ describe('NotificationsService', () => {
       await service.notifyUser('user-1', NotificationType.COURSE_APPROVED, 'T', 'M');
 
       expect(mockPrisma.notification.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('notifyAdmins (issue #338)', () => {
+    it('creates a notification for every active admin', async () => {
+      mockPrisma.user.findMany.mockResolvedValue([{ id: 'admin-1' }, { id: 'admin-2' }]);
+      mockPrisma.notificationPreference.findMany.mockResolvedValue([]);
+      mockPrisma.notificationPreference.findUnique.mockResolvedValue(null);
+
+      const results = await service.notifyAdmins(
+        NotificationType.DISPUTE_FILED,
+        'New dispute filed',
+        'A student filed a dispute',
+        { disputeId: 'dispute-1' },
+      );
+
+      expect(results).toHaveLength(2);
+      expect(mockPrisma.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ role: 'ADMIN' }) }),
+      );
+      for (const userId of ['admin-1', 'admin-2']) {
+        expect(mockPrisma.notification.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({ userId, type: NotificationType.DISPUTE_FILED }),
+        });
+      }
+    });
+
+    it('skips admins who disabled every channel for the type', async () => {
+      mockPrisma.user.findMany.mockResolvedValue([{ id: 'admin-1' }, { id: 'admin-2' }]);
+      mockPrisma.notificationPreference.findMany.mockResolvedValue([{ userId: 'admin-2' }]);
+      mockPrisma.notificationPreference.findUnique.mockResolvedValue(null);
+
+      const results = await service.notifyAdmins(NotificationType.KYC_SUBMITTED, 'T', 'M');
+
+      expect(results).toHaveLength(1);
+      expect(mockPrisma.notification.create).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.notification.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ userId: 'admin-1' }),
+      });
+    });
+
+    it('never throws when the admin lookup fails', async () => {
+      mockPrisma.user.findMany.mockRejectedValue(new Error('db down'));
+
+      await expect(
+        service.notifyAdmins(NotificationType.REFUND_REQUESTED, 'T', 'M'),
+      ).resolves.toEqual([]);
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
     });
   });
 

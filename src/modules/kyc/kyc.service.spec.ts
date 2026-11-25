@@ -39,6 +39,7 @@ describe("KycService verification revocation", () => {
         findUnique: jest.fn().mockResolvedValue(approvedSubmission),
         findFirst: jest.fn(),
       },
+      adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
       $transaction: jest.fn((callback) => callback(transaction)),
     };
     notifications = { notifyUser: jest.fn().mockResolvedValue(undefined) };

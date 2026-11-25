@@ -5,11 +5,13 @@ import { LessonsService } from './lessons.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { DripScheduleService } from './drip-schedule.service';
+import { CdnService } from '../uploads/cdn.service';
 
 describe('LessonsService (Ownership & IDOR Protection)', () => {
   let service: LessonsService;
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
   const mockDripSchedule = { resyncCourseSchedules: jest.fn().mockResolvedValue(undefined) };
+  const mockCdn = { signLessonMediaUrl: jest.fn() };
 
   const mockPrisma = {
     course: {
@@ -56,6 +58,7 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: AnalyticsService, useValue: mockAnalytics },
         { provide: DripScheduleService, useValue: mockDripSchedule },
+        { provide: CdnService, useValue: mockCdn },
       ],
     }).compile();
 
@@ -534,6 +537,40 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         data: { position: 0, moduleId: 'mod-2' },
       });
       expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
+
+  /** Issue #335 — students only ever receive short-lived signed video URLs. */
+  describe('findLessonForViewer()', () => {
+    it('replaces the stored videoUrl with a signed URL and its expiry', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1',
+        videoUrl: '/uploads/courses/c1/lessons/lesson-1/video.mp4',
+        module: { course: { id: 'c1' } },
+      });
+      mockCdn.signLessonMediaUrl.mockReturnValue({
+        url: 'https://cdn.hamplard.com/uploads/courses/c1/lessons/lesson-1/video.mp4?expires=1&signature=abc',
+        expiresAt: '2026-11-24T10:05:00.000Z',
+      });
+
+      const lesson = await service.findLessonForViewer('lesson-1');
+
+      expect(mockCdn.signLessonMediaUrl).toHaveBeenCalledWith('/uploads/courses/c1/lessons/lesson-1/video.mp4');
+      expect(lesson.videoUrl).toContain('signature=abc');
+      expect(lesson.videoUrlExpiresAt).toBe('2026-11-24T10:05:00.000Z');
+    });
+
+    it('returns null video fields for lessons without a video', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({ id: 'lesson-2', videoUrl: null, module: {} });
+      mockCdn.signLessonMediaUrl.mockReturnValue(null);
+
+      const lesson = await service.findLessonForViewer('lesson-2');
+
+      expect(lesson.videoUrl).toBeNull();
+      expect(lesson.videoUrlExpiresAt).toBeNull();
+    });
+
+    it('throws NotFoundException for an unknown lesson', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(null);
+      await expect(service.findLessonForViewer('missing')).rejects.toThrow(NotFoundException);
     });
   });
 });

@@ -30,7 +30,7 @@ export class FeeCalculatorService {
   // TAX RATES — admin-configurable, stored in `tax_rates`
   // ----------------------------------------------------------
 
-  private normalizeRegion(region?: string): string {
+  normalizeRegion(region?: string): string {
     return (region?.trim() || DEFAULT_REGION).toUpperCase();
   }
 
@@ -105,7 +105,7 @@ export class FeeCalculatorService {
   }
 
   /** Rounds to 2 decimal places, the smallest unit tracked for USDC amounts. */
-  private round(value: number): number {
+  round(value: number): number {
     return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 

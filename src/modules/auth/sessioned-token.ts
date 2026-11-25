@@ -31,6 +31,7 @@ export async function trackAccessTokenSession(
   sessions: SessionCreator,
   accessToken: string,
   deviceMeta?: DeviceMetadata,
+  familyId?: string,
 ): Promise<void> {
   const decoded = jwt.decode(accessToken) as DecodedAccessToken | null;
   if (!decoded?.jti || !decoded.sub) return;
@@ -39,12 +40,23 @@ export async function trackAccessTokenSession(
     ? new Date(decoded.exp * 1000)
     : new Date(Date.now() + DEFAULT_SESSION_TTL_MS);
 
-  await sessions.createSession({
+  const sessionParams: {
+    userId: string;
+    jti: string;
+    expiresAt: Date;
+    meta?: DeviceMetadata;
+    familyId?: string;
+  } = {
     userId: decoded.sub,
     jti: decoded.jti,
     expiresAt,
     meta: deviceMeta,
-  });
+  };
+  if (familyId) {
+    sessionParams.familyId = familyId;
+  }
+
+  await sessions.createSession(sessionParams);
 }
 
 /**
@@ -61,6 +73,11 @@ export async function issueSessionedTokenPair(
   deviceMeta?: DeviceMetadata,
 ): Promise<TokenPair> {
   const tokens = await refreshTokens.issueTokenPair(user);
-  await trackAccessTokenSession(jwt, sessions, tokens.accessToken, deviceMeta);
+  let familyId = (tokens as any).familyId;
+  if (!familyId && tokens.refreshToken) {
+    const decodedRefresh = jwt.decode(tokens.refreshToken) as { familyId?: string } | null;
+    familyId = decodedRefresh?.familyId;
+  }
+  await trackAccessTokenSession(jwt, sessions, tokens.accessToken, deviceMeta, familyId);
   return tokens;
 }

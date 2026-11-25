@@ -13,6 +13,7 @@ import { StellarService } from '../../common/stellar/stellar.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 import { buildPricingSnapshot } from './pricing-snapshot';
+import { CheckoutQuoteService } from '../billing/checkout-quote.service';
 
 @Injectable()
 export class EnrollmentsService {
@@ -26,6 +27,7 @@ export class EnrollmentsService {
     private readonly referrals: ReferralsService,
     private readonly stellar: StellarService,
     private readonly analytics: AnalyticsService,
+    private readonly checkoutQuotes: CheckoutQuoteService,
     @Inject(forwardRef(() => DripScheduleService))
     private readonly dripSchedule: DripScheduleService,
   ) {}
@@ -42,12 +44,21 @@ export class EnrollmentsService {
    * - Rejects enrollment in non-ACTIVE courses
    * 
    * Issue #404: Wraps payment, enrollment, and course stats in a transaction
+   *
+   * Issue #333: Requires a checkout quote. The on-chain amount must match the
+   * quote total, and the quote, its coupon and referral reward are consumed in
+   * the same transaction as the enrollment (with a price snapshot for invoices).
    */
   async create(
     studentId: string,
     courseId: string,
     txHash: string,
+    quoteId: string,
   ) {
+    if (!quoteId) {
+      throw new BadRequestException('quoteId is required. Request one from POST /checkout/quote.');
+    }
+
     // ------------------------------------------------------------------
     // PRE-CHECK #0: Verify the course is ACTIVE (issue #239)
     // ------------------------------------------------------------------
@@ -58,10 +69,25 @@ export class EnrollmentsService {
     this.assertCourseActive(course);
 
     // ------------------------------------------------------------------
+    // PRE-CHECK #0A: Checkout quote is the caller's, unexpired, unused and
+    // untampered (issue #333)
+    // ------------------------------------------------------------------
+    const quote = await this.checkoutQuotes.getUsableQuote(quoteId, studentId, courseId);
+
+    // ------------------------------------------------------------------
     // PRE-CHECK #0B/#0C/#403: Verify the tx on-chain comprehensively
     // and get verified amount (not from request body)
     // ------------------------------------------------------------------
-    const verifiedAmountPaid = await this.verifyPaymentTransaction(txHash, studentId, courseId);
+    const verifiedAmountPaid = await this.verifyPaymentTransaction(
+      txHash, studentId, courseId, quote.total,
+    );
+
+    // Issue #333: the paid amount must match the quote exactly (to the cent)
+    if (Math.abs(verifiedAmountPaid - quote.total) >= 0.005) {
+      throw new BadRequestException(
+        `On-chain amount ${verifiedAmountPaid} USDC does not match the checkout quote total of ${quote.total} USDC`,
+      );
+    }
 
     // ------------------------------------------------------------------
     // PRE-CHECK #1: Ensure student is not already enrolled
@@ -77,12 +103,13 @@ export class EnrollmentsService {
     const fraudResult = await this.runPreEnrollmentChecks(studentId, courseId, verifiedAmountPaid);
 
     // ------------------------------------------------------------------
-    // STEP 1-3: Create Payment, Enrollment, and update Course stats atomically
+    // STEP 1-4: Create Payment, Enrollment, consume the quote (+ coupon /
+    // referral reward) and update Course stats atomically
     // (issue #404 — ensure if enrollment fails, payment is also rolled back)
     // ------------------------------------------------------------------
     let enrollment;
     try {
-      const result = await this.prisma.$transaction(async (tx) => {
+      enrollment = await this.prisma.$transaction(async (tx) => {
         // Create Payment record (issue #240 — txHash uniqueness)
         await tx.payment.create({
           data: {
@@ -93,7 +120,7 @@ export class EnrollmentsService {
           },
         });
 
-        // Create enrollment record with fee snapshot
+        // Create enrollment record with fee + price snapshot
         const newEnrollment = await tx.enrollment.create({
           data: {
             studentId,
@@ -101,9 +128,22 @@ export class EnrollmentsService {
             txHash,
             amountPaid: new Prisma.Decimal(verifiedAmountPaid),
             ...buildPricingSnapshot(course, verifiedAmountPaid),
+            platformFeePercent: course.platformFeePercent,
+            listPrice: new Prisma.Decimal(quote.listPrice),
+            couponDiscount: new Prisma.Decimal(quote.coupon?.discountAmount ?? 0),
+            referralDiscount: new Prisma.Decimal(quote.referralReward?.discountAmount ?? 0),
+            taxRegion: quote.taxRegion,
+            taxRatePercent: new Prisma.Decimal(quote.taxRatePercent),
+            taxAmount: new Prisma.Decimal(quote.taxAmount),
+            couponId: quote.coupon?.couponId ?? null,
+            referralRewardId: quote.referralReward?.rewardId ?? null,
+            checkoutQuoteId: quote.quoteId,
           },
           include: { course: true, student: true },
         });
+
+        // Consume the quote and redeem its coupon / referral reward (issue #333)
+        await this.checkoutQuotes.consumeWithinTransaction(tx, quote, studentId, newEnrollment.id);
 
         // Update course stats
         await tx.course.update({
@@ -116,9 +156,20 @@ export class EnrollmentsService {
 
         return newEnrollment;
       });
-      enrollment = result;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const target = String((error.meta as any)?.target ?? '');
+        if (target.includes('couponId')) {
+          throw new ConflictException('You have already used this coupon for this course');
+        }
+        if (target.includes('txHash')) {
+          throw new ConflictException(
+            `Payment ${txHash} has already been used. One transaction maps to one purchase.`,
+          );
+        }
+        if (target.includes('checkoutQuoteId') || target.includes('enrollmentId')) {
+          throw new ConflictException('Checkout quote has already been used');
+        }
         throw new ConflictException('Already enrolled in this course');
       }
       throw error;
@@ -133,7 +184,7 @@ export class EnrollmentsService {
     );
     await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, verifiedAmountPaid);
 
-    this.logger.log(`Enrollment created: ${studentId} → ${courseId} (payment ${txHash})`);
+    this.logger.log(`Enrollment created: ${studentId} → ${courseId} (payment ${txHash}, quote ${quote.quoteId})`);
     return enrollment;
   }
 
@@ -190,7 +241,8 @@ export class EnrollmentsService {
    *  2. Called the enroll method on Hamplard contract
    *  3. Student address matches caller's wallet
    *  4. Course ID matches request
-   *  5. Amount paid >= course price
+   *  5. Amount paid >= expected amount (the checkout quote total when given,
+   *     otherwise the course price)
    *  6. Payment hasn't been used already (issue #240)
    * 
    * Returns the verified amount paid (from on-chain data, not request body).
@@ -199,6 +251,7 @@ export class EnrollmentsService {
     txHash: string,
     studentId: string,
     courseId: string,
+    expectedAmount?: number,
   ): Promise<number> {
     // First check if payment has already been used (issue #240)
     const existingPayment = await this.prisma.payment.findUnique({
@@ -235,7 +288,7 @@ export class EnrollmentsService {
         this.stellar.getContractId(),
         student.stellarAddress,
         courseId,
-        Number(course.price),
+        expectedAmount ?? Number(course.price),
       );
 
       return verified.amountPaid;
@@ -463,7 +516,22 @@ export class EnrollmentsService {
       },
     });
     if (!enrollment) throw new NotFoundException('Enrollment not found');
-    return enrollment;
+
+    // Issue #335: lesson videos are private — students get a short-lived signed
+    // URL from GET /lessons/:id after the drip check, never the stored path.
+    return {
+      ...enrollment,
+      course: {
+        ...enrollment.course,
+        modules: enrollment.course.modules.map((module) => ({
+          ...module,
+          lessons: module.lessons.map(({ videoUrl, ...lesson }) => ({
+            ...lesson,
+            hasVideo: !!videoUrl,
+          })),
+        })),
+      },
+    };
   }
 
   async isEnrolled(studentId: string, courseId: string): Promise<boolean> {

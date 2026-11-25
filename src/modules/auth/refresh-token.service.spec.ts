@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -37,6 +37,9 @@ describe('RefreshTokenService', () => {
 
   const mockPrisma: any = {
     user: { findUnique: jest.fn() },
+    session: {
+      findFirst: jest.fn(),
+    },
     refreshToken: {
       create: jest.fn(),
       findUnique: jest.fn(),
@@ -83,6 +86,7 @@ describe('RefreshTokenService', () => {
 
     service = module.get(RefreshTokenService);
     jest.clearAllMocks();
+    mockPrisma.session.findFirst.mockResolvedValue(null);
 
     mockJwt.sign.mockImplementation((payload: any) => {
       if (payload.typ === 'refresh') return `refresh-${payload.generation}`;
@@ -268,6 +272,24 @@ describe('RefreshTokenService', () => {
       expect(mockPrisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
+    it('rejects refresh when the linked session has been revoked (issue #416)', async () => {
+      mockPrisma.refreshToken.findUnique.mockResolvedValue(activeRecord(1));
+      mockPrisma.session.findFirst.mockResolvedValue({
+        id: 'session-1',
+        familyId: 'family-1',
+        revokedAt: new Date(),
+      });
+
+      await expect(service.rotate('refresh-1')).rejects.toThrow(
+        'Refresh token has been revoked',
+      );
+      expect(mockPrisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { familyId: 'family-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(mockPrisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
     it('rejects an access token presented as a refresh token', async () => {
       mockPrisma.refreshToken.findUnique.mockResolvedValue(null);
       mockJwt.verify.mockReturnValue({
@@ -294,6 +316,21 @@ describe('RefreshTokenService', () => {
         where: { familyId: 'family-1', revokedAt: null },
         data: { revokedAt: expect.any(Date) },
       });
+    });
+
+    it.each([
+      ['banned', { isBanned: true, isSuspended: false, suspendedUntil: null }, 'User is banned'],
+      ['currently suspended', { isBanned: false, isSuspended: true, suspendedUntil: new Date(Date.now() + 60_000) }, 'User is suspended'],
+    ])('refuses rotation for a %s user and revokes its family', async (_label, restriction, message) => {
+      mockPrisma.refreshToken.findUnique.mockResolvedValue(activeRecord(1));
+      mockPrisma.user.findUnique.mockResolvedValue({ ...user, deletedAt: null, ...restriction });
+
+      await expect(service.rotate('refresh-1')).rejects.toBeInstanceOf(ForbiddenException);
+      expect(mockPrisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { familyId: 'family-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(mockPrisma.refreshToken.create).not.toHaveBeenCalled();
     });
   });
 });
