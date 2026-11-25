@@ -125,7 +125,14 @@ export class CoursesService {
 
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.PENDING, txHash: txHash ?? course.txHash },
+      data: {
+        status: CourseStatus.PENDING,
+        txHash: txHash ?? course.txHash,
+        // Issue #444: feedback from a previous rejection must not carry over
+        // into the new review round.
+        rejectionReason: null,
+        rejectedAt: null,
+      },
     });
 
     this.logger.log(`Course ${courseId} submitted for review`);
@@ -152,7 +159,8 @@ export class CoursesService {
 
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.ACTIVE, approvedAt: new Date() },
+      // Rejection feedback is internal to the review loop; never publish it.
+      data: { status: CourseStatus.ACTIVE, approvedAt: new Date(), rejectionReason: null, rejectedAt: null },
     });
 
     // Index the approved course into the search engine
@@ -195,9 +203,11 @@ export class CoursesService {
       throw new ForbiddenException('Only PENDING courses can be rejected');
     }
 
+    // Issue #444: persist the feedback so the instructor can still read it in
+    // the course detail after the notification is gone.
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.DRAFT },
+      data: { status: CourseStatus.DRAFT, rejectionReason: reason, rejectedAt: new Date() },
     });
 
     const instructor = await this.prisma.user.findUnique({
@@ -506,7 +516,7 @@ export class CoursesService {
   async approveCourse(courseId: string): Promise<boolean> {
     const { count } = await this.prisma.course.updateMany({
       where: { id: courseId },
-      data: { status: CourseStatus.ACTIVE, approvedAt: new Date() },
+      data: { status: CourseStatus.ACTIVE, approvedAt: new Date(), rejectionReason: null, rejectedAt: null },
     });
     if (!count) {
       this.logger.warn(`approveCourse: course ${courseId} not found`);
