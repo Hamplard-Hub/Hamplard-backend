@@ -406,6 +406,14 @@ export class UploadsService {
     return detected;
   }
 
+  /**
+   * Get the maximum file size in bytes for Multer's fileSize limit.
+   * This should be set on upload interceptors to prevent buffering oversized files.
+   */
+  getMulterFileSizeLimit(category: UploadCategory): number {
+    return this.getMaxSizeMb(category) * 1024 * 1024;
+  }
+
   private getMaxSizeMb(category: UploadCategory): number {
     const rule = UPLOAD_CATEGORY_RULES[category];
     const globalMaxMb = getNumberConfig(this.config, 'MAX_FILE_SIZE_MB', DEFAULT_MAX_FILE_SIZE_MB);
