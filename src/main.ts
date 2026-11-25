@@ -11,6 +11,7 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import { initializeSentry } from './common/logging/sentry';
 import { buildSwaggerConfig } from './swagger.config';
 import { parseTrustProxy } from './common/config/env.util';
+import { buildCorsOptions } from './common/config/cors.options';
 
 async function bootstrap() {
   initializeSentry();
@@ -38,12 +39,7 @@ async function bootstrap() {
 
   app.use(helmet());
 
-  app.enableCors({
-    origin: corsOrigin,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-captcha-token'],
-    credentials: true,
-  });
+  app.enableCors(buildCorsOptions(corsOrigin));
 
   app.setGlobalPrefix(apiPrefix);
 
