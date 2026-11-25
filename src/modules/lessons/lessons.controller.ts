@@ -9,6 +9,7 @@ import { ConfigureLessonDripDto } from './dto/configure-lesson-drip.dto';
 import { OverrideInstructorDripDto } from './dto/override-instructor-drip.dto';
 import { CreateModuleDto } from './dto/create-module.dto';
 import { CreateLessonDto } from './dto/create-lesson.dto';
+import { UpdateThumbnailDto } from './dto/update-thumbnail.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -64,9 +65,10 @@ export class LessonsController {
   @ApiOperation({ summary: 'Set or update the thumbnail URL for a lesson' })
   updateThumbnail(
     @Param('id') lessonId: string,
-    @Body() body: { thumbnailUrl: string },
+    @Body() body: UpdateThumbnailDto,
+    @CurrentUser() user: any,
   ) {
-    return this.lessonsService.updateThumbnailUrl(lessonId, body.thumbnailUrl);
+    return this.lessonsService.updateThumbnailUrl(lessonId, body.thumbnailUrl, user);
   }
 
   @Post(':id/complete')

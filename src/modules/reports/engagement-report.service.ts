@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
@@ -54,9 +54,12 @@ export interface EngagementReport {
 export class EngagementReportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getReport(dto: EngagementReportQueryDto): Promise<EngagementReport> {
+  async getReport(
+    dto: EngagementReportQueryDto,
+    caller: { id: string; role: string; stellarAddress: string | null },
+  ): Promise<EngagementReport> {
     const scope = dto.scope ?? EngagementScope.PLATFORM;
-    await this.validateScope(scope, dto);
+    await this.validateScope(scope, dto, caller);
     const period = this.resolvePeriod(dto);
     const thresholdDays = dto.inactiveDays ?? 14;
 
@@ -198,8 +201,19 @@ export class EngagementReportService {
   private async validateScope(
     scope: EngagementScope,
     dto: EngagementReportQueryDto,
+    caller: { id: string; role: string; stellarAddress: string | null },
   ) {
+    const isAdmin = caller.role === 'ADMIN';
+
+    // Platform-wide scope is admin-only.
+    if (scope === EngagementScope.PLATFORM && !isAdmin) {
+      throw new ForbiddenException('Platform-wide reports are restricted to administrators');
+    }
+
     if (scope === EngagementScope.STUDENT) {
+      if (!isAdmin) {
+        throw new ForbiddenException('Per-student reports are restricted to administrators');
+      }
       if (!dto.studentId) {
         throw new BadRequestException('studentId is required when scope=STUDENT');
       }
@@ -216,9 +230,19 @@ export class EngagementReportService {
       }
       const course = await this.prisma.course.findUnique({
         where: { id: dto.courseId },
-        select: { id: true },
+        select: { id: true, instructorAddress: true },
       });
       if (!course) throw new NotFoundException('Course not found');
+
+      // Instructors may only query courses they own.
+      if (!isAdmin) {
+        const ownsById = course.instructorAddress === caller.id;
+        const ownsByAddress =
+          caller.stellarAddress && course.instructorAddress === caller.stellarAddress;
+        if (!ownsById && !ownsByAddress) {
+          throw new ForbiddenException('You can only view engagement reports for your own courses');
+        }
+      }
     }
   }
 

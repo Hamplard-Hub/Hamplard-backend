@@ -12,11 +12,12 @@
 // ThrottlerGuard because @nestjs/throttler's per-route options cannot express
 // per-role buckets cleanly; this keeps parity with the global ThrottlerModule
 // config while adding role awareness.
-import { Injectable, CanActivate, ExecutionContext, Logger } from '@nestjs/common';
+import { Injectable, CanActivate, ExecutionContext, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Response } from 'express';
 import { RedisRateLimitService } from '../redis-rate-limit/redis-rate-limit.service';
+import { CacheService } from '../cache/cache.service';
 
 @Injectable()
 export class RoleThrottlerGuard implements CanActivate {
@@ -30,6 +31,7 @@ export class RoleThrottlerGuard implements CanActivate {
   constructor(
     private readonly config: ConfigService,
     private readonly rl: RedisRateLimitService,
+    @Optional() private readonly cacheService?: CacheService,
   ) {
     // Guards registered via APP_GUARD run before controller-level
     // JwtAuthGuard has populated req.user, so we verify the bearer token
@@ -47,26 +49,45 @@ export class RoleThrottlerGuard implements CanActivate {
     };
   }
 
-  /** Resolves the authenticated subject, verifying the JWT when needed. */
-  private resolveSubject(req: Record<string, any>): { role: string; id: string } {
-    if (req.user?.role && req.user?.id) {
-      return { role: req.user.role, id: req.user.id };
-    }
+  /** Resolves the authenticated subject using the DB-backed cache (same as JwtStrategy). */
+  private async resolveSubject(
+    req: Record<string, any>,
+  ): Promise<{ role: string; id: string }> {
+    // req.user is set by JwtAuthGuard when it runs before this guard.
+    // If present, use the id to look up the current role from the shared
+    // jwt:user:<id> cache entry populated by JwtStrategy so a demoted or
+    // banned user is not served their old token's role bucket.
+    let userId: string | undefined = req.user?.id;
 
-    const authHeader: string | undefined = req.headers?.authorization;
-    if (authHeader?.startsWith('Bearer ')) {
-      try {
-        const payload = this.jwt.verify(authHeader.slice(7)) as {
-          sub?: string;
-          role?: string;
-        };
-        if (payload?.sub) {
-          return { role: payload.role ?? 'anon', id: payload.sub };
+    if (!userId) {
+      const authHeader: string | undefined = req.headers?.authorization;
+      if (authHeader?.startsWith('Bearer ')) {
+        try {
+          const payload = this.jwt.verify(authHeader.slice(7)) as { sub?: string };
+          userId = payload?.sub;
+        } catch {
+          // Expired or malformed token → fall through to anonymous bucket.
         }
-      } catch {
-        // Expired or malformed token → fall through to the anonymous bucket.
       }
     }
+
+    if (userId) {
+      if (this.cacheService) {
+        const cached = await this.cacheService
+          .get<{ role: string; isBanned: boolean }>(`jwt:user:${userId}`)
+          .catch(() => null);
+        if (cached) {
+          // A banned user falls to the anonymous bucket so they cannot exploit
+          // the larger authenticated limit while their token is still valid.
+          return { role: cached.isBanned ? 'anon' : (cached.role ?? 'anon'), id: userId };
+        }
+      }
+      // Cache miss or no cache service: fall back to the token claim. The
+      // JwtStrategy will re-validate against the DB on the next full request.
+      const role = req.user?.role ?? 'anon';
+      return { role, id: userId };
+    }
+
     return { role: 'anon', id: req.ip ?? 'unknown' };
   }
 
@@ -75,7 +96,7 @@ export class RoleThrottlerGuard implements CanActivate {
     const req  = http.getRequest<Record<string, any>>();
     const res  = http.getResponse<Response>();
 
-    const subject    = this.resolveSubject(req);
+    const subject    = await this.resolveSubject(req);
     const roleBucket = this.limits[subject.role] !== undefined ? subject.role : 'anon';
     const max        = this.limits[roleBucket];
     const key        = `rl:role:${roleBucket}:${subject.id}`;

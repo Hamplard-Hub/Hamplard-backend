@@ -143,9 +143,26 @@ export class LessonsService {
    * Stores or updates the thumbnail URL on a lesson record.
    * Called after video thumbnail extraction completes.
    */
-  async updateThumbnailUrl(lessonId: string, thumbnailUrl: string) {
-    const lesson = await this.prisma.lesson.findUnique({ where: { id: lessonId } });
+  async updateThumbnailUrl(
+    lessonId: string,
+    thumbnailUrl: string,
+    caller: { id: string; role: string; stellarAddress?: string | null },
+  ) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      include: { module: { include: { course: true } } },
+    });
     if (!lesson) throw new NotFoundException('Lesson not found');
+
+    if (caller.role !== UserRole.ADMIN) {
+      const course = lesson.module.course;
+      const ownsById = course.instructorAddress === caller.id;
+      const ownsByAddress =
+        caller.stellarAddress && course.instructorAddress === caller.stellarAddress;
+      if (!ownsById && !ownsByAddress) {
+        throw new ForbiddenException('You are not authorized to update this lesson');
+      }
+    }
 
     return this.prisma.lesson.update({
       where: { id: lessonId },

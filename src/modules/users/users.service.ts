@@ -59,7 +59,10 @@ export class UsersService {
     }
   }
 
-  async getInstructorStats(instructorAddress: string) {
+  async getInstructorStats(instructorAddress: string | null | undefined) {
+    if (!instructorAddress) {
+      throw new BadRequestException('A linked Stellar wallet is required to view instructor stats');
+    }
     const courses = await this.prisma.course.findMany({
       where: { instructorAddress },
       include: { _count: { select: { enrollments: true } } },

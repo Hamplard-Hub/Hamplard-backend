@@ -1,6 +1,6 @@
 // assignments.service.ts
 import {
-  Injectable, NotFoundException, ForbiddenException, Logger,
+  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -258,10 +258,13 @@ export class AssignmentsService {
   }
 
   async findPendingForInstructor(
-    instructorAddress: string,
+    instructorAddress: string | null | undefined,
     page?: number,
     limit?: number,
   ) {
+    if (!instructorAddress) {
+      throw new BadRequestException('A linked Stellar wallet is required to view pending submissions');
+    }
     const pageNum = Math.max(1, page ?? 1);
     const pageLimit = Math.min(100, Math.max(1, limit ?? 20));
     const skip = (pageNum - 1) * pageLimit;

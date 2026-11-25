@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Roles, RolesGuard } from '../../common/guards/roles.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { EngagementReportQueryDto } from './dto/engagement-report-query.dto';
 import { EngagementReportService } from './engagement-report.service';
 
@@ -19,7 +20,10 @@ export class EngagementReportController {
     summary:
       'Student engagement report: watch time, streaks, completion rates and inactivity flagging',
   })
-  getReport(@Query() query: EngagementReportQueryDto) {
-    return this.engagement.getReport(query);
+  getReport(
+    @Query() query: EngagementReportQueryDto,
+    @CurrentUser() caller: { id: string; role: string; stellarAddress: string | null },
+  ) {
+    return this.engagement.getReport(query, caller);
   }
 }
