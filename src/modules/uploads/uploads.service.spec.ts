@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as fs from 'fs';
 import { CdnService } from './cdn.service';
-import { UploadsService } from './uploads.service';
+import { UploadsService, isPrivateUploadPath } from './uploads.service';
 import { VirusScanService } from './virus-scan.service';
 import { VideoTranscodeService } from './video-transcode.service';
 import { VideoThumbnailService } from './video-thumbnail.service';
@@ -236,5 +236,23 @@ describe('UploadsService (CDN integration)', () => {
         BadRequestException,
       );
     });
+  });
+});
+
+/** Issue #335 — lesson media is stored as a private asset. */
+describe('isPrivateUploadPath', () => {
+  it('treats lesson media under courses/<id>/lessons/ as private', () => {
+    expect(isPrivateUploadPath('courses/c1/lessons/l1/video.mp4')).toBe(true);
+    expect(isPrivateUploadPath('courses/c1/lessons/l1/transcoded/720p.mp4')).toBe(true);
+  });
+
+  it('keeps existing private folders private', () => {
+    expect(isPrivateUploadPath('kyc/doc.pdf')).toBe(true);
+    expect(isPrivateUploadPath('certificates/cert.pdf')).toBe(true);
+  });
+
+  it('leaves public course assets and thumbnails public', () => {
+    expect(isPrivateUploadPath('courses/c1/cover.png')).toBe(false);
+    expect(isPrivateUploadPath('thumbnails/t.jpg')).toBe(false);
   });
 });

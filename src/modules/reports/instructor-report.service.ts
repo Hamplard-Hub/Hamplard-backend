@@ -76,7 +76,14 @@ export class InstructorReportService {
           courseId: { in: courseIds },
           ...this.dateFilter('enrolledAt', period),
         },
-        select: { courseId: true, status: true, amountPaid: true },
+        select: {
+          courseId: true,
+          status: true,
+          amountPaid: true,
+          platformFeePercent: true,
+          platformFeeAmount: true,
+          taxAmount: true,
+        },
       }),
       this.prisma.courseReview.aggregate({
         where: {
@@ -93,10 +100,17 @@ export class InstructorReportService {
       (sum, e) => sum + this.toNumber(e.amountPaid),
       0,
     );
+    // Issue #332: fees come from the snapshot stored on each enrollment, so
+    // later course fee changes do not rewrite historical revenue.
     const platformFees = enrollments.reduce((sum, e) => {
-      const feePercent = feeByCourse.get(e.courseId) ?? 0;
-      return sum + (this.toNumber(e.amountPaid) * feePercent) / 100;
+      if (e.platformFeeAmount !== null && e.platformFeeAmount !== undefined) {
+        return sum + this.toNumber(e.platformFeeAmount);
+      }
+      const feePercent = e.platformFeePercent ?? feeByCourse.get(e.courseId) ?? 0;
+      const net = this.toNumber(e.amountPaid) - this.toNumber(e.taxAmount ?? 0);
+      return sum + (net * feePercent) / 100;
     }, 0);
+    const taxes = enrollments.reduce((sum, e) => sum + this.toNumber(e.taxAmount ?? 0), 0);
     const completions = enrollments.filter((e) => e.status === 'COMPLETED').length;
 
     const metrics = {
@@ -116,7 +130,7 @@ export class InstructorReportService {
       revenue: {
         gross: this.round(gross),
         platformFees: this.round(platformFees),
-        net: this.round(gross - platformFees),
+        net: this.round(gross - taxes - platformFees),
       },
     };
 

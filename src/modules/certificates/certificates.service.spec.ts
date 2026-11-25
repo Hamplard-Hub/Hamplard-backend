@@ -1,27 +1,21 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { CertificatesService, PUBLIC_CERTIFICATE_SELECT } from './certificates.service';
+import { CertificatesService } from './certificates.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { StellarService } from '../../common/stellar/stellar.service';
-import { NotificationsService } from '../notifications/notifications.service';
-import { ExamsService } from '../exams/exams.service';
-import { CertificatePdfService } from './certificate-pdf.service';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
-import { UploadsService } from '../uploads/uploads.service';
-import { AnalyticsService } from '../analytics/analytics.service';
+import { CoursesService } from '../courses/courses.service';
 
+describe('CertificatesService - findByStudent pagination', () => {
 const mockPrisma = {
   enrollment: {
     findUnique: jest.fn(),
     updateMany: jest.fn(),
   },
   certificate: {
-    findFirst:  jest.fn(),
+    findFirst: jest.fn(),
     findUnique: jest.fn(),
-    create:     jest.fn(),
-    update:     jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
     updateMany: jest.fn(),
-    findMany:   jest.fn(),
+    findMany: jest.fn(),
   },
   user: { findUnique: jest.fn() },
   adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
@@ -47,56 +41,69 @@ const mockUploads = {
   saveBuffer: jest.fn(async (_buf: Buffer, subfolder: string, filename: string) => ({
     originUrl: `/uploads/${subfolder}/${filename}`,
   })),
-  readStoredFile: jest.fn(),
+  readStoredFile: jest.fn().mockResolvedValue(null),
 };
 const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
 
 const MOCK_ENROLLMENT = {
-  id:             'enroll-1',
-  studentId:      'student-1',
-  courseId:       'COURSE-TAILORING-001',
-  status:         'COMPLETED',
-  progressPercent:100,
-  amountPaid:     50,
-  student:        { id: 'student-1', name: 'Jane', email: 'jane@test.com', stellarAddress: 'GABC' },
-  course:         { id: 'COURSE-TAILORING-001', title: 'Professional Tailoring', instructorAddress: 'GXYZ' },
+  id: 'enroll-1',
+  studentId: 'student-1',
+  courseId: 'COURSE-TAILORING-001',
+  status: 'COMPLETED',
+  progressPercent: 100,
+  amountPaid: 50,
+  student: { id: 'student-1', name: 'Jane', email: 'jane@test.com', stellarAddress: 'GABC' },
+  course: { id: 'COURSE-TAILORING-001', title: 'Professional Tailoring', instructorAddress: 'GXYZ' },
 };
 
 describe('CertificatesService', () => {
   let service: CertificatesService;
 
+  const mockPrisma = {
+    certificate: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CertificatesService,
-        { provide: PrismaService,        useValue: mockPrisma },
-        { provide: StellarService,       useValue: mockStellar },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: CoursesService, useValue: {} },
+        { provide: StellarService, useValue: mockStellar },
         { provide: NotificationsService, useValue: mockNotifications },
-        { provide: ExamsService,         useValue: mockExams },
+        { provide: ExamsService, useValue: mockExams },
         { provide: CertificatePdfService, useValue: mockPdf },
-        { provide: UploadsService,        useValue: mockUploads },
-        { provide: AnalyticsService,      useValue: mockAnalytics },
+        { provide: UploadsService, useValue: mockUploads },
+        { provide: AnalyticsService, useValue: mockAnalytics },
       ],
-    }).compile();
+    })
+      .useMocker(() => ({}))
+      .compile();
 
     service = module.get<CertificatesService>(CertificatesService);
     jest.clearAllMocks();
   });
 
+  it('returns paginated certificates with meta', async () => {
+    mockPrisma.certificate.findMany.mockResolvedValue([{ id: 'cert-1' }]);
+    mockPrisma.certificate.count.mockResolvedValue(25);
   describe('issue()', () => {
     it('issues a certificate for a completed enrollment', async () => {
       mockPrisma.enrollment.findUnique.mockResolvedValue(MOCK_ENROLLMENT);
       mockPrisma.certificate.findFirst.mockResolvedValue(null);
       const created = {
-        id:              'CERT-ABC123',
-        studentId:       'student-1',
-        courseId:        'COURSE-TAILORING-001',
-        courseTitle:     'Professional Tailoring',
-        instructorAddress:'GXYZ',
-        isRevoked:       false,
-        issuedAt:        new Date(),
-        student:         MOCK_ENROLLMENT.student,
-        course:          MOCK_ENROLLMENT.course,
+        id: 'CERT-ABC123',
+        studentId: 'student-1',
+        courseId: 'COURSE-TAILORING-001',
+        courseTitle: 'Professional Tailoring',
+        instructorAddress: 'GXYZ',
+        isRevoked: false,
+        issuedAt: new Date(),
+        student: MOCK_ENROLLMENT.student,
+        course: MOCK_ENROLLMENT.course,
       };
       mockPrisma.certificate.create.mockResolvedValue(created);
       // issue() renders the PDF and returns the row updated with its pdfUrl
@@ -152,7 +159,7 @@ describe('CertificatesService', () => {
         isRevoked: false,
         txHash: 'tx-abc',
         student: { name: 'Jane', stellarAddress: 'GABC' },
-        course:  { title: 'Professional Tailoring', instructor: { name: 'John' } },
+        course: { title: 'Professional Tailoring', instructor: { name: 'John' } },
       });
       mockStellar.verifyCertificateOnChain.mockResolvedValue(true);
 
@@ -166,7 +173,7 @@ describe('CertificatesService', () => {
         id: 'CERT-REVOKED',
         isRevoked: true,
         student: { name: 'Jane', stellarAddress: 'GABC' },
-        course:  { title: 'Baking', instructor: { name: 'Chef' } },
+        course: { title: 'Baking', instructor: { name: 'Chef' } },
       });
 
       const result = await service.verify('CERT-REVOKED');
@@ -180,7 +187,7 @@ describe('CertificatesService', () => {
         isRevoked: false,
         txHash: 'tx-abc',
         student: { name: 'Jane', stellarAddress: 'GABC' },
-        course:  { title: 'Makeup', instructor: { name: 'MUA' } },
+        course: { title: 'Makeup', instructor: { name: 'MUA' } },
       });
       mockStellar.verifyCertificateOnChain.mockResolvedValue(false);
 
@@ -196,7 +203,7 @@ describe('CertificatesService', () => {
         studentId: 'student-1',
         isRevoked: false,
         student: { id: 'student-1', name: 'Jane', stellarAddress: 'GABC' },
-        course:  { title: 'Tailoring', instructor: { name: 'John' } },
+        course: { title: 'Tailoring', instructor: { name: 'John' } },
       });
       mockPrisma.certificate.update.mockResolvedValue({
         id: 'CERT-ABC123',
@@ -205,66 +212,64 @@ describe('CertificatesService', () => {
         revokeReason: 'Fraudulent activity',
       });
 
-      const result = await service.revoke('CERT-ABC123', 'admin-1', 'Fraudulent activity');
-      expect(result.isRevoked).toBe(true);
-      expect(mockPrisma.certificate.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'CERT-ABC123' },
-          data: expect.objectContaining({
-            isRevoked: true,
-            revokedById: 'admin-1',
-            revokeReason: 'Fraudulent activity',
-          }),
-        }),
-      );
-      expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
-        'student-1',
-        'CERTIFICATE_REVOKED',
-        'Certificate Revoked',
-        expect.stringContaining('Fraudulent activity'),
-        { certificateId: 'CERT-ABC123', reason: 'Fraudulent activity' },
-      );
-    });
+    const result = await service.findByStudent('student-1', 2, 10);
 
+    expect(result).toEqual({
+      data: [{ id: 'cert-1' }],
+      meta: { total: 25, page: 2, limit: 10, totalPages: 3 },
     it('throws ForbiddenException if already revoked', async () => {
       mockPrisma.certificate.findUnique.mockResolvedValue({
         id: 'CERT-ALREADY',
         studentId: 'student-1',
         isRevoked: true,
         student: { name: 'Jane', stellarAddress: 'GABC' },
-        course:  { title: 'Tailoring', instructor: { name: 'John' } },
+        course: { title: 'Tailoring', instructor: { name: 'John' } },
       });
       await expect(service.revoke('CERT-ALREADY', 'admin-1'))
         .rejects.toThrow(ForbiddenException);
     });
+    expect(mockPrisma.certificate.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { studentId: 'student-1' },
+        orderBy: { issuedAt: 'desc' },
+        skip: 10,
+        take: 10,
+      }),
+    );
   });
 
+  it('clamps page and limit to valid bounds', async () => {
+    mockPrisma.certificate.findMany.mockResolvedValue([]);
+    mockPrisma.certificate.count.mockResolvedValue(0);
   // ----------------------------------------------------------
   // Issue #245 — owner-restricted PDF download
   // ----------------------------------------------------------
 
   describe('getPdfForDownload()', () => {
     const CERT = {
-      id:          'CERT-ABC123',
-      studentId:   'student-1',
+      id: 'CERT-ABC123',
+      studentId: 'student-1',
       courseTitle: 'Professional Tailoring',
-      issuedAt:    new Date('2026-01-01T00:00:00Z'),
-      pdfUrl:      '/uploads/certificates/CERT-ABC123.pdf',
-      isRevoked:   false,
-      student:     { id: 'student-1', name: 'Jane', stellarAddress: 'GABC' },
-      course:      { id: 'COURSE-TAILORING-001', category: 'Tailoring', title: 'Professional Tailoring' },
+      issuedAt: new Date('2026-01-01T00:00:00Z'),
+      pdfUrl: '/uploads/certificates/CERT-ABC123.pdf',
+      isRevoked: false,
+      student: { id: 'student-1', name: 'Jane', stellarAddress: 'GABC' },
+      course: { id: 'COURSE-TAILORING-001', category: 'Tailoring', title: 'Professional Tailoring' },
     };
     const PDF = Buffer.from('%PDF-1.4 stored');
     const HOLDER = { id: 'student-1', stellarAddress: 'GABC', role: UserRole.STUDENT };
 
     beforeEach(() => {
       mockPrisma.certificate.findUnique.mockResolvedValue(CERT);
-      mockUploads.readStoredFile.mockReturnValue(PDF);
+      mockUploads.readStoredFile.mockResolvedValue(PDF);
     });
 
-    it('returns the stored PDF to the certificate holder', async () => {
-      const result = await service.getPdfForDownload('CERT-ABC123', HOLDER);
+    const result = await service.findByStudent('student-1', -1, 500);
 
+    expect(result.meta).toEqual({ total: 0, page: 1, limit: 100, totalPages: 0 });
+    expect(mockPrisma.certificate.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 100 }),
+    );
       expect(result).toEqual({ buffer: PDF, filename: 'certificate-CERT-ABC123.pdf' });
       expect(mockUploads.readStoredFile).toHaveBeenCalledWith(CERT.pdfUrl);
       expect(mockPdf.renderForCategory).not.toHaveBeenCalled();
@@ -296,7 +301,7 @@ describe('CertificatesService', () => {
     });
 
     it('re-renders and stores the PDF when the file is missing (legacy record)', async () => {
-      mockUploads.readStoredFile.mockReturnValue(null);
+      mockUploads.readStoredFile.mockResolvedValue(null);
       mockPrisma.certificate.update.mockResolvedValue({});
 
       const result = await service.getPdfForDownload('CERT-ABC123', HOLDER);

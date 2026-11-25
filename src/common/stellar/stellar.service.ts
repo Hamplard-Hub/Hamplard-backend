@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { isIP } from 'node:net';
+import { StellarNetwork } from '../config/env.validation';
 import {
   Networks,
   SorobanRpc,
@@ -12,6 +14,10 @@ import {
 } from '@stellar/stellar-sdk';
 
 export const CONTRACT_EVENT_PAGE_LIMIT = 100;
+
+function isStellarNetwork(value: string): value is StellarNetwork {
+  return Object.values(StellarNetwork).some((network) => network === value);
+}
 
 /**
  * StellarService
@@ -38,13 +44,58 @@ export class StellarService implements OnModuleInit {
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit() {
-    const rpcUrl     = this.config.get<string>('STELLAR_RPC_URL');
-    const networkName = this.config.get<string>('STELLAR_NETWORK', 'testnet');
+    const rpcUrl = this.config.get<string>('STELLAR_RPC_URL')?.trim();
+    const networkName = this.config.get<string>('STELLAR_NETWORK', StellarNetwork.Testnet);
+    const contractId = this.config.get<string>('HAMPLARD_CONTRACT_ID')?.trim();
 
-    this.rpcClient = new SorobanRpc.Server(rpcUrl, { allowHttp: true });
-    this.contractId = this.config.get<string>('HAMPLARD_CONTRACT_ID');
-    this.networkPassphrase =
-      networkName === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
+    if (!isStellarNetwork(networkName)) {
+      throw new Error(
+        `Invalid STELLAR_NETWORK "${networkName}". Expected one of: ${Object.values(StellarNetwork).join(', ')}`,
+      );
+    }
+    if (!rpcUrl) {
+      throw new Error('STELLAR_RPC_URL is required');
+    }
+    if (!contractId) {
+      throw new Error('HAMPLARD_CONTRACT_ID is required');
+    }
+
+    let parsedRpcUrl: URL;
+    try {
+      parsedRpcUrl = new URL(rpcUrl);
+    } catch {
+      throw new Error(`STELLAR_RPC_URL must be a valid URL: "${rpcUrl}"`);
+    }
+    if (parsedRpcUrl.protocol !== 'http:' && parsedRpcUrl.protocol !== 'https:') {
+      throw new Error('STELLAR_RPC_URL must use HTTP or HTTPS');
+    }
+
+    const hostname = parsedRpcUrl.hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.$/, '');
+    const isLocalhost =
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost') ||
+      hostname === '::1' ||
+      (isIP(hostname) === 4 && hostname.startsWith('127.'));
+    const isHttp = parsedRpcUrl.protocol === 'http:';
+
+    if (isHttp && networkName === StellarNetwork.Mainnet) {
+      throw new Error('HTTP RPC URLs are not allowed for the Stellar mainnet');
+    }
+
+    const allowHttp = networkName === StellarNetwork.Standalone || isLocalhost;
+    if (isHttp && !allowHttp) {
+      throw new Error('HTTP RPC URLs are only allowed for localhost or the standalone network');
+    }
+
+    this.rpcClient = new SorobanRpc.Server(rpcUrl, { allowHttp });
+    this.contractId = contractId;
+    const networkPassphrases: Record<StellarNetwork, string> = {
+      [StellarNetwork.Testnet]: Networks.TESTNET,
+      [StellarNetwork.Mainnet]: Networks.PUBLIC,
+      [StellarNetwork.Futurenet]: Networks.FUTURENET,
+      [StellarNetwork.Standalone]: Networks.STANDALONE,
+    };
+    this.networkPassphrase = networkPassphrases[networkName];
 
     this.logger.log(`Stellar connected to ${networkName} (${rpcUrl})`);
     this.logger.log(`Hamplard contract: ${this.contractId}`);

@@ -27,6 +27,13 @@ export interface SignedUrlValidation {
   reason?: string;
 }
 
+/** A short-lived signed URL for a private lesson media file (issue #335). */
+export interface SignedMediaUrl {
+  url: string;
+  /** null when the media is hosted externally and cannot be signed */
+  expiresAt: string | null;
+}
+
 export interface CacheInvalidationRequest {
   id: string;
   paths: string[];
@@ -54,6 +61,7 @@ export class CdnService {
   private readonly originBaseUrl: string;
   private readonly signingSecret: string;
   private readonly defaultSignedTtl: number;
+  private readonly lessonMediaTtl: number;
 
   constructor(
     private readonly config: ConfigService,
@@ -79,6 +87,59 @@ export class CdnService {
       'CDN_SIGNED_URL_TTL_SECONDS',
       3600,
     );
+    this.lessonMediaTtl = Number(
+      this.config.get<number>('LESSON_VIDEO_URL_TTL_SECONDS', 300),
+    );
+  }
+
+  /**
+   * Issue #335: turns a stored lesson media reference (origin path such as
+   * /uploads/courses/c1/lessons/l1/x.mp4, or a CDN/origin URL to one) into a
+   * short-lived signed URL. Call only after enrollment / drip checks pass.
+   * Media hosted outside our upload store (e.g. a third-party embed URL) can't
+   * be signed by us and is returned unchanged with no expiry.
+   */
+  signLessonMediaUrl(
+    stored: string | null | undefined,
+    expiresInSeconds: number = this.lessonMediaTtl,
+  ): SignedMediaUrl | null {
+    if (!stored?.trim()) return null;
+    const originPath = this.toUploadOriginPath(stored);
+    if (!originPath) {
+      return { url: stored, expiresAt: null };
+    }
+    const delivery = this.generateCdnUrl(originPath, {
+      visibility: 'private',
+      expiresInSeconds,
+    });
+    return { url: delivery.cdnUrl, expiresAt: delivery.expiresAt ?? null };
+  }
+
+  /**
+   * Resolves a stored media reference to its `/uploads/...` origin path — the
+   * path FilesController verifies signatures against — or null when it points
+   * outside our upload store.
+   */
+  toUploadOriginPath(stored: string): string | null {
+    const trimmed = stored.trim();
+    let pathname = trimmed;
+    if (/^https?:\/\//i.test(trimmed)) {
+      let parsed: URL;
+      try {
+        parsed = new URL(trimmed);
+      } catch {
+        return null;
+      }
+      const ownHosts = [this.cdnBaseUrl, this.originBaseUrl].map((base) => {
+        try { return new URL(base).host; } catch { return null; }
+      });
+      if (!ownHosts.includes(parsed.host)) return null;
+      pathname = parsed.pathname;
+    }
+    const index = pathname.indexOf('/uploads/');
+    if (index >= 0) return pathname.slice(index);
+    if (pathname.startsWith('uploads/')) return `/${pathname}`;
+    return null;
   }
 
   /**

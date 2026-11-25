@@ -202,6 +202,48 @@ export class SearchService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Removes several courses from the search index in one task.
+   */
+  async removeCourses(courseIds: string[]): Promise<void> {
+    if (courseIds.length === 0) return;
+    await this.client.index(this.indexName).deleteDocuments(courseIds);
+    this.logger.log(`Removed ${courseIds.length} courses from search index`);
+  }
+
+  /**
+   * Returns the ids of every document currently stored in the index,
+   * paging through Meilisearch `batchSize` documents at a time.
+   */
+  async listIndexedCourseIds(batchSize = 500): Promise<string[]> {
+    const index = this.client.index(this.indexName);
+    const ids: string[] = [];
+    let offset = 0;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const page = await index.getDocuments<Pick<CourseSearchDocument, 'id'>>({
+        fields: ['id'],
+        limit: batchSize,
+        offset,
+      });
+      const results = page.results ?? [];
+      ids.push(...results.map((doc) => String(doc.id)));
+      offset += results.length;
+      if (results.length < batchSize || offset >= (page.total ?? 0)) break;
+    }
+
+    return ids;
+  }
+
+  /**
+   * Re-applies the index settings (searchable/filterable attributes, ranking
+   * rules). Used by the reindex command after settings change.
+   */
+  async refreshIndexSettings(): Promise<void> {
+    await this.ensureIndex();
+  }
+
+  /**
    * Returns the timestamp of the last index update for a course.
    * Returns 0 if the course is not indexed.
    */

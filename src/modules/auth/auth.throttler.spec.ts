@@ -4,6 +4,7 @@ import * as request from 'supertest';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { CaptchaService } from './captcha.service';
+import { PrismaService } from '../../common/prisma/prisma.service';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
