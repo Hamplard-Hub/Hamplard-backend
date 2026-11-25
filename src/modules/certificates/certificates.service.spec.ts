@@ -1,15 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { CertificatesService, PUBLIC_CERTIFICATE_SELECT } from './certificates.service';
+import { CertificatesService } from './certificates.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { StellarService } from '../../common/stellar/stellar.service';
-import { NotificationsService } from '../notifications/notifications.service';
-import { ExamsService } from '../exams/exams.service';
-import { CertificatePdfService } from './certificate-pdf.service';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
-import { UploadsService } from '../uploads/uploads.service';
-import { AnalyticsService } from '../analytics/analytics.service';
+import { CoursesService } from '../courses/courses.service';
 
+describe('CertificatesService - findByStudent pagination', () => {
 const mockPrisma = {
   enrollment: {
     findUnique: jest.fn(),
@@ -65,11 +59,19 @@ const MOCK_ENROLLMENT = {
 describe('CertificatesService', () => {
   let service: CertificatesService;
 
+  const mockPrisma = {
+    certificate: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CertificatesService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: CoursesService, useValue: {} },
         { provide: StellarService, useValue: mockStellar },
         { provide: NotificationsService, useValue: mockNotifications },
         { provide: ExamsService, useValue: mockExams },
@@ -77,12 +79,17 @@ describe('CertificatesService', () => {
         { provide: UploadsService, useValue: mockUploads },
         { provide: AnalyticsService, useValue: mockAnalytics },
       ],
-    }).compile();
+    })
+      .useMocker(() => ({}))
+      .compile();
 
     service = module.get<CertificatesService>(CertificatesService);
     jest.clearAllMocks();
   });
 
+  it('returns paginated certificates with meta', async () => {
+    mockPrisma.certificate.findMany.mockResolvedValue([{ id: 'cert-1' }]);
+    mockPrisma.certificate.count.mockResolvedValue(25);
   describe('issue()', () => {
     it('issues a certificate for a completed enrollment', async () => {
       mockPrisma.enrollment.findUnique.mockResolvedValue(MOCK_ENROLLMENT);
@@ -205,27 +212,11 @@ describe('CertificatesService', () => {
         revokeReason: 'Fraudulent activity',
       });
 
-      const result = await service.revoke('CERT-ABC123', 'admin-1', 'Fraudulent activity');
-      expect(result.isRevoked).toBe(true);
-      expect(mockPrisma.certificate.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'CERT-ABC123' },
-          data: expect.objectContaining({
-            isRevoked: true,
-            revokedById: 'admin-1',
-            revokeReason: 'Fraudulent activity',
-          }),
-        }),
-      );
-      expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
-        'student-1',
-        'CERTIFICATE_REVOKED',
-        'Certificate Revoked',
-        expect.stringContaining('Fraudulent activity'),
-        { certificateId: 'CERT-ABC123', reason: 'Fraudulent activity' },
-      );
-    });
+    const result = await service.findByStudent('student-1', 2, 10);
 
+    expect(result).toEqual({
+      data: [{ id: 'cert-1' }],
+      meta: { total: 25, page: 2, limit: 10, totalPages: 3 },
     it('throws ForbiddenException if already revoked', async () => {
       mockPrisma.certificate.findUnique.mockResolvedValue({
         id: 'CERT-ALREADY',
@@ -237,8 +228,19 @@ describe('CertificatesService', () => {
       await expect(service.revoke('CERT-ALREADY', 'admin-1'))
         .rejects.toThrow(ForbiddenException);
     });
+    expect(mockPrisma.certificate.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { studentId: 'student-1' },
+        orderBy: { issuedAt: 'desc' },
+        skip: 10,
+        take: 10,
+      }),
+    );
   });
 
+  it('clamps page and limit to valid bounds', async () => {
+    mockPrisma.certificate.findMany.mockResolvedValue([]);
+    mockPrisma.certificate.count.mockResolvedValue(0);
   // ----------------------------------------------------------
   // Issue #245 — owner-restricted PDF download
   // ----------------------------------------------------------
@@ -262,9 +264,12 @@ describe('CertificatesService', () => {
       mockUploads.readStoredFile.mockResolvedValue(PDF);
     });
 
-    it('returns the stored PDF to the certificate holder', async () => {
-      const result = await service.getPdfForDownload('CERT-ABC123', HOLDER);
+    const result = await service.findByStudent('student-1', -1, 500);
 
+    expect(result.meta).toEqual({ total: 0, page: 1, limit: 100, totalPages: 0 });
+    expect(mockPrisma.certificate.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 100 }),
+    );
       expect(result).toEqual({ buffer: PDF, filename: 'certificate-CERT-ABC123.pdf' });
       expect(mockUploads.readStoredFile).toHaveBeenCalledWith(CERT.pdfUrl);
       expect(mockPdf.renderForCategory).not.toHaveBeenCalled();

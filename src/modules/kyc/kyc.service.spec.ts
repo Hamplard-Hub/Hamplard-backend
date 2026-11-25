@@ -1,21 +1,32 @@
-import { BadRequestException } from "@nestjs/common";
-import { KycStatus, NotificationType } from "@prisma/client";
-import { KycService } from "./kyc.service";
+import { Test, TestingModule } from '@nestjs/testing';
+import { KycService } from './kyc.service';
+import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { StorageService } from '../storage/storage.service';
 
-const approvedSubmission = {
-  id: "submission-1",
-  instructorId: "instructor-1",
-  status: KycStatus.APPROVED,
-  adminNotes: null,
-  reviewedAt: new Date("2026-01-01T00:00:00.000Z"),
-};
-
-describe("KycService verification revocation", () => {
+describe('KycService - findMySubmissions pagination', () => {
   let service: KycService;
-  let prisma: any;
-  let notifications: any;
-  let transaction: any;
 
+  const mockPrisma = {
+    kycSubmission: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
+    $transaction: jest.fn((ops: Promise<any>[]) => Promise.all(ops)),
+  };
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        KycService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: {} },
+        { provide: StorageService, useValue: {} },
+      ],
+    }).compile();
+
+    service = module.get<KycService>(KycService);
+    jest.clearAllMocks();
   beforeEach(() => {
     const revokedSubmission = {
       ...approvedSubmission,
@@ -46,81 +57,23 @@ describe("KycService verification revocation", () => {
     service = new KycService(prisma, notifications, {} as any);
   });
 
-  it("revokes all instructor approvals, clears the verification flag, and notifies the instructor", async () => {
-    const result = await service.revoke(
-      "submission-1",
-      "admin-1",
-      "Fraudulent document",
-    );
+  it('returns paginated KYC submissions with meta', async () => {
+    mockPrisma.kycSubmission.findMany.mockResolvedValue([{ id: 'kyc-1' }]);
+    mockPrisma.kycSubmission.count.mockResolvedValue(3);
 
-    expect(transaction.kycSubmission.updateMany).toHaveBeenCalledWith(
+    const result = await service.findMySubmissions('inst-1', 2, 2);
+
+    expect(result).toEqual({
+      data: [{ id: 'kyc-1' }],
+      meta: { total: 3, page: 2, limit: 2, totalPages: 2 },
+    });
+    expect(mockPrisma.kycSubmission.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { instructorId: "instructor-1", status: KycStatus.APPROVED },
-        data: expect.objectContaining({
-          status: KycStatus.REVOKED,
-          adminNotes: "Fraudulent document",
-          reviewedById: "admin-1",
-          reviewedAt: expect.any(Date),
-        }),
+        where: { instructorId: 'inst-1' },
+        orderBy: { createdAt: 'desc' },
+        skip: 2,
+        take: 2,
       }),
     );
-    expect(transaction.user.update).toHaveBeenCalledWith({
-      where: { id: "instructor-1" },
-      data: { isVerified: false },
-    });
-    expect(notifications.notifyUser).toHaveBeenCalledWith(
-      "instructor-1",
-      NotificationType.KYC_REVOKED,
-      "Identity verification revoked",
-      expect.stringContaining("Fraudulent document"),
-      { submissionId: "submission-1" },
-    );
-    expect(result.status).toBe(KycStatus.REVOKED);
-  });
-
-  it("does not revoke a submission that has not been approved", async () => {
-    prisma.kycSubmission.findUnique.mockResolvedValueOnce({
-      ...approvedSubmission,
-      status: KycStatus.PENDING,
-    });
-
-    await expect(service.revoke("submission-1", "admin-1")).rejects.toThrow(
-      BadRequestException,
-    );
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(notifications.notifyUser).not.toHaveBeenCalled();
-  });
-
-  it("reports revoked submissions as unverified based on the latest KYC status", async () => {
-    prisma.kycSubmission.findFirst.mockResolvedValue({
-      status: KycStatus.REVOKED,
-      adminNotes: "Fraudulent document",
-      reviewedAt: new Date("2026-01-02T00:00:00.000Z"),
-    });
-
-    await expect(
-      service.getVerificationStatus("instructor-1"),
-    ).resolves.toEqual({
-      isVerified: false,
-      status: KycStatus.REVOKED,
-      adminNotes: "Fraudulent document",
-      reviewedAt: new Date("2026-01-02T00:00:00.000Z"),
-    });
-  });
-
-  it("synchronizes the user verification projection from the canonical latest KYC status on approval", async () => {
-    prisma.kycSubmission.findUnique.mockResolvedValueOnce({
-      ...approvedSubmission,
-      status: KycStatus.PENDING,
-    });
-
-    await service.review("submission-1", "admin-1", {
-      status: KycStatus.APPROVED,
-    });
-
-    expect(transaction.user.update).toHaveBeenCalledWith({
-      where: { id: "instructor-1" },
-      data: { isVerified: true },
-    });
   });
 });

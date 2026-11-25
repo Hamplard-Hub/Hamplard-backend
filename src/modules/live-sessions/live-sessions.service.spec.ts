@@ -15,6 +15,7 @@ describe('LiveSessionsService', () => {
       update: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn(),
+      count: jest.fn(),
     },
     enrollment: {
       findUnique: jest.fn(),
@@ -265,13 +266,15 @@ describe('LiveSessionsService', () => {
         expect(result).not.toHaveProperty('meetingUrl');
       });
 
-      it('applies the same privacy and course projection to upcoming sessions', async () => {
+      it('applies the same privacy and course projection to upcoming sessions (paginated)', async () => {
         mockPrisma.liveSession.findMany.mockResolvedValue([sessionRecord()]);
+        mockPrisma.liveSession.count.mockResolvedValue(1);
 
-        const result = await service.getUpcomingSessions();
+        const result = await service.getUpcomingSessions(undefined, undefined, undefined, 2, 5);
 
-        expect(result[0]).not.toHaveProperty('meetingUrl');
-        expect(result[0].course).toEqual({
+        expect(result.meta).toEqual({ total: 1, page: 2, limit: 5, totalPages: 1 });
+        expect(result.data[0]).not.toHaveProperty('meetingUrl');
+        expect(result.data[0].course).toEqual({
           id: 'course-1',
           title: 'Course title',
           thumbnailUrl: 'https://cdn.example/course.png',

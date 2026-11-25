@@ -15,6 +15,7 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { KycStatus, UserRole } from '@prisma/client';
 import { QueryKycDto } from './dto/query-kyc.dto';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
 @ApiTags('kyc')
 @ApiBearerAuth()
@@ -68,9 +69,12 @@ export class KycController {
   @Get('my')
   @UseGuards(RolesGuard)
   @Roles(UserRole.INSTRUCTOR)
-  @ApiOperation({ summary: 'Get your own KYC submission history and current status' })
-  findMy(@CurrentUser('id') instructorId: string) {
-    return this.kycService.findMySubmissions(instructorId);
+  @ApiOperation({ summary: 'Get your own KYC submission history and current status (paginated)' })
+  findMy(
+    @CurrentUser('id') instructorId: string,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.kycService.findMySubmissions(instructorId, pagination.page, pagination.limit);
   }
 
   @Get('my/status')

@@ -94,11 +94,30 @@ export class KycService {
   // ----------------------------------------------------------
 
   /** Get the current instructor's own KYC submission(s) */
-  async findMySubmissions(instructorId: string) {
-    return this.prisma.kycSubmission.findMany({
-      where: { instructorId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findMySubmissions(instructorId: string, page = 1, limit = 20) {
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.kycSubmission.findMany({
+        where: { instructorId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.kycSubmission.count({ where: { instructorId } }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
+      },
+    };
   }
 
   /** Get the latest (most recent) KYC status for an instructor — used by payouts module */
