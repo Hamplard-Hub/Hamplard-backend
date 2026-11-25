@@ -5,6 +5,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { CdnService } from '../uploads/cdn.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CourseStatus, UserRole } from '@prisma/client';
@@ -121,6 +122,14 @@ describe('CoursesService', () => {
         { provide: CacheService, useValue: mockCache },
         { provide: ConfigService, useValue: { get: jest.fn(() => 20) } },
         FeeCalculatorService,
+        {
+          provide: CdnService,
+          // External (non-upload-store) URLs are returned unchanged, as in CdnService.
+          useValue: {
+            signLessonMediaUrl: jest.fn((url?: string | null) =>
+              url ? { url, expiresAt: null } : null),
+          },
+        },
       ],
     }).compile();
 
@@ -300,7 +309,8 @@ describe('CoursesService', () => {
       role: 'STUDENT',
     });
     const paid = result.modules[0].lessons[1] as any;
-    expect(paid.videoUrl).toBe(PAID_LESSON.videoUrl);
+    // Issue #335: paid videos are only issued (signed) via GET /lessons/:id after the drip check.
+    expect(paid.videoUrl).toBeUndefined();
     expect(paid.content).toBe(PAID_LESSON.content);
   });
 

@@ -11,6 +11,7 @@ import { InvoicesService } from '../invoices/invoices.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { DripScheduleService } from '../lessons/drip-schedule.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { CheckoutQuoteService } from '../billing/checkout-quote.service';
 import { EventsService } from './events.service';
 
 /**
@@ -88,12 +89,34 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
       upsert: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
+    $transaction: jest.fn(async (fn: any) => fn(prisma)),
+  };
+
+  const checkoutQuotes = {
+    getUsableQuote: jest.fn().mockResolvedValue({
+      quoteId: 'quote-1',
+      courseId: COURSE_ID,
+      listPrice: 50,
+      coupon: null,
+      referralReward: null,
+      taxRegion: 'DEFAULT',
+      taxRatePercent: 0,
+      taxAmount: 0,
+      total: 50,
+    }),
+    consumeWithinTransaction: jest.fn().mockResolvedValue(undefined),
   };
 
   const stellar = {
     getLatestLedger: jest.fn().mockResolvedValue(100),
     fetchContractEvents: jest.fn(),
     getTransactionStatus: jest.fn().mockResolvedValue({ successful: true, status: 'SUCCESS' }),
+    getContractId: jest.fn().mockReturnValue('CCONTRACT'),
+    verifyEnrollmentTransaction: jest.fn().mockResolvedValue({
+      studentAddress: 'GSTUDENT',
+      courseId: 'COURSE-TAILORING-001',
+      amountPaid: 50,
+    }),
   };
 
   const studentEnrolledEvent = (ledger: number) => ({
@@ -127,6 +150,7 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
         { provide: StellarService, useValue: stellar },
         { provide: NotificationsService, useValue: { notifyUser: jest.fn().mockResolvedValue({}) } },
         { provide: CoursesService, useValue: {} },
+        { provide: CheckoutQuoteService, useValue: checkoutQuotes },
         {
           provide: FraudDetectionService,
           useValue: {
@@ -152,7 +176,7 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
   });
 
   it('counts an API enrollment once even after the student_enrolled event is processed', async () => {
-    await enrollments.create(STUDENT.id, COURSE_ID, 'tx-enroll', 50);
+    await enrollments.create(STUDENT.id, COURSE_ID, 'tx-enroll', 'quote-1');
 
     stellar.fetchContractEvents.mockResolvedValueOnce([studentEnrolledEvent(105)]);
     await events.pollEvents();
@@ -163,7 +187,7 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
   });
 
   it('does not double count when the same event is replayed', async () => {
-    await enrollments.create(STUDENT.id, COURSE_ID, 'tx-enroll', 50);
+    await enrollments.create(STUDENT.id, COURSE_ID, 'tx-enroll', 'quote-1');
 
     stellar.fetchContractEvents
       .mockResolvedValueOnce([studentEnrolledEvent(105)])
@@ -181,7 +205,7 @@ describe('Enrollment stats deduplication across API and chain paths (Issue #231)
 
     expect(db.courses[0].totalEnrollments).toBe(0);
 
-    await enrollments.create(STUDENT.id, COURSE_ID, 'tx-enroll', 50);
+    await enrollments.create(STUDENT.id, COURSE_ID, 'tx-enroll', 'quote-1');
 
     expect(db.enrollments).toHaveLength(1);
     expect(db.courses[0].totalEnrollments).toBe(1);

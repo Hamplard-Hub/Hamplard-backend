@@ -111,7 +111,9 @@ export class VideoTranscodeProcessor extends WorkerHost {
       });
 
       const originUrl = `/uploads/${outputSubfolder.replace(/\\/g, '/')}/${outputFilename}`;
-      const delivery = this.cdnService.attachCdnUrls(originUrl, { visibility: 'public' });
+      // Lesson media is private (issue #335): instructors get a signed preview
+      // URL here; students get their own short-lived one from GET /lessons/:id.
+      const delivery = this.cdnService.attachCdnUrls(originUrl, { visibility: 'private' });
       outputUrls[preset.name] = {
         ...delivery,
         url: delivery.cdnUrl

@@ -255,4 +255,53 @@ describe('CdnService', () => {
       });
     });
   });
+
+  /** Issue #335 — lesson videos are served through short-lived signed URLs. */
+  describe('signLessonMediaUrl', () => {
+    const videoPath = '/uploads/courses/c1/lessons/l1/video.mp4';
+
+    it('signs a stored origin path with the short lesson TTL (default 300s)', () => {
+      const before = Math.floor(Date.now() / 1000);
+      const signed = service.signLessonMediaUrl(videoPath)!;
+
+      expect(signed.url).toMatch(/^https:\/\/cdn\.hamplard\.com\/uploads\/courses\/c1\/lessons\/l1\/video\.mp4\?expires=\d+&signature=[0-9a-f]+$/);
+      const expiresAtSec = Math.floor(new Date(signed.expiresAt!).getTime() / 1000);
+      expect(expiresAtSec).toBeGreaterThanOrEqual(before + 300);
+      expect(expiresAtSec).toBeLessThanOrEqual(before + 301);
+
+      const url = new URL(signed.url);
+      expect(
+        service.verifySignature(url.pathname, url.searchParams.get('expires'), url.searchParams.get('signature')).valid,
+      ).toBe(true);
+    });
+
+    it('signs our own CDN / origin URLs against the /uploads path', () => {
+      const signed = service.signLessonMediaUrl(`http://localhost:3000/api/v1${videoPath}`)!;
+      const url = new URL(signed.url);
+      expect(url.pathname).toBe(videoPath);
+      expect(service.verifySignature(videoPath, url.searchParams.get('expires'), url.searchParams.get('signature')).valid)
+        .toBe(true);
+    });
+
+    it('produces URLs that stop validating once they expire', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(new Date('2026-11-24T10:00:00Z'));
+        const signed = service.signLessonMediaUrl(videoPath, 60)!;
+        jest.setSystemTime(new Date('2026-11-24T10:01:01Z'));
+        const result = service.validateSignedUrl(signed.url);
+        expect(result.valid).toBe(false);
+        expect(result.expired).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('returns external URLs unchanged and empty values as null', () => {
+      expect(service.signLessonMediaUrl('https://videos.example.com/x.mp4'))
+        .toEqual({ url: 'https://videos.example.com/x.mp4', expiresAt: null });
+      expect(service.signLessonMediaUrl(null)).toBeNull();
+      expect(service.signLessonMediaUrl('  ')).toBeNull();
+    });
+  });
 });

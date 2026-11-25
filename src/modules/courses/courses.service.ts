@@ -8,6 +8,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { CdnService } from '../uploads/cdn.service';
 import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType, EnrollmentStatus } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -31,6 +32,7 @@ export class CoursesService {
     private readonly searchService: SearchService,
     private readonly cache: CacheService,
     private readonly config: ConfigService,
+    private readonly cdn: CdnService,
   ) {}
 
   /** Issue #92 — invalidate cached course listings/categories on content updates. */
@@ -302,15 +304,17 @@ export class CoursesService {
       throw new NotFoundException(`Course ${id} not found`);
     }
 
-    // Owners and admins always get the full view.
+    // Owners and admins always get the full view (with signed media URLs).
     if (isOwner || isAdmin) {
-      return course;
+      return this.withLessonMedia(course, () => true);
     }
 
-    // Enrolled students get the full curriculum.
+    // Enrolled students get the full curriculum. Paid lesson videos are only
+    // handed out (as short-lived signed URLs) by GET /lessons/:id, after the
+    // drip schedule check — issue #335.
     const isEnrolled = await this.isEnrolled(course.id, viewer);
     if (isEnrolled) {
-      return course;
+      return this.withLessonMedia(course, (lesson) => !!lesson.isFree);
     }
 
     // Anonymous / non-enrolled callers: return a curriculum outline.
@@ -359,6 +363,35 @@ export class CoursesService {
   }
 
   /**
+   * Issue #335: lesson videos are private assets. Lessons the viewer may play
+   * here get a short-lived signed URL; the rest have their videoUrl removed.
+   */
+  private withLessonMedia<T extends { modules: any[] }>(
+    course: T,
+    canPlay: (lesson: any) => boolean,
+  ): T {
+    return {
+      ...course,
+      modules: course.modules.map((module: any) => ({
+        ...module,
+        lessons: module.lessons.map((lesson: any) => {
+          if (!canPlay(lesson)) {
+            const rest = { ...lesson };
+            delete rest.videoUrl;
+            return rest;
+          }
+          const signed = this.cdn.signLessonMediaUrl(lesson.videoUrl);
+          return {
+            ...lesson,
+            videoUrl: signed?.url ?? null,
+            videoUrlExpiresAt: signed?.expiresAt ?? null,
+          };
+        }),
+      })),
+    };
+  }
+
+  /**
    * Strips paid lesson content from a course, keeping only the outline
    * fields (title, type, duration, isFree) plus content for free lessons.
    */
@@ -378,9 +411,11 @@ export class CoursesService {
             isFree: lesson.isFree,
           };
           if (lesson.isFree) {
+            const signed = this.cdn.signLessonMediaUrl(lesson.videoUrl);
             return {
               ...base,
-              videoUrl: lesson.videoUrl,
+              videoUrl: signed?.url ?? null,
+              videoUrlExpiresAt: signed?.expiresAt ?? null,
               content: lesson.content,
               resourceUrl: lesson.resourceUrl,
             };
