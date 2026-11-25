@@ -549,6 +549,16 @@ describe('CoursesService status transitions (issue #232)', () => {
           data: { title: 'New title' },
         });
       });
+
+      it('blocks content and price changes on ACTIVE courses', async () => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
+
+        await expect(service.update(MOCK_COURSE.id, OWNER, { title: 'Changed title' } as any))
+          .rejects.toThrow(ForbiddenException);
+        await expect(service.update(MOCK_COURSE.id, OWNER, { price: 75 } as any))
+          .rejects.toThrow(ForbiddenException);
+        expect(mockPrisma.course.update).not.toHaveBeenCalled();
+      });
     });
 
     describe('submitForReview()', () => {

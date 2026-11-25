@@ -411,6 +411,11 @@ export class CoursesService {
     if (course.status === CourseStatus.ARCHIVED) {
       throw new ForbiddenException('Cannot update an archived course');
     }
+    if (course.status === CourseStatus.ACTIVE && Object.keys(dto).length > 0) {
+      throw new ForbiddenException(
+        'ACTIVE courses cannot be updated directly. Content and price changes require an admin-approved revision.',
+      );
+    }
 
     const updated = await this.prisma.course.update({ where: { id: courseId }, data: dto });
 
