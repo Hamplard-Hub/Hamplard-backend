@@ -2,8 +2,9 @@
 import {
   Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger,
 } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { DripScheduleService } from './drip-schedule.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 import { CdnService } from '../uploads/cdn.service';
@@ -15,6 +16,7 @@ export class LessonsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly analytics: AnalyticsService,
+    private readonly dripSchedule: DripScheduleService,
     private readonly cdn: CdnService,
   ) {}
 
@@ -130,6 +132,240 @@ export class LessonsService {
     });
 
     return lesson;
+  }
+
+  // ----------------------------------------------------------
+  // CONTENT MANAGEMENT: UPDATE / DELETE / REORDER (#330)
+  // ----------------------------------------------------------
+
+  private async verifyLessonOwnership(
+    lessonId: string,
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      include: { module: { select: { id: true, courseId: true } } },
+    });
+
+    if (!lesson) {
+      throw new NotFoundException('Lesson not found');
+    }
+
+    await this.verifyCourseOwnership(lesson.module.courseId, user);
+    return lesson;
+  }
+
+  async updateModule(
+    moduleId: string,
+    data: { title?: string; position?: number },
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const module = await this.verifyModuleOwnership(moduleId, user);
+
+    const updated = await this.prisma.courseModule.update({
+      where: { id: moduleId },
+      data: {
+        ...(data.title !== undefined ? { title: data.title } : {}),
+        ...(data.position !== undefined ? { position: data.position } : {}),
+      },
+    });
+
+    // Module order drives sequential drip pacing.
+    if (data.position !== undefined && data.position !== module.position) {
+      await this.dripSchedule.resyncCourseSchedules(module.courseId);
+    }
+
+    return updated;
+  }
+
+  async deleteModule(
+    moduleId: string,
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const module = await this.verifyModuleOwnership(moduleId, user);
+
+    const lessons = await this.prisma.lesson.findMany({
+      where: { moduleId },
+      select: { id: true },
+    });
+    const lessonIds = lessons.map((l) => l.id);
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.purgeLessons(tx, lessonIds);
+      await tx.courseModule.delete({ where: { id: moduleId } });
+      await this.syncTotalLessons(tx, module.courseId);
+    });
+
+    await this.dripSchedule.resyncCourseSchedules(module.courseId);
+
+    return { success: true, id: moduleId, deletedLessons: lessonIds.length };
+  }
+
+  async updateLesson(
+    lessonId: string,
+    data: {
+      title?: string;
+      description?: string;
+      type?: string;
+      videoUrl?: string;
+      videoDuration?: number;
+      quizDurationMinutes?: number;
+      thumbnailUrl?: string;
+      content?: string;
+      resourceUrl?: string;
+      position?: number;
+      isFree?: boolean;
+    },
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const lesson = await this.verifyLessonOwnership(lessonId, user);
+
+    const fields = [
+      'title', 'description', 'type', 'videoUrl', 'videoDuration', 'quizDurationMinutes',
+      'thumbnailUrl', 'content', 'resourceUrl', 'position', 'isFree',
+    ] as const;
+    const updateData: Record<string, unknown> = {};
+    for (const field of fields) {
+      if (data[field] !== undefined) updateData[field] = data[field];
+    }
+
+    const updated = await this.prisma.lesson.update({
+      where: { id: lessonId },
+      data: updateData as Prisma.LessonUpdateInput,
+    });
+
+    if (data.position !== undefined && data.position !== lesson.position) {
+      await this.dripSchedule.resyncCourseSchedules(lesson.module.courseId);
+    }
+
+    return updated;
+  }
+
+  async deleteLesson(
+    lessonId: string,
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const lesson = await this.verifyLessonOwnership(lessonId, user);
+    const courseId = lesson.module.courseId;
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.purgeLessons(tx, [lessonId]);
+      await this.syncTotalLessons(tx, courseId);
+    });
+
+    await this.dripSchedule.resyncCourseSchedules(courseId);
+
+    return { success: true, id: lessonId };
+  }
+
+  /**
+   * Bulk reorder modules and lessons of a course in a single transaction.
+   * Lessons may also be moved to another module of the same course.
+   */
+  async reorderCourseContent(
+    courseId: string,
+    data: {
+      modules?: { id: string; position: number }[];
+      lessons?: { id: string; position: number; moduleId?: string }[];
+    },
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    await this.verifyCourseOwnership(courseId, user);
+
+    const modules = data.modules ?? [];
+    const lessons = data.lessons ?? [];
+
+    if (modules.length === 0 && lessons.length === 0) {
+      throw new BadRequestException('Provide at least one module or lesson position');
+    }
+
+    const moduleIds = modules.map((m) => m.id);
+    const lessonIds = lessons.map((l) => l.id);
+    if (new Set(moduleIds).size !== moduleIds.length || new Set(lessonIds).size !== lessonIds.length) {
+      throw new BadRequestException('Duplicate IDs in reorder payload');
+    }
+
+    const courseModules = await this.prisma.courseModule.findMany({
+      where: { courseId },
+      select: { id: true },
+    });
+    const courseModuleIds = new Set(courseModules.map((m) => m.id));
+
+    for (const m of modules) {
+      if (!courseModuleIds.has(m.id)) {
+        throw new BadRequestException(`Module ${m.id} does not belong to this course`);
+      }
+    }
+    for (const l of lessons) {
+      if (l.moduleId && !courseModuleIds.has(l.moduleId)) {
+        throw new BadRequestException(`Module ${l.moduleId} does not belong to this course`);
+      }
+    }
+
+    if (lessonIds.length > 0) {
+      const courseLessons = await this.prisma.lesson.findMany({
+        where: { id: { in: lessonIds }, module: { courseId } },
+        select: { id: true },
+      });
+      if (courseLessons.length !== lessonIds.length) {
+        throw new BadRequestException('One or more lessons do not belong to this course');
+      }
+    }
+
+    await this.prisma.$transaction([
+      ...modules.map((m) =>
+        this.prisma.courseModule.update({
+          where: { id: m.id },
+          data: { position: m.position },
+        }),
+      ),
+      ...lessons.map((l) =>
+        this.prisma.lesson.update({
+          where: { id: l.id },
+          data: { position: l.position, ...(l.moduleId ? { moduleId: l.moduleId } : {}) },
+        }),
+      ),
+    ]);
+
+    await this.dripSchedule.resyncCourseSchedules(courseId);
+
+    return this.prisma.courseModule.findMany({
+      where: { courseId },
+      orderBy: { position: 'asc' },
+      include: {
+        lessons: {
+          orderBy: { position: 'asc' },
+          select: { id: true, title: true, position: true, moduleId: true },
+        },
+      },
+    });
+  }
+
+  /**
+   * Removes lessons together with dependent rows that are not cascaded by the
+   * database (progress, Q&A, assignments). Quiz data, drip configs and unlocks
+   * cascade on lesson delete.
+   */
+  private async purgeLessons(tx: Prisma.TransactionClient, lessonIds: string[]) {
+    if (lessonIds.length === 0) return;
+
+    await tx.answer.deleteMany({ where: { question: { lessonId: { in: lessonIds } } } });
+    await tx.question.deleteMany({ where: { lessonId: { in: lessonIds } } });
+    await tx.assignmentSubmission.deleteMany({
+      where: { assignment: { lessonId: { in: lessonIds } } },
+    });
+    await tx.assignment.deleteMany({ where: { lessonId: { in: lessonIds } } });
+    await tx.lessonProgress.deleteMany({ where: { lessonId: { in: lessonIds } } });
+    await tx.lesson.deleteMany({ where: { id: { in: lessonIds } } });
+  }
+
+  /** Recomputes course.totalLessons from the actual lesson rows. */
+  private async syncTotalLessons(tx: Prisma.TransactionClient, courseId: string) {
+    const totalLessons = await tx.lesson.count({ where: { module: { courseId } } });
+    await tx.course.update({
+      where: { id: courseId },
+      data: { totalLessons },
+    });
   }
 
   async findLesson(lessonId: string) {

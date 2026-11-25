@@ -48,6 +48,7 @@ describe('ReferralsService', () => {
     },
     enrollment: {
       findUnique: jest.fn(),
+      update: jest.fn(),
     },
     $transaction: jest.fn(),
   };

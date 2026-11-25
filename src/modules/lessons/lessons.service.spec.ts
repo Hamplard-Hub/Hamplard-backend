@@ -4,11 +4,13 @@ import { UserRole } from '@prisma/client';
 import { LessonsService } from './lessons.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { DripScheduleService } from './drip-schedule.service';
 import { CdnService } from '../uploads/cdn.service';
 
 describe('LessonsService (Ownership & IDOR Protection)', () => {
   let service: LessonsService;
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
+  const mockDripSchedule = { resyncCourseSchedules: jest.fn().mockResolvedValue(undefined) };
   const mockCdn = { signLessonMediaUrl: jest.fn() };
 
   const mockPrisma = {
@@ -18,13 +20,23 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
     },
     courseModule: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
     },
     lesson: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      deleteMany: jest.fn(),
+      count: jest.fn(),
     },
+    answer: { deleteMany: jest.fn() },
+    question: { deleteMany: jest.fn() },
+    assignmentSubmission: { deleteMany: jest.fn() },
+    assignment: { deleteMany: jest.fn() },
     enrollment: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -34,7 +46,9 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       upsert: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
+      deleteMany: jest.fn(),
     },
+    $transaction: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -43,12 +57,16 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         LessonsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: AnalyticsService, useValue: mockAnalytics },
+        { provide: DripScheduleService, useValue: mockDripSchedule },
         { provide: CdnService, useValue: mockCdn },
       ],
     }).compile();
 
     service = module.get<LessonsService>(LessonsService);
     jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation((arg: any) =>
+      typeof arg === 'function' ? arg(mockPrisma) : Promise.all(arg),
+    );
   });
 
   describe('createModule()', () => {
@@ -331,6 +349,194 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       });
     });
   });
+  describe('content management (#330)', () => {
+    const owner = { id: 'instructor-1', stellarAddress: 'GINSTRUCTOR1', role: UserRole.INSTRUCTOR };
+    const stranger = { id: 'instructor-2', stellarAddress: 'GOTHER', role: UserRole.INSTRUCTOR };
+    const ownedCourse = {
+      id: 'course-1',
+      instructorAddress: 'GINSTRUCTOR1',
+      instructor: { id: 'instructor-1' },
+    };
+
+    it('updateModule() rejects a non-owner', async () => {
+      mockPrisma.courseModule.findUnique.mockResolvedValue({
+        id: 'mod-1', courseId: 'course-1', position: 0, course: ownedCourse,
+      });
+
+      await expect(service.updateModule('mod-1', { title: 'New' }, stranger)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockPrisma.courseModule.update).not.toHaveBeenCalled();
+    });
+
+    it('updateModule() renames without resyncing drip when position is unchanged', async () => {
+      mockPrisma.courseModule.findUnique.mockResolvedValue({
+        id: 'mod-1', courseId: 'course-1', position: 0, course: ownedCourse,
+      });
+      mockPrisma.courseModule.update.mockResolvedValue({ id: 'mod-1', title: 'New' });
+
+      const result = await service.updateModule('mod-1', { title: 'New' }, owner);
+
+      expect(result.title).toBe('New');
+      expect(mockPrisma.courseModule.update).toHaveBeenCalledWith({
+        where: { id: 'mod-1' },
+        data: { title: 'New' },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).not.toHaveBeenCalled();
+    });
+
+    it('updateLesson() throws NotFoundException for a missing lesson', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(null);
+
+      await expect(service.updateLesson('lesson-x', { title: 'A' }, owner)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('updateLesson() rejects a non-owner', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+
+      await expect(service.updateLesson('lesson-1', { title: 'A' }, stranger)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('updateLesson() updates only provided fields and resyncs drip on position change', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.lesson.update.mockResolvedValue({ id: 'lesson-1', title: 'A', position: 2 });
+
+      await service.updateLesson('lesson-1', { title: 'A', position: 2 }, owner);
+
+      expect(mockPrisma.lesson.update).toHaveBeenCalledWith({
+        where: { id: 'lesson-1' },
+        data: { title: 'A', position: 2 },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
+    });
+
+    it('deleteLesson() purges dependents, recounts totalLessons and resyncs drip', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.lesson.count.mockResolvedValue(4);
+
+      const result = await service.deleteLesson('lesson-1', owner);
+
+      expect(result).toEqual({ success: true, id: 'lesson-1' });
+      expect(mockPrisma.lessonProgress.deleteMany).toHaveBeenCalledWith({
+        where: { lessonId: { in: ['lesson-1'] } },
+      });
+      expect(mockPrisma.lesson.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['lesson-1'] } },
+      });
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'course-1' },
+        data: { totalLessons: 4 },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
+    });
+
+    it('deleteLesson() rejects a non-owner without deleting anything', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+
+      await expect(service.deleteLesson('lesson-1', stranger)).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('deleteModule() removes its lessons and the module, then recounts totalLessons', async () => {
+      mockPrisma.courseModule.findUnique.mockResolvedValue({
+        id: 'mod-1', courseId: 'course-1', position: 0, course: ownedCourse,
+      });
+      mockPrisma.lesson.findMany.mockResolvedValue([{ id: 'lesson-1' }, { id: 'lesson-2' }]);
+      mockPrisma.lesson.count.mockResolvedValue(0);
+
+      const result = await service.deleteModule('mod-1', owner);
+
+      expect(result).toEqual({ success: true, id: 'mod-1', deletedLessons: 2 });
+      expect(mockPrisma.lesson.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['lesson-1', 'lesson-2'] } },
+      });
+      expect(mockPrisma.courseModule.delete).toHaveBeenCalledWith({ where: { id: 'mod-1' } });
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'course-1' },
+        data: { totalLessons: 0 },
+      });
+    });
+
+    it('reorderCourseContent() rejects modules from another course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.courseModule.findMany.mockResolvedValue([{ id: 'mod-1' }]);
+
+      await expect(
+        service.reorderCourseContent(
+          'course-1',
+          { modules: [{ id: 'foreign-mod', position: 0 }] },
+          owner,
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('reorderCourseContent() rejects lessons from another course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.courseModule.findMany.mockResolvedValue([{ id: 'mod-1' }]);
+      mockPrisma.lesson.findMany.mockResolvedValue([]);
+
+      await expect(
+        service.reorderCourseContent(
+          'course-1',
+          { lessons: [{ id: 'foreign-lesson', position: 0 }] },
+          owner,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('reorderCourseContent() rejects an empty payload', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+
+      await expect(service.reorderCourseContent('course-1', {}, owner)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('reorderCourseContent() applies all positions in one transaction and resyncs drip', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.courseModule.findMany
+        .mockResolvedValueOnce([{ id: 'mod-1' }, { id: 'mod-2' }])
+        .mockResolvedValueOnce([]);
+      mockPrisma.lesson.findMany.mockResolvedValue([{ id: 'lesson-1' }]);
+      mockPrisma.courseModule.update.mockResolvedValue({});
+      mockPrisma.lesson.update.mockResolvedValue({});
+
+      await service.reorderCourseContent(
+        'course-1',
+        {
+          modules: [{ id: 'mod-1', position: 1 }, { id: 'mod-2', position: 0 }],
+          lessons: [{ id: 'lesson-1', position: 0, moduleId: 'mod-2' }],
+        },
+        owner,
+      );
+
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.courseModule.update).toHaveBeenCalledWith({
+        where: { id: 'mod-2' },
+        data: { position: 0 },
+      });
+      expect(mockPrisma.lesson.update).toHaveBeenCalledWith({
+        where: { id: 'lesson-1' },
+        data: { position: 0, moduleId: 'mod-2' },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
 
   /** Issue #335 — students only ever receive short-lived signed video URLs. */
   describe('findLessonForViewer()', () => {
