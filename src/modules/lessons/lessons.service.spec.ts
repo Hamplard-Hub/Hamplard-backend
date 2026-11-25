@@ -4,10 +4,12 @@ import { UserRole } from '@prisma/client';
 import { LessonsService } from './lessons.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { CdnService } from '../uploads/cdn.service';
 
 describe('LessonsService (Ownership & IDOR Protection)', () => {
   let service: LessonsService;
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
+  const mockCdn = { signLessonMediaUrl: jest.fn() };
 
   const mockPrisma = {
     course: {
@@ -41,6 +43,7 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         LessonsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: AnalyticsService, useValue: mockAnalytics },
+        { provide: CdnService, useValue: mockCdn },
       ],
     }).compile();
 
@@ -380,6 +383,39 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       });
 
       expect(mockPrisma.lesson.update).toHaveBeenCalled();
+  /** Issue #335 — students only ever receive short-lived signed video URLs. */
+  describe('findLessonForViewer()', () => {
+    it('replaces the stored videoUrl with a signed URL and its expiry', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1',
+        videoUrl: '/uploads/courses/c1/lessons/lesson-1/video.mp4',
+        module: { course: { id: 'c1' } },
+      });
+      mockCdn.signLessonMediaUrl.mockReturnValue({
+        url: 'https://cdn.hamplard.com/uploads/courses/c1/lessons/lesson-1/video.mp4?expires=1&signature=abc',
+        expiresAt: '2026-11-24T10:05:00.000Z',
+      });
+
+      const lesson = await service.findLessonForViewer('lesson-1');
+
+      expect(mockCdn.signLessonMediaUrl).toHaveBeenCalledWith('/uploads/courses/c1/lessons/lesson-1/video.mp4');
+      expect(lesson.videoUrl).toContain('signature=abc');
+      expect(lesson.videoUrlExpiresAt).toBe('2026-11-24T10:05:00.000Z');
+    });
+
+    it('returns null video fields for lessons without a video', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({ id: 'lesson-2', videoUrl: null, module: {} });
+      mockCdn.signLessonMediaUrl.mockReturnValue(null);
+
+      const lesson = await service.findLessonForViewer('lesson-2');
+
+      expect(lesson.videoUrl).toBeNull();
+      expect(lesson.videoUrlExpiresAt).toBeNull();
+    });
+
+    it('throws NotFoundException for an unknown lesson', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(null);
+      await expect(service.findLessonForViewer('missing')).rejects.toThrow(NotFoundException);
     });
   });
 });

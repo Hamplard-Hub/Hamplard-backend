@@ -26,12 +26,17 @@ export class LessonsController {
   ) {}
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get lesson content (validating drip unlock schedule)' })
+  @ApiOperation({
+    summary: 'Get lesson content (validating drip unlock schedule)',
+    description:
+      'The returned videoUrl is a short-lived signed URL (see videoUrlExpiresAt); ' +
+      're-fetch the lesson to get a fresh one once it expires.',
+  })
   async findOne(@Param('id') id: string, @CurrentUser('id') userId: string) {
     if (userId) {
       await this.dripScheduleService.validateLessonAccess(userId, id);
     }
-    return this.lessonsService.findLesson(id);
+    return this.lessonsService.findLessonForViewer(id);
   }
 
   @Post('modules')

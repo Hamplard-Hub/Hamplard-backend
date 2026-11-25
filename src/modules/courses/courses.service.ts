@@ -8,6 +8,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService, CourseSearchDocument } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { CdnService } from '../uploads/cdn.service';
 import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType, EnrollmentStatus } from '@prisma/client';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -31,6 +32,7 @@ export class CoursesService {
     private readonly searchService: SearchService,
     private readonly cache: CacheService,
     private readonly config: ConfigService,
+    private readonly cdn: CdnService,
   ) {}
 
   /** Issue #92 — invalidate cached course listings/categories on content updates. */
@@ -123,11 +125,25 @@ export class CoursesService {
 
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.PENDING, txHash: txHash ?? course.txHash },
+      data: {
+        status: CourseStatus.PENDING,
+        txHash: txHash ?? course.txHash,
+        // Issue #444: feedback from a previous rejection must not carry over
+        // into the new review round.
+        rejectionReason: null,
+        rejectedAt: null,
+      },
     });
 
-    // Notify all admins (simplified — notify the single admin address)
     this.logger.log(`Course ${courseId} submitted for review`);
+
+    // Issue #338 — notify every admin that a course is waiting for review
+    await this.notifications.notifyAdmins(
+      NotificationType.COURSE_SUBMITTED_FOR_REVIEW,
+      'Course submitted for review',
+      `"${course.title}" by ${course.instructor?.name ?? 'an instructor'} is awaiting review`,
+      { courseId, instructorId: course.instructor?.id, instructorAddress: course.instructorAddress },
+    );
     return updated;
   }
 
@@ -143,7 +159,8 @@ export class CoursesService {
 
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.ACTIVE, approvedAt: new Date() },
+      // Rejection feedback is internal to the review loop; never publish it.
+      data: { status: CourseStatus.ACTIVE, approvedAt: new Date(), rejectionReason: null, rejectedAt: null },
     });
 
     // Index the approved course into the search engine
@@ -186,9 +203,11 @@ export class CoursesService {
       throw new ForbiddenException('Only PENDING courses can be rejected');
     }
 
+    // Issue #444: persist the feedback so the instructor can still read it in
+    // the course detail after the notification is gone.
     const updated = await this.prisma.course.update({
       where: { id: courseId },
-      data: { status: CourseStatus.DRAFT },
+      data: { status: CourseStatus.DRAFT, rejectionReason: reason, rejectedAt: new Date() },
     });
 
     const instructor = await this.prisma.user.findUnique({
@@ -232,8 +251,13 @@ export class CoursesService {
     search?: string;
     page?: number;
     limit?: number;
+    /** Sort by creation date; `asc` = oldest first (admin review queue, issue #445). */
+    sortOrder?: 'asc' | 'desc';
   }) {
-    const { category, level, status, instructorAddress, search, page = 1, limit = 20 } = filters;
+    const {
+      category, level, status, instructorAddress, search,
+      page = 1, limit = 20, sortOrder = 'desc',
+    } = filters;
 
     const where: any = {};
     if (category)          where.category = category;
@@ -254,7 +278,9 @@ export class CoursesService {
           instructor: { select: { name: true, stellarAddress: true, avatarUrl: true } },
           _count:     { select: { enrollments: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        // `id` tiebreaker keeps page boundaries stable when createdAt values collide,
+        // so consecutive pages never duplicate or skip rows.
+        orderBy: [{ createdAt: sortOrder }, { id: sortOrder }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -302,15 +328,17 @@ export class CoursesService {
       throw new NotFoundException(`Course ${id} not found`);
     }
 
-    // Owners and admins always get the full view.
+    // Owners and admins always get the full view (with signed media URLs).
     if (isOwner || isAdmin) {
-      return course;
+      return this.withLessonMedia(course, () => true);
     }
 
-    // Enrolled students get the full curriculum.
+    // Enrolled students get the full curriculum. Paid lesson videos are only
+    // handed out (as short-lived signed URLs) by GET /lessons/:id, after the
+    // drip schedule check — issue #335.
     const isEnrolled = await this.isEnrolled(course.id, viewer);
     if (isEnrolled) {
-      return course;
+      return this.withLessonMedia(course, (lesson) => !!lesson.isFree);
     }
 
     // Anonymous / non-enrolled callers: return a curriculum outline.
@@ -321,9 +349,19 @@ export class CoursesService {
     return this.findOne(id, { userId, isAdmin: role === UserRole.ADMIN });
   }
 
+  /**
+   * Public checkout fee/tax breakdown.
+   *
+   * Issue #441: only ACTIVE (purchasable) courses are visible here. The status
+   * is part of the query itself, so DRAFT/PENDING/PAUSED/ARCHIVED courses get
+   * the same 404 as unknown ids — callers cannot tell them apart, and the
+   * title/price of unpublished courses never leaves the database. Owners and
+   * admins have no use for a checkout quote on a course nobody can buy, so no
+   * ownership bypass is offered.
+   */
   async getCheckoutBreakdown(courseId: string, region?: string) {
-    const course = await this.prisma.course.findUnique({
-      where: { id: courseId },
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, status: CourseStatus.ACTIVE },
       select: { id: true, title: true, price: true, platformFeePercent: true },
     });
     if (!course) throw new NotFoundException(`Course ${courseId} not found`);
@@ -331,11 +369,13 @@ export class CoursesService {
     return {
       courseId: course.id,
       courseTitle: course.title,
-      ...this.feeCalculator.computeBreakdown({
+      // computeBreakdown is async (DB-backed tax rates); without the await the
+      // spread copied nothing and checkout returned no fee/tax fields.
+      ...(await this.feeCalculator.computeBreakdown({
         coursePrice: Number(course.price),
         platformFeePercent: course.platformFeePercent,
         region,
-      }),
+      })),
     };
   }
 
@@ -359,6 +399,35 @@ export class CoursesService {
   }
 
   /**
+   * Issue #335: lesson videos are private assets. Lessons the viewer may play
+   * here get a short-lived signed URL; the rest have their videoUrl removed.
+   */
+  private withLessonMedia<T extends { modules: any[] }>(
+    course: T,
+    canPlay: (lesson: any) => boolean,
+  ): T {
+    return {
+      ...course,
+      modules: course.modules.map((module: any) => ({
+        ...module,
+        lessons: module.lessons.map((lesson: any) => {
+          if (!canPlay(lesson)) {
+            const rest = { ...lesson };
+            delete rest.videoUrl;
+            return rest;
+          }
+          const signed = this.cdn.signLessonMediaUrl(lesson.videoUrl);
+          return {
+            ...lesson,
+            videoUrl: signed?.url ?? null,
+            videoUrlExpiresAt: signed?.expiresAt ?? null,
+          };
+        }),
+      })),
+    };
+  }
+
+  /**
    * Strips paid lesson content from a course, keeping only the outline
    * fields (title, type, duration, isFree) plus content for free lessons.
    */
@@ -378,9 +447,13 @@ export class CoursesService {
             isFree: lesson.isFree,
           };
           if (lesson.isFree) {
+            const signed = this.cdn.signLessonMediaUrl(lesson.videoUrl);
             return {
               ...base,
               videoUrl: lesson.videoUrl,
+              videoRenditions: lesson.videoRenditions,
+              videoUrl: signed?.url ?? null,
+              videoUrlExpiresAt: signed?.expiresAt ?? null,
               content: lesson.content,
               resourceUrl: lesson.resourceUrl,
             };
@@ -410,6 +483,11 @@ export class CoursesService {
     this.assertCourseOwner(course, user);
     if (course.status === CourseStatus.ARCHIVED) {
       throw new ForbiddenException('Cannot update an archived course');
+    }
+    if (course.status === CourseStatus.ACTIVE && Object.keys(dto).length > 0) {
+      throw new ForbiddenException(
+        'ACTIVE courses cannot be updated directly. Content and price changes require an admin-approved revision.',
+      );
     }
 
     const updated = await this.prisma.course.update({ where: { id: courseId }, data: dto });
@@ -445,7 +523,7 @@ export class CoursesService {
   async approveCourse(courseId: string): Promise<boolean> {
     const { count } = await this.prisma.course.updateMany({
       where: { id: courseId },
-      data: { status: CourseStatus.ACTIVE, approvedAt: new Date() },
+      data: { status: CourseStatus.ACTIVE, approvedAt: new Date(), rejectionReason: null, rejectedAt: null },
     });
     if (!count) {
       this.logger.warn(`approveCourse: course ${courseId} not found`);

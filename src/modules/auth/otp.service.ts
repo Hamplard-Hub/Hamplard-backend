@@ -1,12 +1,14 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
   UnauthorizedException,
   Logger,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { randomInt, createHmac, timingSafeEqual } from 'crypto';
 import { RedisRateLimitService } from '../../common/redis-rate-limit/redis-rate-limit.service';
@@ -241,25 +243,54 @@ export class OtpService {
       );
     }
 
-    // OTP is valid - mark as used and verified
-    await this.prisma.phoneOtp.update({
-      where: { id: otpRecord.id },
-      data: {
-        isUsed: true,
-        verifiedAt: new Date(),
+    const verifiedOwner = await this.prisma.user.findFirst({
+      where: {
+        phoneNumber,
+        isPhoneVerified: true,
+        deletedAt: null,
+        deactivatedAt: null,
+        id: { not: userId },
       },
+      select: { id: true },
     });
 
-    // Update user's phone verification status
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        phoneNumber,
-        phoneCountryCode: otpRecord.countryCode,
-        isPhoneVerified: true,
-        phoneVerifiedAt: new Date(),
-      },
-    });
+    if (verifiedOwner) {
+      throw new ConflictException('Phone number is already verified by another account.');
+    }
+
+    // The partial unique index also protects concurrent verifications. Keep the
+    // user update and OTP consumption atomic so a conflict leaves the OTP unused.
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const verifiedAt = new Date();
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            phoneNumber,
+            phoneCountryCode: otpRecord.countryCode,
+            isPhoneVerified: true,
+            phoneVerifiedAt: verifiedAt,
+          },
+        });
+        await tx.phoneOtp.update({
+          where: { id: otpRecord.id },
+          data: { isUsed: true, verifiedAt },
+        });
+      });
+    } catch (error) {
+      const target = error instanceof Prisma.PrismaClientKnownRequestError
+        ? error.meta?.target
+        : undefined;
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        ((Array.isArray(target) && target.includes('phoneNumber')) ||
+          target === 'users_active_verified_phone_key')
+      ) {
+        throw new ConflictException('Phone number is already verified by another account.');
+      }
+      throw error;
+    }
 
     this.logger.log(`Phone ${phoneNumber} verified successfully for user ${userId}`);
     return true;

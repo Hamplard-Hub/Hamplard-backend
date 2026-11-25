@@ -6,6 +6,7 @@ import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
+import { CdnService } from '../uploads/cdn.service';
 
 @Injectable()
 export class LessonsService {
@@ -14,6 +15,7 @@ export class LessonsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly analytics: AnalyticsService,
+    private readonly cdn: CdnService,
   ) {}
 
   private async verifyCourseOwnership(
@@ -137,6 +139,26 @@ export class LessonsService {
     });
     if (!lesson) throw new NotFoundException('Lesson not found');
     return lesson;
+  }
+
+  /**
+   * Returns a lesson for a viewer who has already passed the enrollment /
+   * drip checks (issue #335). The stored video reference is never exposed;
+   * it is replaced with a short-lived signed URL plus its expiry.
+   */
+  async findLessonForViewer(lessonId: string) {
+    const lesson = await this.findLesson(lessonId);
+    return this.withSignedVideoUrl(lesson);
+  }
+
+  /** Swaps a lesson's stored videoUrl for a short-lived signed URL (issue #335). */
+  withSignedVideoUrl<T extends { videoUrl?: string | null }>(lesson: T) {
+    const signed = this.cdn.signLessonMediaUrl(lesson.videoUrl);
+    return {
+      ...lesson,
+      videoUrl: signed?.url ?? null,
+      videoUrlExpiresAt: signed?.expiresAt ?? null,
+    };
   }
 
   /**

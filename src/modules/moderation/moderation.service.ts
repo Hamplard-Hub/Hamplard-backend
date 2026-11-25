@@ -63,7 +63,19 @@ export class ModerationService {
         status: { in: [ReportStatus.PENDING, ReportStatus.UNDER_REVIEW] },
       },
     });
-    const pendingCount = reporterGroups.length;
+
+    let pendingCount = reporterGroups.length;
+    if (dto.targetType === ReportTargetType.COURSE && reporterGroups.length > 0) {
+      const reporterIds = reporterGroups.map((g) => g.reporterId);
+      const enrollments = await this.prisma.enrollment.findMany({
+        where: {
+          courseId: dto.targetId,
+          userId: { in: reporterIds },
+        },
+        select: { userId: true },
+      });
+      pendingCount = new Set(enrollments.map((e) => e.userId)).size;
+    }
 
     let autoActionTaken = false;
     if (pendingCount >= DEFAULT_UNPUBLISH_THRESHOLD) {
@@ -86,6 +98,18 @@ export class ModerationService {
           const paused = await this.courses.pauseCourse(targetId);
           if (paused) {
             this.logger.warn(`Course ${targetId} automatically paused due to flag threshold reach`);
+            if (course.instructorId) {
+              await this.prisma.notification
+                ?.create({
+                  data: {
+                    userId: course.instructorId,
+                    type: 'COURSE_PAUSED',
+                    title: 'Course paused for moderation review',
+                    message: `Your course "${course.title ?? targetId}" was automatically paused after receiving multiple reports and is under review.`,
+                  } as any,
+                })
+                .catch(() => undefined);
+            }
           }
           return paused;
         }
@@ -121,6 +145,27 @@ export class ModerationService {
         resolvedAt: new Date(),
       },
     });
+
+    if (dto.status === ReportStatus.DISMISSED && flag.targetType === ReportTargetType.COURSE) {
+      const remainingActive = await this.prisma.abuseReport.count({
+        where: {
+          targetType: flag.targetType,
+          targetId: flag.targetId,
+          status: { in: [ReportStatus.PENDING, ReportStatus.UNDER_REVIEW] },
+        },
+      });
+
+      if (remainingActive === 0) {
+        const course = await this.prisma.course.findUnique({ where: { id: flag.targetId } });
+        if (course && course.status === CourseStatus.PAUSED) {
+          await this.prisma.course.update({
+            where: { id: flag.targetId },
+            data: { status: CourseStatus.PUBLISHED },
+          });
+          this.logger.log(`Course ${flag.targetId} restored to PUBLISHED after all reports were dismissed`);
+        }
+      }
+    }
 
     this.logger.log(`Flag ${flagId} resolved by admin ${adminId} to status ${dto.status}`);
     return updated;
