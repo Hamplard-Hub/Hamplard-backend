@@ -1,5 +1,5 @@
 import {
-  Injectable, BadRequestException, Logger,
+  Injectable, BadRequestException, Logger, Inject,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as path from 'path';
@@ -11,6 +11,7 @@ import { VideoTranscodeService } from './video-transcode.service';
 import { VideoThumbnailService, ThumbnailResult } from './video-thumbnail.service';
 import { DetectedFileType, detectFileType, INLINE_CONTENT_TYPES } from './file-type.util';
 import { getNumberConfig } from '../../common/config/env.util';
+import { StorageDriver, STORAGE_DRIVER } from './storage';
 
 export type UploadCategory = 'image' | 'document' | 'kyc' | 'video';
 
@@ -58,6 +59,21 @@ const DEFAULT_MAX_FILE_SIZE_MB = 500;
 /** Top-level storage folders that are never served without a valid signature */
 export const PRIVATE_UPLOAD_FOLDERS = ['kyc', 'certificates'];
 
+/**
+ * Lesson media (videos, transcodes) lives under courses/<courseId>/lessons/
+ * and is paid content, so it is private too — served only through
+ * short-lived signed URLs issued after enrollment / drip checks (issue #335).
+ */
+const PRIVATE_LESSON_MEDIA_PATTERN = /^courses\/[^/]+\/lessons\//;
+
+/** Whether a path relative to the upload dir must only be served when signed. */
+export function isPrivateUploadPath(relativePath: string): boolean {
+  return (
+    PRIVATE_UPLOAD_FOLDERS.includes(relativePath.split('/')[0])
+    || PRIVATE_LESSON_MEDIA_PATTERN.test(relativePath)
+  );
+}
+
 export interface StoredFileInfo {
   absolutePath: string;
   /** Path relative to the upload dir, using forward slashes */
@@ -85,6 +101,7 @@ export interface VideoUploadResult {
 export class UploadsService {
   private readonly logger = new Logger(UploadsService.name);
   private readonly uploadDir: string;
+  private readonly storageDriver: string;
 
   constructor(
     private readonly config: ConfigService,
@@ -92,10 +109,18 @@ export class UploadsService {
     private readonly virusScan: VirusScanService,
     private readonly videoTranscode: VideoTranscodeService,
     private readonly videoThumbnail: VideoThumbnailService,
+    @Inject(STORAGE_DRIVER) private readonly storage: StorageDriver,
   ) {
     this.uploadDir = this.config.get<string>('UPLOAD_DIR', './uploads');
-    this.ensureDir(this.uploadDir);
-    this.ensureDir(path.join(this.uploadDir, 'kyc'));
+    this.storageDriver = this.config.get<string>('STORAGE_DRIVER', 'local');
+
+    // Only create local directories if using local storage
+    if (this.storageDriver === 'local') {
+      this.ensureDir(this.uploadDir);
+      this.ensureDir(path.join(this.uploadDir, 'kyc'));
+    }
+
+    this.logger.log(`Uploads service initialized with ${this.storageDriver} storage driver`);
   }
 
   // ----------------------------------------------------------
@@ -115,12 +140,12 @@ export class UploadsService {
 
     await this.virusScan.scanFile(filename, file.buffer);
 
-    const filePath = path.join(this.uploadDir, 'kyc', filename);
+    const relativePath = `kyc/${filename}`;
+    await this.storage.writeFile(relativePath, file.buffer);
 
-    fs.writeFileSync(filePath, file.buffer);
-    this.logger.log(`KYC document saved: ${filePath}`);
+    this.logger.log(`KYC document saved: ${relativePath}`);
 
-    const originUrl = `/uploads/kyc/${filename}`;
+    const originUrl = `/uploads/${relativePath}`;
     return this.toUploadResult(originUrl, 'private');
   }
 
@@ -136,18 +161,21 @@ export class UploadsService {
   ): Promise<UploadResult> {
     const { ext } = this.validateFile(file, category);
 
-    this.ensureDir(path.join(this.uploadDir, subfolder));
+    // Only ensure directory for local storage
+    if (this.storageDriver === 'local') {
+      this.ensureDir(path.join(this.uploadDir, subfolder));
+    }
 
     const filename = `${uuid()}${ext}`;
 
     await this.virusScan.scanFile(filename, file.buffer);
 
-    const filePath = path.join(this.uploadDir, subfolder, filename);
+    const relativePath = `${subfolder}/${filename}`;
+    await this.storage.writeFile(relativePath, file.buffer);
 
-    fs.writeFileSync(filePath, file.buffer);
-    this.logger.log(`File saved: ${filePath}`);
+    this.logger.log(`File saved: ${relativePath}`);
 
-    const originUrl = `/uploads/${subfolder}/${filename}`;
+    const originUrl = `/uploads/${relativePath}`;
     return this.toUploadResult(originUrl, visibility);
   }
 
@@ -166,15 +194,19 @@ export class UploadsService {
     filename: string,
     visibility: CdnAssetVisibility = 'private',
   ): Promise<UploadResult> {
-    this.ensureDir(path.join(this.uploadDir, subfolder));
+    // Only ensure directory for local storage
+    if (this.storageDriver === 'local') {
+      this.ensureDir(path.join(this.uploadDir, subfolder));
+    }
 
     const safeName = path.basename(filename);
-    const filePath = path.join(this.uploadDir, subfolder, safeName);
+    const relativePath = `${subfolder}/${safeName}`;
 
-    fs.writeFileSync(filePath, buffer);
-    this.logger.log(`Generated file saved: ${filePath}`);
+    await this.storage.writeFile(relativePath, buffer);
 
-    const originUrl = `/uploads/${subfolder}/${safeName}`;
+    this.logger.log(`Generated file saved: ${relativePath}`);
+
+    const originUrl = `/uploads/${relativePath}`;
     return this.toUploadResult(originUrl, visibility);
   }
 
@@ -183,10 +215,9 @@ export class UploadsService {
    * Returns null when the file does not exist; rejects paths that escape the
    * upload directory.
    */
-  readStoredFile(originPath: string): Buffer | null {
-    const filePath = this.resolveStoragePath(originPath);
-    if (!fs.existsSync(filePath)) return null;
-    return fs.readFileSync(filePath);
+  async readStoredFile(originPath: string): Promise<Buffer | null> {
+    const relativePath = this.getRelativePath(originPath);
+    return await this.storage.readFile(relativePath);
   }
 
   /**
@@ -195,22 +226,29 @@ export class UploadsService {
    * The Content-Type is derived from a fixed allow-list — unknown types are
    * flagged as non-inline so they are only ever served as downloads.
    */
-  getStoredFileInfo(originPath: string): StoredFileInfo | null {
-    const absolutePath = this.resolveStoragePath(originPath);
-    if (!fs.existsSync(absolutePath)) return null;
+  async getStoredFileInfo(originPath: string): Promise<StoredFileInfo | null> {
+    const relativePath = this.getRelativePath(originPath);
 
-    const stats = fs.statSync(absolutePath);
-    if (!stats.isFile()) return null;
+    const exists = await this.storage.fileExists(relativePath);
+    if (!exists) return null;
 
-    const { relativePath, isPrivate } = this.describeStoragePath(originPath);
-    const ext = path.extname(absolutePath).toLowerCase();
+    const size = await this.storage.getFileSize(relativePath);
+    if (size === null) return null;
+
+    const { isPrivate } = this.describeStoragePath(originPath);
+    const ext = path.extname(relativePath).toLowerCase();
     const inlineType = INLINE_CONTENT_TYPES[ext];
+
+    // For local storage, we need the absolute path; for S3, use a placeholder
+    const absolutePath = this.storageDriver === 'local'
+      ? this.resolveStoragePath(originPath)
+      : relativePath;
 
     return {
       absolutePath,
       relativePath,
-      filename: path.basename(absolutePath),
-      size: stats.size,
+      filename: path.basename(relativePath),
+      size,
       contentType: inlineType ?? 'application/octet-stream',
       inline: Boolean(inlineType),
       isPrivate,
@@ -233,7 +271,7 @@ export class UploadsService {
     return {
       originPath: `/uploads/${relativePath}`,
       relativePath,
-      isPrivate: PRIVATE_UPLOAD_FOLDERS.includes(relativePath.split('/')[0]),
+      isPrivate: isPrivateUploadPath(relativePath),
     };
   }
 
@@ -260,15 +298,24 @@ export class UploadsService {
     this.videoTranscode.validateVideoFormat(file.mimetype);
     const { ext } = this.validateFile(file, 'video');
 
-    this.ensureDir(path.join(this.uploadDir, subfolder));
+    // Only ensure directory for local storage
+    if (this.storageDriver === 'local') {
+      this.ensureDir(path.join(this.uploadDir, subfolder));
+    }
 
     const filename = `${uuid()}${ext}`;
 
     await this.virusScan.scanFile(filename, file.buffer);
 
-    const filePath = path.join(this.uploadDir, subfolder, filename);
-    fs.writeFileSync(filePath, file.buffer);
-    this.logger.log(`Video saved: ${filePath}`);
+    const relativePath = `${subfolder}/${filename}`;
+    await this.storage.writeFile(relativePath, file.buffer);
+
+    this.logger.log(`Video saved: ${relativePath}`);
+
+    // For local storage, provide absolute path; for S3, provide relative path
+    const filePath = this.storageDriver === 'local'
+      ? path.join(this.uploadDir, subfolder, filename)
+      : relativePath;
 
     // Kick off background transcode job
     const jobId = await this.videoTranscode.addTranscodeJob({
@@ -279,12 +326,16 @@ export class UploadsService {
     });
 
     // Auto-generate thumbnail from the saved video file
+    // Note: This may need adjustment for S3 storage - video needs to be downloaded first
     const thumbnail = await this.videoThumbnail.extractThumbnail(
       filePath,
       videoId,
       thumbnailAtSecs,
     );
 
+    const originUrl = `/uploads/${relativePath}`;
+    // Stored as an origin path only — lesson media is private (issue #335), so
+    // students get a short-lived signed URL from GET /lessons/:id instead.
     const originUrl = `/uploads/${subfolder}/${filename}`;
     return { jobId, originUrl, thumbnail };
   }
@@ -295,8 +346,9 @@ export class UploadsService {
   getDeliveryUrls(
     originPath: string,
     visibility: CdnAssetVisibility = 'public',
+    expiresInSeconds?: number,
   ): UploadResult {
-    return this.toUploadResult(originPath, visibility);
+    return this.toUploadResult(originPath, visibility, expiresInSeconds);
   }
 
   // ----------------------------------------------------------
@@ -306,8 +358,10 @@ export class UploadsService {
   private toUploadResult(
     originPath: string,
     visibility: CdnAssetVisibility,
+    expiresInSeconds?: number,
   ): UploadResult {
-    const delivery = this.cdn.attachCdnUrls(originPath, { visibility });
+    // expiresInSeconds only applies to private assets; undefined → CDN default TTL.
+    const delivery = this.cdn.attachCdnUrls(originPath, { visibility, expiresInSeconds });
     return {
       ...delivery,
       url: delivery.cdnUrl,
@@ -368,6 +422,13 @@ export class UploadsService {
       throw new BadRequestException('Invalid storage path');
     }
     return filePath;
+  }
+
+  /**
+   * Extract relative path from origin URL (e.g. /uploads/kyc/file.pdf -> kyc/file.pdf)
+   */
+  private getRelativePath(originPath: string): string {
+    return originPath.replace(/^\/?uploads\//, '');
   }
 
   private ensureDir(dirPath: string) {

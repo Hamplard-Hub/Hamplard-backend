@@ -48,14 +48,17 @@ describe('UsersService', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    session: { updateMany: jest.fn() },
+    refreshToken: { updateMany: jest.fn() },
     adminAuditLog: { create: jest.fn() },
   };
+  const cache = { del: jest.fn() };
 
   let service: UsersService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new UsersService(prisma as any);
+    service = new UsersService(prisma as any, cache as any);
   });
 
   describe('toSafeUser() (issue #234)', () => {
@@ -163,6 +166,60 @@ describe('UsersService', () => {
 
       expect(banned).not.toHaveProperty('twoFactorSecret');
       expect(banned).not.toHaveProperty('twoFactorRecoveryCodes');
+      expect(prisma.session.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(cache.del).toHaveBeenCalledWith('jwt:user:user-1');
+    });
+  });
+
+  describe('moderation auth-state invalidation', () => {
+    it('revokes sessions and refresh tokens when suspending a user', async () => {
+      prisma.user.findUnique.mockResolvedValue({ ...FULL_USER });
+      prisma.user.update.mockResolvedValue({ ...FULL_USER, isSuspended: true });
+
+      await service.suspendUser(
+        'user-1',
+        'admin-1',
+        'policy violation',
+        new Date(Date.now() + 86400000),
+      );
+
+      expect(prisma.session.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(cache.del).toHaveBeenCalledWith('jwt:user:user-1');
+    });
+
+    it('invalidates cached user state when unbanning or unsuspending', async () => {
+      prisma.user.findUnique.mockResolvedValue({ ...FULL_USER, isBanned: true });
+      prisma.user.update.mockResolvedValue({ ...FULL_USER, isBanned: false });
+
+      await service.unbanUser('user-1', 'admin-1');
+
+      expect(cache.del).toHaveBeenCalledWith('jwt:user:user-1');
+      expect(prisma.session.updateMany).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+
+      jest.clearAllMocks();
+      prisma.user.findUnique.mockResolvedValue({ ...FULL_USER, isSuspended: true });
+      prisma.user.update.mockResolvedValue({ ...FULL_USER, isSuspended: false });
+
+      await service.unsuspendUser('user-1', 'admin-1');
+
+      expect(cache.del).toHaveBeenCalledWith('jwt:user:user-1');
+      expect(prisma.session.updateMany).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
     });
   });
 });

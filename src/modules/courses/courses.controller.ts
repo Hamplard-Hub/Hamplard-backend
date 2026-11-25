@@ -7,6 +7,8 @@ import { CoursesService, CourseActor } from './courses.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
+import { ChangeCourseStatusDto } from './dto/change-course-status.dto';
+import { RejectCourseDto } from './dto/reject-course.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -61,7 +63,10 @@ export class CoursesController {
   }
 
   @Get(':id/checkout')
-  @ApiOperation({ summary: 'Get platform fee + regional tax breakdown for checkout' })
+  @ApiOperation({
+    summary: 'Get platform fee + regional tax breakdown for checkout',
+    description: 'Only ACTIVE courses; any other status returns 404 (issue #441).',
+  })
   @ApiQuery({ name: 'region', required: false, description: 'Region code for tax lookup, e.g. NG, US, GB, EU' })
   getCheckoutBreakdown(@Param('id') id: string, @Query('region') region?: string) {
     return this.coursesService.getCheckoutBreakdown(id, region);
@@ -112,6 +117,26 @@ export class CoursesController {
     return this.coursesService.submitForReview(id, user, body.txHash);
   }
 
+  @Patch(':id/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Pause, republish or archive a course (owner or admin)',
+    description:
+      'PAUSED/ARCHIVED courses are removed from the catalog and search but stay ' +
+      'accessible to already-enrolled students. Only admins may restore an ARCHIVED ' +
+      'course (to PAUSED) or republish a course that was never approved.',
+  })
+  changeStatus(
+    @Param('id') id: string,
+    @CurrentUser() user: CourseActor,
+    @Body() dto: ChangeCourseStatusDto,
+  ) {
+    return this.coursesService.changeStatus(id, user, dto.status, dto.reason);
+  }
+
   // --------------------------------------------------------
   // ADMIN ROUTES
   // --------------------------------------------------------
@@ -120,9 +145,17 @@ export class CoursesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'List all pending courses awaiting approval' })
-  getPending() {
-    return this.coursesService.findAll({ status: CourseStatus.PENDING });
+  @ApiOperation({
+    summary: 'List pending courses awaiting approval (paginated, oldest first)',
+    description: 'Issue #445 — accepts `page`/`limit`; response includes pagination `meta`.',
+  })
+  getPending(@Query() pagination: PaginationQueryDto) {
+    return this.coursesService.findAll({
+      status: CourseStatus.PENDING,
+      page: pagination.page,
+      limit: pagination.limit,
+      sortOrder: 'asc',
+    });
   }
 
   @Post(':id/approve')
@@ -144,9 +177,9 @@ export class CoursesController {
   reject(
     @Param('id') id: string,
     @CurrentUser('id') adminId: string,
-    @Body() body: { reason: string },
+    @Body() dto: RejectCourseDto,
   ) {
-    return this.coursesService.reject(id, adminId, body.reason);
+    return this.coursesService.reject(id, adminId, dto.reason);
   }
 
   // -------------------------------------------------------

@@ -12,6 +12,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import {
   DiscountType,
   NotificationType,
+  Prisma,
   ReferralRewardKind,
   ReferralRewardStatus,
   ReferralStatus,
@@ -480,9 +481,9 @@ export class ReferralsService {
   /**
    * Marks a referral reward as redeemed after a successful enrollment purchase.
    *
-   * Checkout quote is out of scope; this is the post-purchase confirmation path.
-   * Prefer calling this server-side immediately after enrollment rather than
-   * trusting a client-supplied enrollment id without the checks below.
+   * Rewards priced into a checkout quote are redeemed automatically with the
+   * enrollment (see redeemRewardWithinTransaction); this endpoint remains the
+   * post-purchase confirmation path for enrollments made without one.
    */
   async redeemReward(userId: string, rewardId: string, enrollmentId: string) {
     const reward = await this.prisma.referralReward.findUnique({ where: { id: rewardId } });
@@ -547,7 +548,49 @@ export class ReferralsService {
       throw new BadRequestException('This referral reward is not available for redemption');
     }
 
+    // Issue #332: record the discount source on the enrollment snapshot.
+    if (discountAmount > 0) {
+      await this.prisma.enrollment.update({
+        where: { id: enrollmentId },
+        data: {
+          discountSource: 'REFERRAL',
+          discountAmount: Number(discountAmount.toFixed(2)),
+        },
+      });
+    }
+
     return this.prisma.referralReward.findUnique({ where: { id: rewardId } });
+  }
+
+  /**
+   * Marks a referral reward as redeemed inside the caller's transaction
+   * (issue #333). The discount was already priced into the checkout quote, so
+   * only ownership, status and expiry are re-checked — atomically, via a
+   * conditional update, so a reward can only ever be spent once.
+   */
+  async redeemRewardWithinTransaction(
+    tx: Prisma.TransactionClient,
+    rewardId: string,
+    userId: string,
+    enrollmentId: string,
+  ) {
+    const now = new Date();
+    const { count } = await tx.referralReward.updateMany({
+      where: {
+        id: rewardId,
+        beneficiaryId: userId,
+        status: ReferralRewardStatus.ISSUED,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      data: {
+        status: ReferralRewardStatus.REDEEMED,
+        redeemedAt: now,
+        enrollmentId,
+      },
+    });
+    if (count !== 1) {
+      throw new BadRequestException('This referral reward is no longer available');
+    }
   }
 
   async deactivateCode(userId: string) {
