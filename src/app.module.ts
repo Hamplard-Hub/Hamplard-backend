@@ -15,6 +15,7 @@ import { WebhookSignatureMiddleware } from './common/middleware/webhook-signatur
 import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
 import { validate, AppConfigModule } from './common/config';
 
+import { AuthCleanupModule } from './modules/auth/auth-cleanup.module';
 import { AuthModule }         from './modules/auth/auth.module';
 import { UsersModule }        from './modules/users/users.module';
 import { CoursesModule }      from './modules/courses/courses.module';
@@ -72,6 +73,7 @@ import { CronMonitorModule }  from './modules/cron-monitor/cron-monitor.module';
     SchedulingModule,
 
     AuthModule,
+    AuthCleanupModule,
     UsersModule,
     CoursesModule,
     LessonsModule,
