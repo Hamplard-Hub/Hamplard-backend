@@ -1,5 +1,5 @@
 // auth.service.ts
-import { Injectable, UnauthorizedException, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -41,7 +41,7 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenService,
     private readonly twoFactor: TwoFactorService,
     private readonly cache: CacheService,
-  ) {}
+  ) { }
 
   // ------------------------------------------------------------------
   // NONCE GENERATION
@@ -143,9 +143,9 @@ export class AuthService {
       );
     }
 
-    // ---- 2. Look up the stored nonce from Redis ----
+    // ---- 2. Atomically read and consume the stored nonce from Redis ----
     const key = this.nonceRedisKey(stellarAddress);
-    const storedNonce = await this.cache.get<string>(key);
+    const storedNonce = await this.cache.getDel<string>(key);
 
     if (!storedNonce) {
       throw new UnauthorizedException(
@@ -155,8 +155,8 @@ export class AuthService {
 
     // ---- 3. Nonce integrity check ----
     // The client must sign the exact nonce string the server issued.
-    // We do NOT consume the nonce yet — only after the signature passes.
     if (signedNonce !== storedNonce) {
+      await this.cache.set(key, storedNonce, NONCE_TTL_SECONDS);
       throw new UnauthorizedException(
         'Nonce mismatch: the signed nonce does not match the issued nonce for this address.',
       );
@@ -166,18 +166,14 @@ export class AuthService {
     const isValid = this.verifySignature(stellarAddress, signedNonce, signature);
 
     if (!isValid) {
-      // Do NOT consume the nonce on a bad signature to prevent DoS where an
-      // attacker submits a wrong signature to lock out the legitimate owner.
+      await this.cache.set(key, storedNonce, NONCE_TTL_SECONDS);
       throw new UnauthorizedException(
         'Signature verification failed: the provided signature is not a valid Ed25519 ' +
         'signature of the nonce by the claimed Stellar address.',
       );
     }
 
-    // ---- 5. Consume nonce — only after valid signature (single-use enforcement) ----
-    await this.cache.del(key);
-
-    // ---- 6. Upsert user ----
+    // ---- 5. Upsert user ----
     const existing = await this.prisma.user.findUnique({ where: { stellarAddress } });
     const isNewUser = !existing;
 
@@ -186,7 +182,21 @@ export class AuthService {
       throw new UnauthorizedException('Account has been deleted');
     }
 
-    // ---- 6b. Validate 2FA code when the account has it enabled ----
+    // ---- 6b. Reject banned or suspended users before 2FA or token issuance ----
+    if (existing?.isBanned) {
+      await this.refreshTokens.revokeUserFamilies(existing.id);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (existing?.isSuspended) {
+      const suspendedUntil = existing.suspendedUntil ? new Date(existing.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.refreshTokens.revokeUserFamilies(existing.id);
+        throw new ForbiddenException('User is suspended');
+      }
+    }
+
+    // ---- 6c. Validate 2FA code when the account has it enabled ----
     if (existing?.twoFactorEnabled) {
       if (!totpCode) {
         throw new UnauthorizedException('Two-factor authentication code required');
@@ -235,7 +245,51 @@ export class AuthService {
 
   async refresh(refreshToken: string, deviceMeta?: DeviceMetadata): Promise<TokenPair> {
     const tokens = await this.refreshTokens.rotate(refreshToken);
-    await trackAccessTokenSession(this.jwt, this.sessions, tokens.accessToken, deviceMeta);
+    let familyId = (tokens as any).familyId;
+    if (!familyId && tokens.refreshToken) {
+      const decodedRefresh = this.jwt.decode(tokens.refreshToken) as { familyId?: string } | null;
+      familyId = decodedRefresh?.familyId;
+    }
+    await trackAccessTokenSession(this.jwt, this.sessions, tokens.accessToken, deviceMeta, familyId);
     return tokens;
+  }
+
+  async logout(userId: string, jti?: string) {
+    return this.sessions.logoutCurrentSession(userId, jti);
+  }
+
+  async logoutAll(userId: string) {
+    return this.sessions.logoutAll(userId);
+  }
+
+  private async issueSessionedTokenPair(
+    user: { id: string; stellarAddress: string | null; googleId?: string | null; role: string },
+    deviceMeta?: DeviceMetadata,
+  ): Promise<TokenPair> {
+    const tokens = await this.refreshTokens.issueTokenPair(user);
+    await this.trackAccessTokenSession(tokens.accessToken, deviceMeta);
+    return tokens;
+  }
+
+  private async trackAccessTokenSession(accessToken: string, deviceMeta?: DeviceMetadata) {
+    const decoded = this.jwt.decode(accessToken) as {
+      exp?: number;
+      jti?: string;
+      sub?: string;
+      familyId?: string;
+    } | null;
+    if (!decoded?.jti || !decoded.sub) return;
+
+    const expiresAt = decoded.exp
+      ? new Date(decoded.exp * 1000)
+      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    await this.sessions.createSession({
+      userId: decoded.sub,
+      jti: decoded.jti,
+      refreshFamilyId: decoded.familyId,
+      expiresAt,
+      meta: deviceMeta,
+    });
   }
 }

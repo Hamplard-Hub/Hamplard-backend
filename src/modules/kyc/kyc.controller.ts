@@ -92,17 +92,23 @@ export class KycController {
   @Get()
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'List all KYC submissions (admin only)' })
-  findAll(@Query() query: QueryKycDto) {
-    return this.kycService.findAll(query.page, query.limit, query.status);
+  @ApiOperation({
+    summary: 'List all KYC submissions (admin only)',
+    description: 'documentUrl/additionalUrl are signed URLs valid for 15 minutes.',
+  })
+  findAll(@CurrentUser('id') adminId: string, @Query() query: QueryKycDto) {
+    return this.kycService.findAll(adminId, query.page, query.limit, query.status);
   }
 
   @Get(':id')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'Get a single KYC submission detail (admin only)' })
-  findOne(@Param('id') id: string) {
-    return this.kycService.findOne(id);
+  @ApiOperation({
+    summary: 'Get a single KYC submission detail (admin only)',
+    description: 'documentUrl/additionalUrl are signed URLs valid for 15 minutes.',
+  })
+  findOne(@Param('id') id: string, @CurrentUser('id') adminId: string) {
+    return this.kycService.findOne(id, adminId);
   }
 
   @Post(':id/review')

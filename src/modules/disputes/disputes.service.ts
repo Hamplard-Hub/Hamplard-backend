@@ -1,6 +1,6 @@
 import {
   Injectable, NotFoundException, ForbiddenException,
-  BadRequestException, Logger,
+  BadRequestException, ConflictException, Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -23,7 +23,10 @@ export class DisputesService {
 
   async file(studentId: string, dto: FileDisputeDto) {
     // Validate the referenced record belongs to this student
-    await this.validateReference(studentId, dto.referenceType, dto.referenceId);
+    const enrollment = await this.validateReference(studentId, dto.referenceType, dto.referenceId);
+
+    // Issue #339 — one open dispute per enrollment/payment at a time
+    await this.assertNoOpenDispute(enrollment);
 
     const dispute = await this.prisma.dispute.create({
       data: {
@@ -40,6 +43,20 @@ export class DisputesService {
     });
 
     this.logger.log(`Dispute filed: ${dispute.id} by student ${studentId}`);
+
+    // Issue #338 — surface the new dispute in every admin's notification feed
+    await this.notifications.notifyAdmins(
+      NotificationType.DISPUTE_FILED,
+      'New dispute filed',
+      `A student filed a dispute: "${dispute.subject}"`,
+      {
+        disputeId: dispute.id,
+        referenceType: dispute.referenceType,
+        referenceId: dispute.referenceId,
+        filedById: studentId,
+      },
+    );
+
     return dispute;
   }
 
@@ -185,6 +202,34 @@ export class DisputesService {
   // ----------------------------------------------------------
   // HELPERS
   // ----------------------------------------------------------
+
+  /**
+   * Rejects a new dispute when an OPEN or UNDER_REVIEW dispute already exists
+   * for the same enrollment — whether it was filed against the enrollment id
+   * or against the enrollment's payment txHash.
+   */
+  private async assertNoOpenDispute(enrollment: { id: string; txHash?: string | null }) {
+    const references: Array<{ referenceType: DisputeReferenceType; referenceId: string }> = [
+      { referenceType: DisputeReferenceType.ENROLLMENT, referenceId: enrollment.id },
+    ];
+    if (enrollment.txHash) {
+      references.push({ referenceType: DisputeReferenceType.PAYMENT, referenceId: enrollment.txHash });
+    }
+
+    const existing = await this.prisma.dispute.findFirst({
+      where: {
+        status: { in: [DisputeStatus.OPEN, DisputeStatus.UNDER_REVIEW] },
+        OR: references,
+      },
+      select: { id: true },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        `An open dispute (${existing.id}) already exists for this enrollment or payment`,
+      );
+    }
+  }
 
   /**
    * Ensures the referenced enrollment or payment belongs to the student
