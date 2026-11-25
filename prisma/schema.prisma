@@ -314,6 +314,7 @@ model User {
   fraudFlags          EnrollmentFraudFlag[] @relation("StudentFraudFlags")
   fraudReviewed       EnrollmentFraudFlag[] @relation("FraudReviewedBy")
   refundRequests      Refund[]
+  refundReviews       Refund[]              @relation("RefundReviewer")
   bundlesCreated      Bundle[]              @relation("InstructorBundles")
   bundleEnrollments   BundleEnrollment[]
   invoices            Invoice[]
@@ -401,6 +402,8 @@ model Session {
   id           String    @id @default(uuid())
   userId       String
   jti          String    @unique // matches the `jti` claim embedded in the JWT
+  familyId     String?
+  refreshFamilyId String?
   deviceLabel  String?   // parsed friendly label, e.g. "Chrome on Windows"
   userAgent    String?
   ipAddress    String?
@@ -413,6 +416,8 @@ model Session {
   user User @relation("UserSessions", fields: [userId], references: [id])
 
   @@index([userId])
+  @@index([familyId])
+  @@index([refreshFamilyId])
   @@map("sessions")
 }
 
@@ -1394,6 +1399,8 @@ model Refund {
   isPartial       Boolean      @default(false)
   status          RefundStatus @default(PENDING)
   adminNote       String?
+  reviewedById    String?
+  reviewedAt      DateTime?
   txHash          String?      // on-chain refund transaction, set once processed
   processedAt     DateTime?
   createdAt       DateTime     @default(now())
@@ -1402,12 +1409,14 @@ model Refund {
   // Relations
   enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
   student    User       @relation(fields: [studentId], references: [id])
+  reviewedBy User?      @relation("RefundReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
 
   @@index([enrollmentId])
   @@index([studentId])
   @@index([status])
   // Duplicate-request guard: `WHERE enrollmentId = ? AND status IN (...)`.
   @@index([enrollmentId, status])
+  @@index([reviewedById])
   @@map("refunds")
 }
 

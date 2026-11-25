@@ -73,4 +73,27 @@ describe('sessioned token helpers', () => {
 
     expect(sessions.createSession).not.toHaveBeenCalled();
   });
+
+  it('links the session to the refresh-token familyId (issue #416)', async () => {
+    refreshTokens.issueTokenPair.mockResolvedValueOnce({
+      accessToken: 'access-jwt',
+      refreshToken: 'refresh-jwt',
+      familyId: 'family-xyz',
+    });
+
+    await issueSessionedTokenPair(
+      refreshTokens as any,
+      jwt as any,
+      sessions as any,
+      user,
+    );
+
+    expect(sessions.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: user.id,
+        jti: 'access-jti',
+        familyId: 'family-xyz',
+      }),
+    );
+  });
 });
