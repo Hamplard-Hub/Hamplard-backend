@@ -15,6 +15,10 @@ import { QueueModule } from '../../common/queue/queue.module';
 
 @Module({
   imports: [NotificationsModule, FeeCalculatorModule, SearchModule, QueueModule],
+import { UploadsModule } from '../uploads/uploads.module';
+
+@Module({
+  imports: [NotificationsModule, FeeCalculatorModule, SearchModule, UploadsModule],
   controllers: [SearchController, CourseAutosaveController, CoursesController, RecommendationsController],
   providers: [CoursesService, CourseAutosaveService, RecommendationsService, SearchService, AnnouncementsService],
   exports: [CoursesService, CourseAutosaveService, RecommendationsService, SearchService, AnnouncementsService],

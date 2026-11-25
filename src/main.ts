@@ -11,6 +11,7 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import { initializeSentry } from './common/logging/sentry';
 import { buildSwaggerConfig } from './swagger.config';
 import { parseTrustProxy } from './common/config/env.util';
+import { buildCorsOptions } from './common/config/cors.options';
 
 async function bootstrap() {
   initializeSentry();
@@ -19,7 +20,9 @@ async function bootstrap() {
     // rawBody: true makes the unparsed request body available as req.rawBody
     // (Buffer), which WebhookSignatureMiddleware needs for HMAC-SHA256 signing.
     rawBody: true,
+    bufferLogs: true,
   });
+  app.useLogger(app.get(PinoLogger));
 
   const config = app.get(ConfigService);
   const port       = config.get<number>('PORT', 3000);
@@ -36,12 +39,7 @@ async function bootstrap() {
 
   app.use(helmet());
 
-  app.enableCors({
-    origin: corsOrigin,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-captcha-token'],
-    credentials: true,
-  });
+  app.enableCors(buildCorsOptions(corsOrigin));
 
   app.setGlobalPrefix(apiPrefix);
 

@@ -48,6 +48,11 @@ describe('Environment Validation', () => {
     expect(() => validate(raw)).toThrow(/LOG_LEVEL/);
   });
 
+  it('validates Stellar network names', () => {
+    expect(() => validate({ STELLAR_NETWORK: 'typo' })).toThrow(/STELLAR_NETWORK/);
+    expect(validate({ STELLAR_NETWORK: 'standalone' }).STELLAR_NETWORK).toBe('standalone');
+  });
+
   it('fails fast in production if required variables are missing or use default secrets', () => {
     const raw = {
       NODE_ENV: 'production',

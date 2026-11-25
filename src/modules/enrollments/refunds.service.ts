@@ -11,6 +11,7 @@ import { ApproveRefundDto } from './dto/approve-refund.dto';
 import { RejectRefundDto } from './dto/reject-refund.dto';
 import { ProcessRefundDto } from './dto/process-refund.dto';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -93,6 +94,14 @@ export class RefundsService {
     });
 
     this.logger.log(`Refund requested: ${refund.id} for enrollment ${dto.enrollmentId}`);
+
+    // Issue #338 — surface the request in the admin refund queue
+    await this.notifications.notifyAdmins(
+      NotificationType.REFUND_REQUESTED,
+      'New refund request',
+      `A student requested a refund of ${requestedAmount} USDC`,
+      { refundId: refund.id, enrollmentId: dto.enrollmentId, studentId, requestedAmount },
+    );
     return refund;
   }
 

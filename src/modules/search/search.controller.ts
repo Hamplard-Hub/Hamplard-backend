@@ -7,15 +7,24 @@ import {
   Param,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
 import { SearchService } from './search.service';
+import { SearchReindexService } from './search-reindex.service';
 import { SearchQueryDto } from './dto/search-query.dto';
+import { ReindexSearchDto } from './dto/reindex-search.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 
 @ApiTags('search')
 @Controller('search')
 export class SearchController {
-  constructor(private readonly searchService: SearchService) {}
+  constructor(
+    private readonly searchService: SearchService,
+    private readonly reindexService: SearchReindexService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -62,5 +71,21 @@ export class SearchController {
   async getFreshness(@Param('courseId') courseId: string) {
     const lastIndexedAt = await this.searchService.getIndexFreshness(courseId);
     return { courseId, lastIndexedAt, isFresh: lastIndexedAt > 0 };
+  }
+
+  @Post('reindex')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Rebuild the course search index (admin only)',
+    description:
+      'Re-applies index settings, re-indexes every ACTIVE course in batches and removes ' +
+      'documents for courses that are no longer ACTIVE. Returns indexed/removed counts. ' +
+      'Also available as a CLI: `npm run search:reindex`.',
+  })
+  reindex(@Body() dto: ReindexSearchDto) {
+    return this.reindexService.reindexAllCourses(dto?.batchSize);
   }
 }

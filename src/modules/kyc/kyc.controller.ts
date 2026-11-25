@@ -15,6 +15,14 @@ import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { KycStatus, UserRole } from '@prisma/client';
 import { QueryKycDto } from './dto/query-kyc.dto';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+
+/**
+ * KYC file size limit for Multer: 10 MB
+ * Matches MAX_KYC_FILE_SIZE_MB in .env.example.
+ * Configured via env var or the global MAX_FILE_SIZE_MB ceiling.
+ */
+const KYC_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 
 @ApiTags('kyc')
 @ApiBearerAuth()
@@ -37,7 +45,10 @@ export class KycController {
         { name: 'document', maxCount: 1 },
         { name: 'additional', maxCount: 1 },
       ],
-      { storage: memoryStorage() },
+      {
+        storage: memoryStorage(),
+        limits: { fileSize: KYC_MAX_FILE_SIZE_BYTES },
+      },
     ),
   )
   @ApiConsumes('multipart/form-data')
@@ -68,9 +79,12 @@ export class KycController {
   @Get('my')
   @UseGuards(RolesGuard)
   @Roles(UserRole.INSTRUCTOR)
-  @ApiOperation({ summary: 'Get your own KYC submission history and current status' })
-  findMy(@CurrentUser('id') instructorId: string) {
-    return this.kycService.findMySubmissions(instructorId);
+  @ApiOperation({ summary: 'Get your own KYC submission history and current status (paginated)' })
+  findMy(
+    @CurrentUser('id') instructorId: string,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.kycService.findMySubmissions(instructorId, pagination.page, pagination.limit);
   }
 
   @Get('my/status')
@@ -88,17 +102,23 @@ export class KycController {
   @Get()
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'List all KYC submissions (admin only)' })
-  findAll(@Query() query: QueryKycDto) {
-    return this.kycService.findAll(query.page, query.limit, query.status);
+  @ApiOperation({
+    summary: 'List all KYC submissions (admin only)',
+    description: 'documentUrl/additionalUrl are signed URLs valid for 15 minutes.',
+  })
+  findAll(@CurrentUser('id') adminId: string, @Query() query: QueryKycDto) {
+    return this.kycService.findAll(adminId, query.page, query.limit, query.status);
   }
 
   @Get(':id')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'Get a single KYC submission detail (admin only)' })
-  findOne(@Param('id') id: string) {
-    return this.kycService.findOne(id);
+  @ApiOperation({
+    summary: 'Get a single KYC submission detail (admin only)',
+    description: 'documentUrl/additionalUrl are signed URLs valid for 15 minutes.',
+  })
+  findOne(@Param('id') id: string, @CurrentUser('id') adminId: string) {
+    return this.kycService.findOne(id, adminId);
   }
 
   @Post(':id/review')

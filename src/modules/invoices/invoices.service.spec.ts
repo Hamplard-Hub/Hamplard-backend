@@ -130,4 +130,58 @@ describe('InvoicesService (list + download)', () => {
       await expect(service.getPdfForDownload('inv-1', OWNER)).resolves.toBeDefined();
     });
   });
+
+  /** Issue #334 — itemised subtotal, discount, tax and total from the price snapshot. */
+  describe('buildBreakdown', () => {
+    it('itemises discounts and tax so they add up to the total', () => {
+      const b = service.buildBreakdown(77.4, {
+        listPrice: '100',
+        couponDiscount: '20',
+        referralDiscount: '8',
+        taxRegion: 'NG',
+        taxRatePercent: '7.5',
+        taxAmount: '5.4',
+      });
+
+      expect(b).toEqual(expect.objectContaining({
+        subtotal: 100,
+        couponDiscount: 20,
+        referralDiscount: 8,
+        discountTotal: 28,
+        netAmount: 72,
+        taxRegion: 'NG',
+        taxRatePercent: 7.5,
+        taxAmount: 5.4,
+        total: 77.4,
+        amountPaid: 77.4,
+      }));
+      expect(b.subtotal - b.discountTotal + b.taxAmount).toBeCloseTo(b.total, 2);
+    });
+
+    it('falls back to a single untaxed line for enrollments without a snapshot', () => {
+      const b = service.buildBreakdown(25.5, { listPrice: null });
+
+      expect(b).toEqual(expect.objectContaining({
+        subtotal: 25.5, discountTotal: 0, taxAmount: 0, total: 25.5, taxRegion: null,
+      }));
+    });
+
+    it('renders a PDF from an invoice whose enrollment has a price snapshot', async () => {
+      prisma.invoice.findUnique.mockResolvedValue({
+        ...invoiceRow,
+        amount: '86',
+        enrollment: {
+          listPrice: '100', couponDiscount: '20', referralDiscount: '0',
+          taxRegion: 'NG', taxRatePercent: '7.5', taxAmount: '6',
+        },
+      });
+
+      const { buffer } = await service.getPdfForDownload('inv-1', OWNER);
+
+      expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+      expect(prisma.invoice.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ include: expect.objectContaining({ enrollment: true }) }),
+      );
+    });
+  });
 });
