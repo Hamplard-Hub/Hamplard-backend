@@ -11,6 +11,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ------------------------------------------------------------
+// INDEXING CONVENTIONS (issue #341)
+// Hot queries that filter on several columns get a composite @@index whose
+// column order follows the query: equality columns first, then the range /
+// ORDER BY column (e.g. notifications `(userId, read, createdAt)`). A
+// composite index also serves queries on its leading column(s), so a
+// separate single-column index on that prefix is only kept where it already
+// existed. Each composite index carries a comment naming the query it backs.
+// ------------------------------------------------------------
+
 // ============================================================
 // ENUMS
 // ============================================================
@@ -306,6 +316,7 @@ model User {
   fraudFlags          EnrollmentFraudFlag[] @relation("StudentFraudFlags")
   fraudReviewed       EnrollmentFraudFlag[] @relation("FraudReviewedBy")
   refundRequests      Refund[]
+  refundReviews       Refund[]              @relation("RefundReviewer")
   bundlesCreated      Bundle[]              @relation("InstructorBundles")
   bundleEnrollments   BundleEnrollment[]
   invoices            Invoice[]
@@ -393,6 +404,8 @@ model Session {
   id           String    @id @default(uuid())
   userId       String
   jti          String    @unique // matches the `jti` claim embedded in the JWT
+  familyId     String?
+  refreshFamilyId String?
   deviceLabel  String?   // parsed friendly label, e.g. "Chrome on Windows"
   userAgent    String?
   ipAddress    String?
@@ -405,6 +418,8 @@ model Session {
   user User @relation("UserSessions", fields: [userId], references: [id])
 
   @@index([userId])
+  @@index([familyId])
+  @@index([refreshFamilyId])
   @@map("sessions")
 }
 
@@ -575,6 +590,7 @@ model QuizSession {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  // Auto-submit sweeper: `WHERE status = IN_PROGRESS AND expiresAt <= now`.
   @@index([status, expiresAt])
   @@index([lessonId])
   @@map("quiz_sessions")
@@ -628,6 +644,18 @@ model Enrollment {
   enrolledAt      DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
+  // Price snapshot copied from the checkout quote at enrollment time (#333/#334).
+  // Null on enrollments created before checkout quotes existed.
+  listPrice        Decimal?        // course price before discounts
+  couponDiscount   Decimal         @default(0)
+  referralDiscount Decimal         @default(0)
+  taxRegion        String?
+  taxRatePercent   Decimal?
+  taxAmount        Decimal         @default(0)
+  couponId         String?
+  referralRewardId String?
+  checkoutQuoteId  String?         @unique
+
   // Relations
   student        User                 @relation(fields: [studentId], references: [id])
   course         Course               @relation(fields: [courseId], references: [id])
@@ -638,7 +666,43 @@ model Enrollment {
   dripUnlocks    EnrollmentLessonUnlock[]
 
   @@unique([studentId, courseId])
+  // Drip re-sync and enrolled-viewer checks filter a course's enrollments
+  // by status (`WHERE courseId = ? AND status [IN] ...`).
+  @@index([courseId, status])
+  // "My courses" lists a student's enrollments newest first.
+  @@index([studentId, enrolledAt])
   @@map("enrollments")
+}
+
+// Issue #333: Server-priced, HMAC-signed, short-lived checkout quote.
+// Created by POST /checkout/quote and consumed exactly once when the
+// enrollment is registered — the on-chain amount must equal `total`.
+model CheckoutQuote {
+  id               String    @id @default(uuid())
+  studentId        String
+  courseId         String
+  currency         String    @default("USDC")
+  listPrice        Decimal
+  couponId         String?
+  couponCode       String?
+  couponDiscount   Decimal   @default(0)
+  referralRewardId String?
+  referralDiscount Decimal   @default(0)
+  subtotal         Decimal   // listPrice - discounts
+  taxRegion        String
+  taxRatePercent   Decimal
+  taxAmount        Decimal
+  total            Decimal   // amount the student must pay on-chain
+  signature        String    // HMAC over the priced fields — detects tampering
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  enrollmentId     String?   @unique
+  createdAt        DateTime  @default(now())
+
+  // Enrollment looks up the caller's live quotes for a course.
+  @@index([studentId, courseId])
+  @@index([expiresAt])
+  @@map("checkout_quotes")
 }
 
 // Issue #240: Payment receipt — one per on-chain transaction.
@@ -703,6 +767,8 @@ model EnrollmentLessonUnlock {
   @@unique([enrollmentId, lessonId])
   @@index([enrollmentId])
   @@index([unlockAt])
+  // Drip notifier cron: `WHERE unlockAt <= now AND notifiedAt IS NULL`.
+  @@index([unlockAt, notifiedAt])
   @@map("enrollment_lesson_unlocks")
 }
 
@@ -824,6 +890,8 @@ model ChainEvent {
   @@index([eventName])
   @@index([processed])
   @@index([processed, retryAt, attemptCount])
+  // Event replay / reconciliation scans events by ledger range.
+  @@index([ledger])
   @@unique([txHash, eventIndex])
   @@map("chain_events")
 }
@@ -861,6 +929,9 @@ model Notification {
 
   @@index([userId])
   @@index([read])
+  // Inbox list (`WHERE userId = ? [AND read = ?] ORDER BY createdAt DESC`),
+  // unread badge count and mark-all-read all lead with (userId, read).
+  @@index([userId, read, createdAt])
   @@map("notifications")
 }
 
@@ -1073,6 +1144,8 @@ model CouponRedemption {
   user   User   @relation("CouponRedemptions", fields: [userId], references: [id])
 
   @@unique([couponId, userId, courseId])
+  // Redemption history: `WHERE couponId = ? ORDER BY redeemedAt DESC`.
+  @@index([couponId, redeemedAt])
   @@map("coupon_redemptions")
 }
 
@@ -1329,6 +1402,8 @@ model Refund {
   isPartial       Boolean      @default(false)
   status          RefundStatus @default(PENDING)
   adminNote       String?
+  reviewedById    String?
+  reviewedAt      DateTime?
   txHash          String?      // on-chain refund transaction, set once processed
   processedAt     DateTime?
   createdAt       DateTime     @default(now())
@@ -1337,10 +1412,14 @@ model Refund {
   // Relations
   enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
   student    User       @relation(fields: [studentId], references: [id])
+  reviewedBy User?      @relation("RefundReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
 
   @@index([enrollmentId])
   @@index([studentId])
   @@index([status])
+  // Duplicate-request guard: `WHERE enrollmentId = ? AND status IN (...)`.
+  @@index([enrollmentId, status])
+  @@index([reviewedById])
   @@map("refunds")
 }
 
@@ -1409,6 +1488,8 @@ model Invoice {
   student    User       @relation(fields: [studentId], references: [id])
   course     Course     @relation(fields: [courseId], references: [id])
 
+  // "My invoices": `WHERE studentId = ? ORDER BY issuedAt DESC`.
+  @@index([studentId, issuedAt])
   @@map("invoices")
 }
 

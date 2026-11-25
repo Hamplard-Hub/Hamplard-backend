@@ -19,7 +19,9 @@ async function bootstrap() {
     // rawBody: true makes the unparsed request body available as req.rawBody
     // (Buffer), which WebhookSignatureMiddleware needs for HMAC-SHA256 signing.
     rawBody: true,
+    bufferLogs: true,
   });
+  app.useLogger(app.get(PinoLogger));
 
   const config = app.get(ConfigService);
   const port       = config.get<number>('PORT', 3000);

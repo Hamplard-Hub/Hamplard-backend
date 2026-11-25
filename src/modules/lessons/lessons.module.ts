@@ -6,12 +6,14 @@ import { DripScheduleService } from './drip-schedule.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { EnrollmentsModule } from '../enrollments/enrollments.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { UploadsModule } from '../uploads/uploads.module';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
     NotificationsModule,
     AnalyticsModule,
+    UploadsModule,
     forwardRef(() => EnrollmentsModule),
   ],
   controllers: [LessonsController],

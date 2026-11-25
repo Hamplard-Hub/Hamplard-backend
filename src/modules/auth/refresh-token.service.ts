@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomUUID } from 'crypto';
@@ -31,6 +31,7 @@ export interface TokenUser {
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
+  familyId?: string;
 }
 
 interface RefreshTokenPayload {
@@ -73,6 +74,7 @@ export class RefreshTokenService {
       googleId: user.googleId,
       role: user.role,
       jti: accessJti,
+      familyId: family,
     });
     const refreshToken = this.jwt.sign(
       {
@@ -100,7 +102,7 @@ export class RefreshTokenService {
       `Issued refresh token for user ${user.id} (family ${family}, generation ${generation})`,
     );
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, familyId: family };
   }
 
   async rotate(rawRefreshToken: string): Promise<TokenPair> {
@@ -141,10 +143,32 @@ export class RefreshTokenService {
       throw new UnauthorizedException('Refresh token expired');
     }
 
+    // Reject refresh for families whose linked session has been revoked (issue #416)
+    const revokedSession = await this.prisma.session.findFirst({
+      where: { familyId: record.familyId, revokedAt: { not: null } },
+    });
+    if (revokedSession) {
+      await this.revokeFamily(record.familyId);
+      throw new UnauthorizedException('Refresh token has been revoked');
+    }
+
     const user = await this.prisma.user.findUnique({ where: { id: record.userId } });
     if (!user || user.deletedAt) {
       await this.revokeFamily(record.familyId);
       throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    if (user.isBanned) {
+      await this.revokeFamily(record.familyId);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (user.isSuspended) {
+      const suspendedUntil = user.suspendedUntil ? new Date(user.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.revokeFamily(record.familyId);
+        throw new ForbiddenException('User is suspended');
+      }
     }
 
     const consumed = await this.prisma.refreshToken.updateMany({
@@ -164,6 +188,13 @@ export class RefreshTokenService {
   async revokeFamily(familyId: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  async revokeUserFamilies(userId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
   }

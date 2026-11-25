@@ -13,6 +13,7 @@ import { ProcessRefundDto } from './dto/process-refund.dto';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /** Refund requests must be filed within this many days of enrollment. */
 const REFUND_ELIGIBILITY_WINDOW_DAYS = 14;
@@ -189,6 +190,7 @@ export class RefundsService {
       );
     }
 
+    const reviewedAt = new Date();
     const updated = await this.prisma.refund.update({
       where: { id },
       data: {
@@ -196,6 +198,8 @@ export class RefundsService {
         approvedAmount,
         isPartial: approvedAmount < amountPaid,
         adminNote: dto.adminNote,
+        reviewedById: adminId,
+        reviewedAt,
       },
     });
 
@@ -218,14 +222,28 @@ export class RefundsService {
       },
     });
 
+    await this.notifications.notifyUser(
+      refund.studentId,
+      NotificationType.REFUND_APPROVED,
+      'Refund request approved',
+      `Your refund request was approved for ${approvedAmount} USDC.${dto.adminNote ? ` Admin note: ${dto.adminNote}` : ''}`,
+      { refundId: id, status: RefundStatus.APPROVED, approvedAmount, adminNote: dto.adminNote ?? null },
+    );
+
     return updated;
   }
 
   async reject(id: string, adminId: string, dto: RejectRefundDto, ipAddress?: string) {
     const refund = await this.getPendingOrThrow(id);
+    const reviewedAt = new Date();
     const updated = await this.prisma.refund.update({
       where: { id },
-      data: { status: RefundStatus.REJECTED, adminNote: dto.reason },
+      data: {
+        status: RefundStatus.REJECTED,
+        adminNote: dto.reason,
+        reviewedById: adminId,
+        reviewedAt,
+      },
     });
 
     // Audit log
@@ -244,6 +262,14 @@ export class RefundsService {
         ipAddress,
       },
     });
+
+    await this.notifications.notifyUser(
+      refund.studentId,
+      NotificationType.REFUND_REJECTED,
+      'Refund request rejected',
+      `Your refund request was rejected. Admin note: ${dto.reason}`,
+      { refundId: id, status: RefundStatus.REJECTED, adminNote: dto.reason },
+    );
 
     return updated;
   }

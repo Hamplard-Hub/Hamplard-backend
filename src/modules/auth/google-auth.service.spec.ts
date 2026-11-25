@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, HttpException, HttpStatus, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { GoogleAuthService, GoogleIdentity } from './google-auth.service';
 
 describe('GoogleAuthService', () => {
@@ -24,11 +24,17 @@ describe('GoogleAuthService', () => {
       accessToken: 'platform-jwt',
       refreshToken: 'refresh-jwt',
     }),
+    revokeUserFamilies: jest.fn().mockResolvedValue(undefined),
   };
   const config = { get: jest.fn((key: string) => key === 'GOOGLE_CLIENT_ID' ? 'google-client-id' : 'google-client-secret') };
   const cacheMap = new Map<string, any>();
   const cache = {
-    get: jest.fn(async (key: string) => cacheMap.get(key)),
+    get: jest.fn(async (key: string) => cacheMap.get(key) ?? null),
+    getDel: jest.fn(async (key: string) => {
+      const value = cacheMap.get(key) ?? null;
+      cacheMap.delete(key);
+      return value;
+    }),
     set: jest.fn(async (key: string, val: any) => cacheMap.set(key, val)),
     del: jest.fn(async (key: string) => cacheMap.delete(key)),
   };
@@ -58,6 +64,7 @@ describe('GoogleAuthService', () => {
   };
 
   beforeEach(() => {
+    cacheMap.clear();
     jest.clearAllMocks();
     config.get.mockImplementation((key: string) =>
       key === 'GOOGLE_CLIENT_ID' ? 'google-client-id' : 'google-client-secret',
@@ -76,6 +83,30 @@ describe('GoogleAuthService', () => {
 
     expect(await service.consumeOAuthState(state)).toBe(true);
     expect(await service.consumeOAuthState(state)).toBe(false);
+  });
+
+  it('allows only one of two parallel OAuth state exchanges', async () => {
+    const service = buildService();
+    const state = await service.createOAuthState();
+
+    const results = await Promise.all([
+      service.consumeOAuthState(state),
+      service.consumeOAuthState(state),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('allows only one of two parallel one-time code exchanges', async () => {
+    const service = buildService();
+    const code = await service.createAuthCode({ accessToken: 'one', refreshToken: 'two' });
+
+    const results = await Promise.all([
+      service.consumeAuthCode(code),
+      service.consumeAuthCode(code),
+    ]);
+
+    expect(results.filter((value) => value !== null)).toHaveLength(1);
   });
 
   it('rejects an ID token when Google signature verification fails', async () => {
@@ -100,11 +131,13 @@ describe('GoogleAuthService', () => {
 
     const result = await service.login(identity);
 
-    expect(prisma.user.create).toHaveBeenCalledWith({ data: expect.objectContaining({
-      googleId: identity.googleId,
-      email: identity.email,
-      role: 'STUDENT',
-    }) });
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        googleId: identity.googleId,
+        email: identity.email,
+        role: 'STUDENT',
+      })
+    });
     expect(refreshTokens.issueTokenPair).toHaveBeenCalledWith(expect.objectContaining({
       id: 'user-1',
       googleId: identity.googleId,
@@ -256,5 +289,38 @@ describe('GoogleAuthService', () => {
       );
       expect(prisma.user.create).not.toHaveBeenCalled();
     });
+  });
+
+  it.each([
+    ['banned', { isBanned: true, isSuspended: false, suspendedUntil: null }, 'User is banned'],
+    ['currently suspended', { isBanned: false, isSuspended: true, suspendedUntil: new Date(Date.now() + 60_000) }, 'User is suspended'],
+  ])('rejects a %s user from Google login with 403', async (_label, restriction, message) => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'restricted-user', googleId: identity.googleId, ...restriction });
+
+    await expect(buildService().login(identity)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    expect(refreshTokens.issueTokenPair).not.toHaveBeenCalled();
+    expect(refreshTokens.revokeUserFamilies).toHaveBeenCalledWith('restricted-user');
+  });
+
+  it('rejects a banned user from Google ID-token + TOTP login with 403', async () => {
+    const service = buildService();
+    (service as any).googleClient.verifyIdToken = jest.fn().mockResolvedValue({
+      getPayload: () => ({
+        sub: identity.googleId,
+        email: identity.email,
+        email_verified: true,
+        iss: 'https://accounts.google.com',
+      }),
+    });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'banned-user', googleId: identity.googleId, isBanned: true,
+      isSuspended: false, suspendedUntil: null, twoFactorEnabled: true,
+    });
+
+    await expect(service.loginWithIdTokenAndTotp('id-token', '000000'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(refreshTokens.revokeUserFamilies).toHaveBeenCalledWith('banned-user');
   });
 });

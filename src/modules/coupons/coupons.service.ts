@@ -352,6 +352,52 @@ export class CouponsService {
     }
   }
 
+  /**
+   * Redeems a coupon inside the caller's transaction (issue #333). Used when an
+   * enrollment is registered against a checkout quote so the coupon, the quote
+   * and the enrollment commit or roll back together. The usage counter is bumped
+   * with the same conditional update as redeem(), so concurrent checkouts can
+   * never exceed maxRedemptions.
+   */
+  async redeemWithinTransaction(
+    tx: Prisma.TransactionClient,
+    params: { couponId: string; userId: string; courseId: string; discount: number },
+  ) {
+    const { couponId, userId, courseId, discount } = params;
+
+    const alreadyRedeemed = await tx.couponRedemption.findUnique({
+      where: { couponId_userId_courseId: { couponId, userId, courseId } },
+    });
+    if (alreadyRedeemed) {
+      throw new ConflictException('You have already used this coupon for this course');
+    }
+
+    const now = new Date();
+    const coupon = await tx.coupon.findUnique({ where: { id: couponId } });
+    if (!coupon) throw new NotFoundException('Coupon not found');
+
+    const { count } = await tx.coupon.updateMany({
+      where: {
+        id: couponId,
+        isActive: true,
+        AND: [
+          { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+          coupon.maxRedemptions !== null
+            ? { redeemedCount: { lt: coupon.maxRedemptions } }
+            : {},
+        ],
+      },
+      data: { redeemedCount: { increment: 1 } },
+    });
+    if (count !== 1) {
+      throw new BadRequestException('This coupon is no longer available');
+    }
+
+    return tx.couponRedemption.create({
+      data: { couponId, userId, courseId, discount },
+    });
+  }
+
   // ----------------------------------------------------------
   // REDEMPTION HISTORY
   // ----------------------------------------------------------

@@ -100,6 +100,22 @@ export class AuthController {
     return this.authService.refresh(dto.refreshToken);
   }
 
+  @Post('logout')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Log out this session and revoke its refresh-token family' })
+  logout(@CurrentUser('id') userId: string, @CurrentUser('jti') jti?: string) {
+    return this.authService.logout(userId, jti);
+  }
+
+  @Post('logout-all')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Log out all sessions and revoke all refresh-token families' })
+  logoutAll(@CurrentUser('id') userId: string) {
+    return this.authService.logoutAll(userId);
+  }
+
   @Post('wallet/link-nonce')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -184,4 +200,3 @@ export class AuthController {
     return { success: true };
   }
 }
-
