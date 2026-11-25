@@ -331,11 +331,13 @@ export class CoursesService {
     return {
       courseId: course.id,
       courseTitle: course.title,
-      ...this.feeCalculator.computeBreakdown({
+      // computeBreakdown is async (DB-backed tax rates); without the await the
+      // spread copied nothing and checkout returned no fee/tax fields.
+      ...(await this.feeCalculator.computeBreakdown({
         coursePrice: Number(course.price),
         platformFeePercent: course.platformFeePercent,
         region,
-      }),
+      })),
     };
   }
 
