@@ -61,7 +61,10 @@ export class CoursesController {
   }
 
   @Get(':id/checkout')
-  @ApiOperation({ summary: 'Get platform fee + regional tax breakdown for checkout' })
+  @ApiOperation({
+    summary: 'Get platform fee + regional tax breakdown for checkout',
+    description: 'Only ACTIVE courses; any other status returns 404 (issue #441).',
+  })
   @ApiQuery({ name: 'region', required: false, description: 'Region code for tax lookup, e.g. NG, US, GB, EU' })
   getCheckoutBreakdown(@Param('id') id: string, @Query('region') region?: string) {
     return this.coursesService.getCheckoutBreakdown(id, region);
