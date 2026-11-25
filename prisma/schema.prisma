@@ -88,6 +88,7 @@ enum NotificationType {
   LIVE_SESSION_REMINDER // for scheduled live sessions
   DISPUTE_FILED
   DISPUTE_RESOLVED
+  KYC_SUBMITTED         // for admins
   KYC_APPROVED
   KYC_REJECTED
   KYC_REVOKED
@@ -99,6 +100,7 @@ enum NotificationType {
   REFUND_PROCESSED
   REFERRAL_REWARD_ISSUED
   COURSE_INTEREST_REMINDER
+  COURSE_SUBMITTED_FOR_REVIEW // for admins
 }
 
 enum RefundStatus {
@@ -506,6 +508,7 @@ model Lesson {
   type         LessonType  @default(VIDEO)
   videoUrl     String?     // URL to video file (S3 / local)
   videoDuration Int?       // seconds
+  videoRenditions Json?    // transcoded renditions keyed by preset, e.g. { "720p": { originUrl, cdnUrl, width, height } }
   quizDurationMinutes Int  @default(15)
   thumbnailUrl String?     // URL to auto-generated or manually set thumbnail
   content      String?     // for TEXT type lessons

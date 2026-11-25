@@ -61,6 +61,14 @@ export class KycService {
     });
 
     this.logger.log(`KYC submission created: ${submission.id} for instructor ${instructorId}`);
+
+    // Issue #338 — let admins know a new submission is waiting in the KYC queue
+    await this.notifications.notifyAdmins(
+      NotificationType.KYC_SUBMITTED,
+      'New KYC submission',
+      `${user.name ?? 'An instructor'} submitted a ${dto.documentType} for KYC review`,
+      { submissionId: submission.id, instructorId },
+    );
     return {
       ...submission,
       documentUrl: primary.cdnUrl,
