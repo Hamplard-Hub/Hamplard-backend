@@ -34,6 +34,9 @@ const mockPrisma = {
     findMany: jest.fn(),
     count: jest.fn(),
   },
+  adminAuditLog: {
+    create: jest.fn().mockResolvedValue({}),
+  },
   $getTransactionClient: jest.fn(),
   $transaction: jest.fn(),
 };
@@ -222,6 +225,145 @@ describe('CoursesService', () => {
         expect.stringContaining('Missing intro video'),
         expect.any(Object),
       );
+    });
+  });
+
+  // -------------------------------------------------
+  // REJECTION FEEDBACK PERSISTENCE (issue #444)
+  // -------------------------------------------------
+
+  describe('rejection feedback persistence (issue #444)', () => {
+    const REASON = 'Missing intro video and module 2 is empty';
+    const withCurriculum = (overrides: Record<string, unknown>) => ({
+      ...MOCK_COURSE,
+      modules: [],
+      _count: { enrollments: 0 },
+      instructor: { id: 'instructor-id', name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
+      ...overrides,
+    });
+
+    it('persists rejectionReason and rejectedAt alongside the DRAFT transition', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.PENDING }));
+      mockPrisma.course.update.mockImplementation(async ({ data }: any) =>
+        withCurriculum({ ...data }),
+      );
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      const before = Date.now();
+      const result = await service.reject(MOCK_COURSE.id, 'admin-id', REASON);
+
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: { status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt: expect.any(Date) },
+      });
+      const { rejectedAt } = mockPrisma.course.update.mock.calls[0][0].data;
+      expect(rejectedAt.getTime()).toBeGreaterThanOrEqual(before);
+      expect(rejectedAt.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(result.rejectionReason).toBe(REASON);
+    });
+
+    it('still notifies the instructor with the reason and writes the audit log', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.PENDING }));
+      mockPrisma.course.update.mockResolvedValue(withCurriculum({ status: CourseStatus.DRAFT }));
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      await service.reject(MOCK_COURSE.id, 'admin-id', REASON);
+
+      expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
+        'user-1',
+        'COURSE_REJECTED',
+        'Course review feedback',
+        `Your course "${MOCK_COURSE.title}" needs some changes before approval. Reason: ${REASON}`,
+        { courseId: MOCK_COURSE.id, reason: REASON },
+      );
+      expect(mockPrisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'COURSE_REJECTED',
+          targetId: MOCK_COURSE.id,
+          metadata: expect.objectContaining({ reason: REASON }),
+        }),
+      });
+    });
+
+    it('does not persist anything when the course is not PENDING', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.DRAFT }));
+
+      await expect(service.reject(MOCK_COURSE.id, 'admin-id', REASON)).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.course.update).not.toHaveBeenCalled();
+      expect(mockNotifications.notifyUser).not.toHaveBeenCalled();
+    });
+
+    it('exposes the reason to the owning instructor through course detail', async () => {
+      const rejectedAt = new Date('2026-11-20T10:00:00Z');
+      mockPrisma.course.findUnique.mockResolvedValue(
+        withCurriculum({ status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt }),
+      );
+
+      const detail: any = await service.findOneForViewer(MOCK_COURSE.id, 'instructor-id', UserRole.INSTRUCTOR);
+
+      expect(detail.rejectionReason).toBe(REASON);
+      expect(detail.rejectedAt).toEqual(rejectedAt);
+    });
+
+    it('hides a rejected (DRAFT) course — and its feedback — from other users', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(
+        withCurriculum({ status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt: new Date() }),
+      );
+
+      await expect(
+        service.findOneForViewer(MOCK_COURSE.id, 'someone-else', UserRole.STUDENT),
+      ).rejects.toThrow(NotFoundException);
+      await expect(service.findOneForViewer(MOCK_COURSE.id)).rejects.toThrow(NotFoundException);
+    });
+
+    it('clears rejectionReason and rejectedAt when the instructor resubmits', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(
+        withCurriculum({ status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt: new Date() }),
+      );
+      mockPrisma.course.update.mockImplementation(async ({ data }: any) => withCurriculum({ ...data }));
+
+      const result: any = await service.submitForReview(MOCK_COURSE.id, OWNER, 'tx-hash');
+
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: {
+          status: CourseStatus.PENDING,
+          txHash: 'tx-hash',
+          rejectionReason: null,
+          rejectedAt: null,
+        },
+      });
+      expect(result.rejectionReason).toBeNull();
+      expect(result.rejectedAt).toBeNull();
+    });
+
+    it('clears stale rejection fields on approval so they are never published', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.PENDING }));
+      mockPrisma.course.update.mockResolvedValue(withCurriculum({ status: CourseStatus.ACTIVE }));
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      await service.approve(MOCK_COURSE.id, 'admin-id');
+
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: expect.objectContaining({
+          status: CourseStatus.ACTIVE,
+          rejectionReason: null,
+          rejectedAt: null,
+        }),
+      });
+    });
+
+    it('does not let instructors set rejection fields through update()', async () => {
+      // UpdateCourseDto has no rejection fields; the global ValidationPipe
+      // (whitelist + forbidNonWhitelisted) rejects them before reaching here.
+      const { UpdateCourseDto } = await import('./dto/update-course.dto');
+      const { ValidationPipe } = await import('@nestjs/common');
+      const pipe = new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true });
+
+      await expect(
+        pipe.transform({ title: 'x', rejectionReason: null }, { type: 'body', metatype: UpdateCourseDto }),
+      ).rejects.toThrow();
     });
   });
 
@@ -440,7 +582,12 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       expect(mockPrisma.course.updateMany).toHaveBeenCalledWith({
         where: { id: MOCK_COURSE.id },
-        data: expect.objectContaining({ status: CourseStatus.ACTIVE, approvedAt: expect.any(Date) }),
+        data: expect.objectContaining({
+          status: CourseStatus.ACTIVE,
+          approvedAt: expect.any(Date),
+          rejectionReason: null,
+          rejectedAt: null,
+        }),
       });
       expect(mockSearchService.indexCourse).toHaveBeenCalledWith(
         expect.objectContaining({ id: MOCK_COURSE.id, status: CourseStatus.ACTIVE }),
