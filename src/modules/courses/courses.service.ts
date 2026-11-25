@@ -332,9 +332,19 @@ export class CoursesService {
     return this.findOne(id, { userId, isAdmin: role === UserRole.ADMIN });
   }
 
+  /**
+   * Public checkout fee/tax breakdown.
+   *
+   * Issue #441: only ACTIVE (purchasable) courses are visible here. The status
+   * is part of the query itself, so DRAFT/PENDING/PAUSED/ARCHIVED courses get
+   * the same 404 as unknown ids — callers cannot tell them apart, and the
+   * title/price of unpublished courses never leaves the database. Owners and
+   * admins have no use for a checkout quote on a course nobody can buy, so no
+   * ownership bypass is offered.
+   */
   async getCheckoutBreakdown(courseId: string, region?: string) {
-    const course = await this.prisma.course.findUnique({
-      where: { id: courseId },
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, status: CourseStatus.ACTIVE },
       select: { id: true, title: true, price: true, platformFeePercent: true },
     });
     if (!course) throw new NotFoundException(`Course ${courseId} not found`);
@@ -342,11 +352,13 @@ export class CoursesService {
     return {
       courseId: course.id,
       courseTitle: course.title,
-      ...this.feeCalculator.computeBreakdown({
+      // computeBreakdown is async (DB-backed tax rates); without the await the
+      // spread copied nothing and checkout returned no fee/tax fields.
+      ...(await this.feeCalculator.computeBreakdown({
         coursePrice: Number(course.price),
         platformFeePercent: course.platformFeePercent,
         region,
-      }),
+      })),
     };
   }
 
