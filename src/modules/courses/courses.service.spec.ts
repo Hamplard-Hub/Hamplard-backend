@@ -396,6 +396,121 @@ describe('CoursesService', () => {
       const result = await service.findAll({ category: 'Tailoring' });
       expect(result.data).toHaveLength(1);
     });
+    it('keeps newest-first ordering with an id tiebreaker by default', async () => {
+      mockPrisma.$transaction.mockResolvedValue([[], 0]);
+      await service.findAll({ status: CourseStatus.ACTIVE });
+      expect(mockPrisma.course.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }),
+      );
+    });
+  });
+
+  // -------------------------------------------------
+  // ADMIN PENDING QUEUE PAGINATION (issue #445)
+  // -------------------------------------------------
+
+  describe('findAll() — admin pending queue (issue #445)', () => {
+    // 45 PENDING courses (several sharing a createdAt) plus noise in other statuses.
+    const base = Date.UTC(2026, 0, 1);
+    const dataset = [
+      ...Array.from({ length: 45 }, (_, i) => ({
+        id: `PENDING-${String(i).padStart(3, '0')}`,
+        status: CourseStatus.PENDING,
+        // every 3 courses share a timestamp → exercises the id tiebreaker
+        createdAt: new Date(base + Math.floor(i / 3) * 60_000),
+      })),
+      ...[CourseStatus.ACTIVE, CourseStatus.DRAFT, CourseStatus.ARCHIVED].map((status, i) => ({
+        id: `OTHER-${i}`,
+        status,
+        createdAt: new Date(base - 1_000_000),
+      })),
+    ];
+
+    /** Minimal Prisma emulation honouring where.status, orderBy[], skip and take. */
+    const applyQuery = (args: any) => {
+      const rows = dataset.filter((c) => !args.where?.status || c.status === args.where.status);
+      const sorted = [...rows].sort((a: any, b: any) => {
+        for (const clause of args.orderBy ?? []) {
+          const [field, dir] = Object.entries(clause)[0] as [string, 'asc' | 'desc'];
+          const av = a[field] instanceof Date ? a[field].getTime() : a[field];
+          const bv = b[field] instanceof Date ? b[field].getTime() : b[field];
+          if (av < bv) return dir === 'asc' ? -1 : 1;
+          if (av > bv) return dir === 'asc' ? 1 : -1;
+        }
+        return 0;
+      });
+      return sorted.slice(args.skip ?? 0, (args.skip ?? 0) + (args.take ?? sorted.length));
+    };
+
+    beforeEach(() => {
+      mockPrisma.course.findMany.mockImplementation(async (args: any) => applyQuery(args));
+      mockPrisma.course.count.mockImplementation(
+        async (args: any) => dataset.filter((c) => c.status === args.where.status).length,
+      );
+      mockPrisma.$transaction.mockImplementation(async (ops: Promise<unknown>[]) => Promise.all(ops));
+    });
+
+    afterEach(() => {
+      mockPrisma.course.findMany.mockReset();
+      mockPrisma.course.count.mockReset();
+      mockPrisma.$transaction.mockReset();
+    });
+
+    const pendingPage = (page: number, limit = 20) =>
+      service.findAll({ status: CourseStatus.PENDING, page, limit, sortOrder: 'asc' });
+
+    it('orders oldest first with a deterministic id tiebreaker', async () => {
+      await pendingPage(1);
+      expect(mockPrisma.course.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { status: CourseStatus.PENDING },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          skip: 0,
+          take: 20,
+        }),
+      );
+    });
+
+    it('returns correct pagination meta for more than 20 pending courses', async () => {
+      const page1 = await pendingPage(1);
+      expect(page1.meta).toEqual({ total: 45, page: 1, limit: 20, totalPages: 3 });
+
+      const page3 = await pendingPage(3);
+      expect(page3.meta).toEqual({ total: 45, page: 3, limit: 20, totalPages: 3 });
+      expect(page3.data).toHaveLength(5);
+    });
+
+    it('walks every page without duplicates or omissions, oldest first', async () => {
+      const seen: any[] = [];
+      for (let page = 1; page <= 3; page++) {
+        const { data } = await pendingPage(page);
+        seen.push(...data);
+      }
+
+      const ids = seen.map((c) => c.id);
+      expect(ids).toHaveLength(45);
+      expect(new Set(ids).size).toBe(45);
+      expect(ids).toEqual(
+        dataset.filter((c) => c.status === CourseStatus.PENDING).map((c) => c.id),
+      );
+      // non-decreasing createdAt across page boundaries
+      for (let i = 1; i < seen.length; i++) {
+        expect(seen[i].createdAt.getTime()).toBeGreaterThanOrEqual(seen[i - 1].createdAt.getTime());
+      }
+    });
+
+    it('never leaks non-PENDING courses into the queue', async () => {
+      for (let page = 1; page <= 3; page++) {
+        const { data } = await pendingPage(page);
+        expect(data.every((c: any) => c.status === CourseStatus.PENDING)).toBe(true);
+      }
+    });
+
+    it('returns an empty page past the end', async () => {
+      const { data, meta } = await pendingPage(4);
+      expect(data).toEqual([]);
+      expect(meta.total).toBe(45);
+    });
   });
 });
 

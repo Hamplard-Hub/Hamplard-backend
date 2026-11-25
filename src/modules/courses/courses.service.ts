@@ -232,8 +232,13 @@ export class CoursesService {
     search?: string;
     page?: number;
     limit?: number;
+    /** Sort by creation date; `asc` = oldest first (admin review queue, issue #445). */
+    sortOrder?: 'asc' | 'desc';
   }) {
-    const { category, level, status, instructorAddress, search, page = 1, limit = 20 } = filters;
+    const {
+      category, level, status, instructorAddress, search,
+      page = 1, limit = 20, sortOrder = 'desc',
+    } = filters;
 
     const where: any = {};
     if (category)          where.category = category;
@@ -254,7 +259,9 @@ export class CoursesService {
           instructor: { select: { name: true, stellarAddress: true, avatarUrl: true } },
           _count:     { select: { enrollments: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        // `id` tiebreaker keeps page boundaries stable when createdAt values collide,
+        // so consecutive pages never duplicate or skip rows.
+        orderBy: [{ createdAt: sortOrder }, { id: sortOrder }],
         skip: (page - 1) * limit,
         take: limit,
       }),

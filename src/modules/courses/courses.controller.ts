@@ -120,9 +120,17 @@ export class CoursesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'List all pending courses awaiting approval' })
-  getPending() {
-    return this.coursesService.findAll({ status: CourseStatus.PENDING });
+  @ApiOperation({
+    summary: 'List pending courses awaiting approval (paginated, oldest first)',
+    description: 'Issue #445 — accepts `page`/`limit`; response includes pagination `meta`.',
+  })
+  getPending(@Query() pagination: PaginationQueryDto) {
+    return this.coursesService.findAll({
+      status: CourseStatus.PENDING,
+      page: pagination.page,
+      limit: pagination.limit,
+      sortOrder: 'asc',
+    });
   }
 
   @Post(':id/approve')
