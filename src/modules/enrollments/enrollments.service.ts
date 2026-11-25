@@ -124,23 +124,6 @@ export class EnrollmentsService {
     }
 
     await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, verifiedAmountPaid);
-    // Update course stats
-    await this.prisma.course.update({
-      where: { id: courseId },
-      data: {
-        totalEnrollments: { increment: 1 },
-        totalRevenue: { increment: new Prisma.Decimal(amountPaid) },
-      },
-    });
-
-    await this.analytics.trackEvent(
-      {
-        eventType: SERVER_ANALYTICS_EVENTS.ENROLLMENT_CREATED,
-        properties: { enrollmentId: enrollment.id, courseId, amountPaid },
-      },
-      { userId: studentId, source: 'server' },
-    );
-    await this.runPostEnrollmentSteps(enrollment, fraudResult, txHash, amountPaid);
 
     this.logger.log(`Enrollment created: ${studentId} → ${courseId} (payment ${txHash})`);
     return enrollment;

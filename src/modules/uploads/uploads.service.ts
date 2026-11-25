@@ -4,7 +4,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import * as path from 'path';
 import * as fs from 'fs';
-import { v4 as uuid } from 'uuid';
+import { randomUUID } from 'crypto';
 import { CdnAssetVisibility, CdnService, MediaDeliveryUrls } from './cdn.service';
 import { VirusScanService } from './virus-scan.service';
 import { VideoTranscodeService } from './video-transcode.service';
@@ -111,7 +111,7 @@ export class UploadsService {
     instructorId: string,
   ): Promise<UploadResult> {
     const { ext } = this.validateFile(file, 'kyc');
-    const filename = `kyc-${instructorId}-${uuid()}${ext}`;
+    const filename = `kyc-${instructorId}-${randomUUID()}${ext}`;
 
     await this.virusScan.scanFile(filename, file.buffer);
 
@@ -138,7 +138,7 @@ export class UploadsService {
 
     this.ensureDir(path.join(this.uploadDir, subfolder));
 
-    const filename = `${uuid()}${ext}`;
+    const filename = `${randomUUID()}${ext}`;
 
     await this.virusScan.scanFile(filename, file.buffer);
 
@@ -262,7 +262,7 @@ export class UploadsService {
 
     this.ensureDir(path.join(this.uploadDir, subfolder));
 
-    const filename = `${uuid()}${ext}`;
+    const filename = `${randomUUID()}${ext}`;
 
     await this.virusScan.scanFile(filename, file.buffer);
 

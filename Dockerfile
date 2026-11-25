@@ -1,7 +1,7 @@
 # ============================================================
 # Stage 1: Build
 # ============================================================
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -31,7 +31,7 @@ RUN npm prune --omit=dev
 # ============================================================
 # Stage 2: Slim Runtime with ffmpeg and pg_dump
 # ============================================================
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 

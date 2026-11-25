@@ -5,10 +5,10 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as ffmpeg from 'fluent-ffmpeg';
+import ffmpeg = require('@modernized/fluent-ffmpeg');
 import * as path from 'path';
 import * as fs from 'fs';
-import { v4 as uuid } from 'uuid';
+import { randomUUID } from 'crypto';
 
 /** Minimum allowed frame timestamp in seconds */
 const MIN_TIMESTAMP_SECS = 0;
@@ -84,7 +84,7 @@ export class VideoThumbnailService {
     const thumbDir = path.join(this.uploadDir, 'thumbnails');
     this.ensureDir(thumbDir);
 
-    const filename = `thumb-${lessonId}-${uuid()}.jpg`;
+    const filename = `thumb-${lessonId}-${randomUUID()}.jpg`;
     const outputPath = path.join(thumbDir, filename);
 
     try {
