@@ -13,7 +13,12 @@ describe('AssignmentsService', () => {
   const mockPrisma: any = {
     assignment: { findUnique: jest.fn() },
     enrollment: { findUnique: jest.fn() },
-    assignmentSubmission: { findUnique: jest.fn(), upsert: jest.fn() },
+    assignmentSubmission: {
+      findUnique: jest.fn(),
+      upsert: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
     user: { findUnique: jest.fn() },
   };
   const mockNotifications = { notifyUser: jest.fn().mockResolvedValue({}) };
@@ -147,6 +152,56 @@ describe('AssignmentsService', () => {
         }),
       );
       expect(mockNotifications.notifyUser).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('findPendingForInstructor() (issue #434)', () => {
+    beforeEach(() => {
+      mockPrisma.assignmentSubmission.findMany.mockResolvedValue([]);
+      mockPrisma.assignmentSubmission.count.mockResolvedValue(0);
+    });
+
+    it('scopes pending submissions by the instructor user relation', async () => {
+      await service.findPendingForInstructor('instructor-1', 2, 10);
+
+      const expectedWhere = {
+        status: AssignmentStatus.SUBMITTED,
+        assignment: {
+          lesson: {
+            module: { course: { instructor: { id: 'instructor-1' } } },
+          },
+        },
+      };
+      expect(mockPrisma.assignmentSubmission.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expectedWhere, skip: 10, take: 10 }),
+      );
+      expect(mockPrisma.assignmentSubmission.count).toHaveBeenCalledWith({ where: expectedWhere });
+    });
+
+    it('returns an empty page for a Google-only instructor with no Stellar address', async () => {
+      const result = await service.findPendingForInstructor('google-only-instructor');
+
+      expect(result).toEqual({
+        data: [],
+        meta: { total: 0, page: 1, limit: 20, totalPages: 0 },
+      });
+      expect(mockPrisma.assignmentSubmission.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            assignment: {
+              lesson: {
+                module: { course: { instructor: { id: 'google-only-instructor' } } },
+              },
+            },
+          }),
+        }),
+      );
+    });
+
+    it('rejects a missing instructor id instead of querying platform-wide data', async () => {
+      await expect(service.findPendingForInstructor(undefined)).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.assignmentSubmission.findMany).not.toHaveBeenCalled();
+      expect(mockPrisma.assignmentSubmission.count).not.toHaveBeenCalled();
     });
   });
 });

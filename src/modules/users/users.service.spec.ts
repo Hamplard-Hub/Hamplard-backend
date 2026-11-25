@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { UsersService } from './users.service';
 import { PUBLIC_USER_SELECT } from './dto/public-user.dto';
@@ -48,6 +48,7 @@ describe('UsersService', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    course: { findMany: jest.fn() },
     session: { updateMany: jest.fn() },
     refreshToken: { updateMany: jest.fn() },
     adminAuditLog: { create: jest.fn() },
@@ -220,6 +221,41 @@ describe('UsersService', () => {
       expect(cache.del).toHaveBeenCalledWith('jwt:user:user-1');
       expect(prisma.session.updateMany).not.toHaveBeenCalled();
       expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getInstructorStats() (issue #434)', () => {
+    it('scopes courses by the instructor user relation, not by an optional address', async () => {
+      prisma.course.findMany.mockResolvedValue([
+        { id: 'course-1', totalRevenue: 120, _count: { enrollments: 3 } },
+      ]);
+
+      const result = await service.getInstructorStats('instructor-1');
+
+      expect(prisma.course.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { instructor: { id: 'instructor-1' } },
+        }),
+      );
+      expect(result).toMatchObject({ totalCourses: 1, totalStudents: 3, totalRevenue: 120 });
+    });
+
+    it('returns an empty result for a user with no Stellar address', async () => {
+      prisma.course.findMany.mockResolvedValue([]);
+
+      const result = await service.getInstructorStats('google-only-user');
+
+      expect(prisma.course.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { instructor: { id: 'google-only-user' } },
+        }),
+      );
+      expect(result).toEqual({ totalCourses: 0, totalStudents: 0, totalRevenue: 0, courses: [] });
+    });
+
+    it('rejects a missing instructor id instead of issuing an unfiltered query', async () => {
+      await expect(service.getInstructorStats(undefined)).rejects.toThrow(BadRequestException);
+      expect(prisma.course.findMany).not.toHaveBeenCalled();
     });
   });
 });

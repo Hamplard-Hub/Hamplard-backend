@@ -1,4 +1,5 @@
 import { UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { AuthUserCacheService } from '../../common/auth-user/auth-user-cache.service';
 import { JwtStrategy } from './jwt.strategy';
 
 describe('JwtStrategy', () => {
@@ -23,7 +24,7 @@ describe('JwtStrategy', () => {
       isSuspended: false,
       suspendedUntil: null,
     });
-    const strategy = new JwtStrategy(config as any, prisma as any);
+    const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
     await expect(
       strategy.validate({
@@ -55,7 +56,7 @@ describe('JwtStrategy', () => {
       isSuspended: false,
       suspendedUntil: null,
     });
-    const strategy = new JwtStrategy(config as any, prisma as any);
+    const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
     const result = await strategy.validate({
       sub: 'user-1',
@@ -75,7 +76,7 @@ describe('JwtStrategy', () => {
       isSuspended: false,
       suspendedUntil: null,
     });
-    const strategy = new JwtStrategy(config as any, prisma as any);
+    const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
     await expect(
       strategy.validate({
@@ -96,7 +97,7 @@ describe('JwtStrategy', () => {
       isSuspended: true,
       suspendedUntil: futureDate,
     });
-    const strategy = new JwtStrategy(config as any, prisma as any);
+    const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
     await expect(
       strategy.validate({
@@ -108,7 +109,7 @@ describe('JwtStrategy', () => {
 
   it('throws UnauthorizedException when user no longer exists in DB', async () => {
     prisma.user.findUnique.mockResolvedValue(null);
-    const strategy = new JwtStrategy(config as any, prisma as any);
+    const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
     await expect(
       strategy.validate({
@@ -119,7 +120,7 @@ describe('JwtStrategy', () => {
   });
 
   it('rejects a refresh token presented as an access token', async () => {
-    const strategy = new JwtStrategy(config as any, prisma as any);
+    const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
     await expect(
       strategy.validate({
@@ -145,7 +146,7 @@ describe('JwtStrategy', () => {
 
     it('rejects a valid token for a deleted account', async () => {
       prisma.user.findUnique.mockResolvedValue({ ...base, deletedAt: new Date() });
-      const strategy = new JwtStrategy(config as any, prisma as any);
+      const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
       await expect(strategy.validate({ sub: 'user-1', role: 'STUDENT' })).rejects.toThrow(
         'Account has been deleted',
@@ -154,7 +155,7 @@ describe('JwtStrategy', () => {
 
     it('flags a deactivated account so the guard can restrict it', async () => {
       prisma.user.findUnique.mockResolvedValue({ ...base, deactivatedAt: new Date() });
-      const strategy = new JwtStrategy(config as any, prisma as any);
+      const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
       await expect(strategy.validate({ sub: 'user-1', role: 'STUDENT' })).resolves.toMatchObject({
         id: 'user-1',

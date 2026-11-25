@@ -328,4 +328,58 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       });
     });
   });
+
+  describe('updateThumbnailUrl() (issue #436)', () => {
+    const lessonWithCourse = {
+      id: 'lesson-1',
+      module: {
+        course: {
+          id: 'course-1',
+          instructorAddress: 'GINSTRUCTOR1',
+          instructor: { id: 'instructor-1' },
+        },
+      },
+    };
+
+    it('rejects an instructor who does not own the lesson course', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(lessonWithCourse);
+
+      await expect(
+        service.updateThumbnailUrl('lesson-1', 'https://cdn.example.com/t.jpg', {
+          id: 'other-instructor',
+          stellarAddress: 'GOTHER',
+          role: UserRole.INSTRUCTOR,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.lesson.update).not.toHaveBeenCalled();
+    });
+
+    it('allows the course owner to update the thumbnail', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(lessonWithCourse);
+      mockPrisma.lesson.update.mockResolvedValue({ id: 'lesson-1' });
+
+      await service.updateThumbnailUrl('lesson-1', 'https://cdn.example.com/t.jpg', {
+        id: 'instructor-1',
+        stellarAddress: 'GINSTRUCTOR1',
+        role: UserRole.INSTRUCTOR,
+      });
+
+      expect(mockPrisma.lesson.update).toHaveBeenCalledWith({
+        where: { id: 'lesson-1' },
+        data: { thumbnailUrl: 'https://cdn.example.com/t.jpg' },
+      });
+    });
+
+    it('allows an admin to update any lesson thumbnail', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(lessonWithCourse);
+      mockPrisma.lesson.update.mockResolvedValue({ id: 'lesson-1' });
+
+      await service.updateThumbnailUrl('lesson-1', 'https://cdn.example.com/t.jpg', {
+        id: 'admin-1',
+        role: UserRole.ADMIN,
+      });
+
+      expect(mockPrisma.lesson.update).toHaveBeenCalled();
+    });
+  });
 });

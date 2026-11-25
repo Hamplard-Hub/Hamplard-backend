@@ -85,9 +85,9 @@ export class AssignmentsController {
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
   @ApiOperation({ summary: 'Get all pending submissions for instructor review (paginated)' })
   pendingReviews(
-    @CurrentUser('stellarAddress') address: string,
+    @CurrentUser('id') instructorId: string,
     @Query() query: PendingSubmissionsQueryDto,
   ) {
-    return this.assignmentsService.findPendingForInstructor(address, query.page, query.limit);
+    return this.assignmentsService.findPendingForInstructor(instructorId, query.page, query.limit);
   }
 }

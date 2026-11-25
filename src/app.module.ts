@@ -9,6 +9,7 @@ import { StellarModule } from './common/stellar/stellar.module';
 import { CacheModule }   from './common/cache/cache.module';
 import { QueueModule }   from './common/queue/queue.module';
 import { RedisRateLimitModule } from './common/redis-rate-limit/redis-rate-limit.module';
+import { AuthUserCacheModule } from './common/auth-user/auth-user-cache.module';
 import { SchedulingModule } from './common/scheduling/scheduling.module';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { WebhookSignatureMiddleware } from './common/middleware/webhook-signature.middleware';
@@ -69,6 +70,7 @@ import { CronMonitorModule }  from './modules/cron-monitor/cron-monitor.module';
     CacheModule,
     QueueModule,
     RedisRateLimitModule,
+    AuthUserCacheModule,
     SchedulingModule,
 
     AuthModule,

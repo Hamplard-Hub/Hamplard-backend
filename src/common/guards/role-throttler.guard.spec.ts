@@ -2,13 +2,15 @@
  * Unit tests for RoleThrottlerGuard.
  *
  * Redis is replaced with an in-memory counter mock so no network connection
- * is required. JWT verification uses a real JwtService with a test secret.
+ * is required. JWT verification uses a real JwtService with a test secret;
+ * the live role is supplied by a stub of the shared AuthUserCacheService.
  */
-import { ExecutionContext } from '@nestjs/common';
+import { ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { RoleThrottlerGuard } from './role-throttler.guard';
 import { RedisRateLimitService } from '../redis-rate-limit/redis-rate-limit.service';
+import { AuthUserCacheService, AuthUser } from '../auth-user/auth-user-cache.service';
 
 // ---------------------------------------------------------------------------
 // In-memory counter mock
@@ -26,6 +28,30 @@ class FakeRateLimitService {
   reset() { this.counters.clear(); }
 }
 
+const baseUser = (id: string, role: string): AuthUser => ({
+  id,
+  role,
+  stellarAddress: null,
+  googleId: null,
+  isBanned: false,
+  isSuspended: false,
+  suspendedUntil: null,
+  deactivatedAt: null,
+  deletedAt: null,
+});
+
+type FakeUsers = {
+  getUser: jest.Mock;
+  assertActive: jest.Mock;
+};
+
+const fakeUsers = (user: AuthUser | null): FakeUsers => ({
+  getUser: jest.fn().mockResolvedValue(user),
+  assertActive: jest.fn((value: AuthUser) => {
+    if (value.isBanned) throw new ForbiddenException('User is banned');
+  }),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -35,6 +61,7 @@ const TEST_SECRET = 'test-jwt-secret';
 function buildGuard(
   limits: Record<string, number> = {},
   fakeRl?: FakeRateLimitService,
+  users: FakeUsers = fakeUsers(null),
 ): [RoleThrottlerGuard, FakeRateLimitService] {
   const rl = fakeRl ?? new FakeRateLimitService();
   const config = {
@@ -51,15 +78,20 @@ function buildGuard(
     }),
   } as unknown as ConfigService;
 
-  const guard = new RoleThrottlerGuard(config, rl as unknown as RedisRateLimitService);
+  const guard = new RoleThrottlerGuard(
+    config,
+    rl as unknown as RedisRateLimitService,
+    users as unknown as AuthUserCacheService,
+  );
   return [guard, rl];
 }
 
 function makeContext(
   req: Partial<Record<string, any>>,
+  res?: Record<string, jest.Mock>,
 ): ExecutionContext {
   const headers: Record<string, string> = {};
-  const res = {
+  const response: Record<string, jest.Mock> = res ?? {
     setHeader: jest.fn(),
     status: jest.fn().mockReturnThis(),
     json: jest.fn().mockReturnThis(),
@@ -67,7 +99,7 @@ function makeContext(
   return {
     switchToHttp: () => ({
       getRequest: () => ({ headers, ip: '127.0.0.1', ...req }),
-      getResponse: () => res,
+      getResponse: () => response,
     }),
   } as unknown as ExecutionContext;
 }
@@ -101,16 +133,46 @@ describe('RoleThrottlerGuard', () => {
     expect(result).toBe(false);
   });
 
-  it('places authenticated requests into the correct role bucket', async () => {
-    const [guard] = buildGuard({ STUDENT: 5, anon: 1 });
-    const token = makeJwt({ sub: 'student-99', role: 'STUDENT' });
+  it('uses the cached live role instead of the role claim in the token', async () => {
+    const [guard] = buildGuard(
+      { STUDENT: 5, anon: 1, ADMIN: 50 },
+      undefined,
+      fakeUsers(baseUser('student-99', 'STUDENT')),
+    );
+    // The token still claims ADMIN, but the cached user is a STUDENT.
+    const token = makeJwt({ sub: 'student-99', role: 'ADMIN' });
+    const res = {
+      setHeader: jest.fn(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
+    };
+    const ctx = () => makeContext({ headers: { authorization: `Bearer ${token}` } }, res);
 
-    // With a valid JWT, should be placed in the STUDENT bucket (limit 5)
-    // rather than anon (limit 1) so the first 2 requests succeed.
-    const ctx1 = makeContext({ headers: { authorization: `Bearer ${token}` } });
-    const ctx2 = makeContext({ headers: { authorization: `Bearer ${token}` } });
-    expect(await guard.canActivate(ctx1)).toBe(true);
-    expect(await guard.canActivate(ctx2)).toBe(true);
+    expect(await guard.canActivate(ctx())).toBe(true);
+    expect(await guard.canActivate(ctx())).toBe(true);
+    expect(res.setHeader).toHaveBeenCalledWith('X-RateLimit-Bucket', 'STUDENT');
+    expect(res.setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', 5);
+  });
+
+  it('throttles a demoted admin at the new STUDENT limit', async () => {
+    const users = fakeUsers(baseUser('admin-1', 'ADMIN'));
+    const [guard] = buildGuard(
+      { STUDENT: 2, ADMIN: 50, anon: 1 },
+      undefined,
+      users,
+    );
+    const token = makeJwt({ sub: 'admin-1', role: 'ADMIN' });
+    const ctx = () => makeContext({ headers: { authorization: `Bearer ${token}` } });
+
+    // Before the demotion the ADMIN bucket applies.
+    expect(await guard.canActivate(ctx())).toBe(true);
+
+    // Role change is observed by the shared cached lookup.
+    users.getUser.mockResolvedValue(baseUser('admin-1', 'STUDENT'));
+
+    expect(await guard.canActivate(ctx())).toBe(true);
+    expect(await guard.canActivate(ctx())).toBe(true);
+    expect(await guard.canActivate(ctx())).toBe(false);
   });
 
   it('falls back to anon bucket for an expired/malformed JWT', async () => {
@@ -123,11 +185,41 @@ describe('RoleThrottlerGuard', () => {
   });
 
   it('uses req.user when already populated (skips JWT decode)', async () => {
-    const [guard] = buildGuard({ ADMIN: 5, anon: 1 });
+    const users = fakeUsers(null);
+    const [guard] = buildGuard({ ADMIN: 5, anon: 1 }, undefined, users);
     // Simulate a request where JwtAuthGuard already ran.
     const ctx = makeContext({ user: { id: 'admin-1', role: 'ADMIN' } });
     expect(await guard.canActivate(ctx)).toBe(true);
     expect(await guard.canActivate(ctx)).toBe(true);
+    expect(users.getUser).not.toHaveBeenCalled();
+  });
+
+  it('puts a banned user into the anon bucket despite an admin token', async () => {
+    const [guard] = buildGuard(
+      { anon: 1, ADMIN: 50 },
+      undefined,
+      fakeUsers({ ...baseUser('admin-1', 'ADMIN'), isBanned: true }),
+    );
+    const token = makeJwt({ sub: 'admin-1', role: 'ADMIN' });
+    const res = {
+      setHeader: jest.fn(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
+    };
+    const ctx = () => makeContext({ headers: { authorization: `Bearer ${token}` } }, res);
+
+    expect(await guard.canActivate(ctx())).toBe(true);
+    expect(await guard.canActivate(ctx())).toBe(false);
+    expect(res.setHeader).toHaveBeenCalledWith('X-RateLimit-Bucket', 'anon');
+  });
+
+  it('does not grant a role bucket when the user record no longer exists', async () => {
+    const [guard] = buildGuard({ anon: 1, ADMIN: 50 }, undefined, fakeUsers(null));
+    const token = makeJwt({ sub: 'deleted-user', role: 'ADMIN' });
+    const ctx = () => makeContext({ headers: { authorization: `Bearer ${token}` } });
+
+    expect(await guard.canActivate(ctx())).toBe(true);
+    expect(await guard.canActivate(ctx())).toBe(false);
   });
 
   it('fails open when Redis throws', async () => {
@@ -149,7 +241,7 @@ describe('RoleThrottlerGuard', () => {
       }),
     } as unknown as ConfigService;
 
-    const guard = new RoleThrottlerGuard(config, brokenRl);
+    const guard = new RoleThrottlerGuard(config, brokenRl, fakeUsers(null) as unknown as AuthUserCacheService);
     expect(await guard.canActivate(makeContext({}))).toBe(true);
   });
 });

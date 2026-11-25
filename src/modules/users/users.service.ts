@@ -59,9 +59,18 @@ export class UsersService {
     }
   }
 
-  async getInstructorStats(instructorAddress: string) {
+  /**
+   * Issue #434 — scope stats by the instructor relation (user id), not by the
+   * optional Stellar address. A missing identifier is rejected rather than
+   * silently becoming an unfiltered platform-wide query.
+   */
+  async getInstructorStats(instructorId: string) {
+    if (!instructorId) {
+      throw new BadRequestException('Instructor identifier is required');
+    }
+
     const courses = await this.prisma.course.findMany({
-      where: { instructorAddress },
+      where: { instructor: { id: instructorId } },
       include: { _count: { select: { enrollments: true } } },
     });
 
