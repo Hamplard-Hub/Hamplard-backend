@@ -65,7 +65,7 @@ export class CertificatesService {
     private readonly pdfService: CertificatePdfService,
     private readonly uploads: UploadsService,
     private readonly analytics: AnalyticsService,
-  ) {}
+  ) { }
 
   /**
    * Issue a certificate for a student who has completed a course.
@@ -112,10 +112,10 @@ export class CertificatesService {
     try {
       certificate = await this.prisma.certificate.create({
         data: {
-          id:                certificateId,
+          id: certificateId,
           studentId,
           courseId,
-          courseTitle:       enrollment.course.title,
+          courseTitle: enrollment.course.title,
           instructorAddress: enrollment.course.instructorAddress,
         },
         include: { student: true, course: true },
@@ -129,11 +129,11 @@ export class CertificatesService {
 
     // Generate PDF certificate using the course's category for template lookup
     const renderData: CertificateRenderData = {
-      studentName:       enrollment.student.name,
-      courseTitle:       enrollment.course.title,
+      studentName: enrollment.student.name,
+      courseTitle: enrollment.course.title,
       certificateId,
-      issuedAt:          certificate.issuedAt,
-      category:          enrollment.course.category,
+      issuedAt: certificate.issuedAt,
+      category: enrollment.course.category,
     };
 
     const pdfBuffer = await this.pdfService.renderForCategory(
@@ -223,7 +223,7 @@ export class CertificatesService {
       where: { id: certificateId },
       include: {
         student: { select: { id: true, name: true, stellarAddress: true } },
-        course:  { include: { instructor: { select: { name: true, stellarAddress: true } } } },
+        course: { include: { instructor: { select: { name: true, stellarAddress: true } } } },
         revokedBy: { select: { id: true, name: true, email: true } },
       },
     });
@@ -260,15 +260,15 @@ export class CertificatesService {
       throw new ForbiddenException('Only the certificate holder or an admin can download this certificate');
     }
 
-    let buffer = cert.pdfUrl ? this.uploads.readStoredFile(cert.pdfUrl) : null;
+    let buffer = cert.pdfUrl ? await this.uploads.readStoredFile(cert.pdfUrl) : null;
 
     if (!buffer) {
       buffer = await this.pdfService.renderForCategory(cert.course.category, {
-        studentName:   cert.student.name,
-        courseTitle:   cert.courseTitle,
+        studentName: cert.student.name,
+        courseTitle: cert.courseTitle,
         certificateId: cert.id,
-        issuedAt:      cert.issuedAt,
-        category:      cert.course.category,
+        issuedAt: cert.issuedAt,
+        category: cert.course.category,
       });
       const stored = await this.uploads.saveBuffer(buffer, 'certificates', `${cert.id}.pdf`);
       await this.prisma.certificate.update({
