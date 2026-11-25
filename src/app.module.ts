@@ -14,6 +14,7 @@ import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { WebhookSignatureMiddleware } from './common/middleware/webhook-signature.middleware';
 import { RoleThrottlerGuard } from './common/guards/role-throttler.guard';
 import { validate, AppConfigModule } from './common/config';
+import { LoggerModule } from './common/logging/logger.module';
 
 import { AuthModule }         from './modules/auth/auth.module';
 import { UsersModule }        from './modules/users/users.module';
@@ -57,10 +58,11 @@ import { CronMonitorModule }  from './modules/cron-monitor/cron-monitor.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
+      envFilePath: ['.env.local', '.env'],
       validate,
     }),
     AppConfigModule,
+    LoggerModule,
 
     ScheduleModule.forRoot(),
     TerminusModule,
