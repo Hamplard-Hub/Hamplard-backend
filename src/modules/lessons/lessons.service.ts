@@ -7,6 +7,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { DripScheduleService } from './drip-schedule.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
+import { DripScheduleService } from './drip-schedule.service';
 import { CdnService } from '../uploads/cdn.service';
 
 @Injectable()
@@ -456,9 +457,46 @@ export class LessonsService {
   }
 
   /**
+   * Verify enrollment is ACTIVE and the lesson is unlocked.
+   * Throws ForbiddenException if not.
+   */
+  private async verifyEnrollmentActiveAndLessonUnlocked(
+    enrollmentId: string,
+    lessonId: string,
+  ) {
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { id: enrollmentId },
+      select: { status: true },
+    });
+
+    if (!enrollment) {
+      throw new NotFoundException('Enrollment not found');
+    }
+
+    // Only ACTIVE enrollments can update progress
+    if (enrollment.status !== 'ACTIVE') {
+      throw new ForbiddenException(
+        'This enrollment is not active and cannot be updated',
+      );
+    }
+
+    // Check if the lesson is unlocked by drip schedule
+    const isUnlocked = await this.dripSchedule.isLessonUnlocked(enrollmentId, lessonId);
+    if (!isUnlocked) {
+      throw new ForbiddenException('This lesson is locked by the drip schedule');
+    }
+  }
+
+  /**
    * Mark a lesson as watched / completed by a student.
    * Automatically recalculates the enrollment progress percentage.
    * Called when the student reaches the end of a video or marks a text lesson done.
+   *
+   * Checks:
+   * - Enrollment belongs to student
+   * - Lesson belongs to course
+   * - Enrollment is ACTIVE (not REFUNDED or COMPLETED)
+   * - Lesson is unlocked (not drip-locked)
    */
   async markLessonComplete(
     studentId: string,
@@ -471,6 +509,10 @@ export class LessonsService {
       enrollmentId,
       lessonId,
     );
+
+    // Verify enrollment is active and lesson is unlocked
+    await this.verifyEnrollmentActiveAndLessonUnlocked(enrollmentId, lessonId);
+
     const existingProgress = await this.prisma.lessonProgress.findUnique({
       where: { enrollmentId_lessonId: { enrollmentId, lessonId } },
       select: { completed: true },
@@ -522,6 +564,12 @@ export class LessonsService {
 
   /**
    * Update video watch position (called periodically by the frontend player).
+   * 
+   * Checks:
+   * - Enrollment belongs to student
+   * - Lesson belongs to course
+   * - Enrollment is ACTIVE (not REFUNDED or COMPLETED)
+   * - Lesson is unlocked (not drip-locked)
    */
   async updateWatchProgress(
     studentId: string,
@@ -530,6 +578,9 @@ export class LessonsService {
     watchedSecs: number,
   ) {
     await this.verifyEnrollmentAndLesson(studentId, enrollmentId, lessonId);
+
+    // Verify enrollment is active and lesson is unlocked
+    await this.verifyEnrollmentActiveAndLessonUnlocked(enrollmentId, lessonId);
 
     return this.prisma.lessonProgress.upsert({
       where: { enrollmentId_lessonId: { enrollmentId, lessonId } },
