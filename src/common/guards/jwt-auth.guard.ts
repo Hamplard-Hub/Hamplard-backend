@@ -2,11 +2,13 @@ import { Injectable, ExecutionContext, UnauthorizedException, ForbiddenException
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { ALLOW_DEACTIVATED_KEY } from '../decorators/allow-deactivated.decorator';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
     constructor(
         @Optional() private readonly reflector?: Reflector,
+        @Optional() private readonly prisma?: PrismaService,
     ) {
         super();
     }
@@ -46,24 +48,26 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
             throw new UnauthorizedException('Session token missing jti');
         }
 
-        const session = await this.prisma.session.findUnique({
-            where: { jti: user.jti },
-            select: { revokedAt: true, expiresAt: true },
-        });
+        if (this.prisma) {
+            const session = await this.prisma.session.findUnique({
+                where: { jti: user.jti },
+                select: { revokedAt: true, expiresAt: true },
+            });
 
-        if (!session) {
-            throw new UnauthorizedException('Session not found');
-        }
-        if (session.revokedAt) {
-            throw new UnauthorizedException('Session has been revoked');
-        }
-        if (session.expiresAt <= new Date()) {
-            throw new UnauthorizedException('Session has expired');
-        }
+            if (!session) {
+                throw new UnauthorizedException('Session not found');
+            }
+            if (session.revokedAt) {
+                throw new UnauthorizedException('Session has been revoked');
+            }
+            if (session.expiresAt <= new Date()) {
+                throw new UnauthorizedException('Session has expired');
+            }
 
-        this.prisma.session
-            .update({ where: { jti: user.jti }, data: { lastActiveAt: new Date() } })
-            .catch(() => undefined);
+            this.prisma.session
+                .update({ where: { jti: user.jti }, data: { lastActiveAt: new Date() } })
+                .catch(() => undefined);
+        }
 
         return true;
     }

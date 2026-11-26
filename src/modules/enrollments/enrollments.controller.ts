@@ -21,7 +21,7 @@ export class EnrollmentsController {
   /**
    * POST /api/v1/enrollments
    * Called by the frontend after the student's enroll() tx is confirmed on-chain.
-   * 
+   *
    * Issue #403: amountPaid is no longer accepted from the request body.
    * It is verified from the on-chain transaction instead.
    *

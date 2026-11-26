@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { GoogleAuth } from 'google-auth-library';
@@ -6,6 +6,7 @@ import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationType, UserRole } from '@prisma/client';
 import { QueueService } from '../../common/queue/queue.service';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
 
 type ChannelState = { email: boolean; push: boolean; inApp: boolean };
@@ -21,6 +22,7 @@ export class NotificationsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly queueService: QueueService,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: this.config.get('SMTP_HOST'),
@@ -312,50 +314,57 @@ export class NotificationsService {
 
   @Cron('0 0 8 * * *')
   async sendDailyDigest() {
-    const users = await this.prisma.notificationDigestPreference.findMany({
-      where: { emailEnabled: true },
-      include: { user: true },
-    });
-
-    for (const entry of users) {
-      const since = entry.lastDigestAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const unreadNotifications = await this.prisma.notification.findMany({
-        where: {
-          userId: entry.userId,
-          read: false,
-          createdAt: { gte: since },
-        },
-        orderBy: { createdAt: 'desc' },
+    const doDigest = async () => {
+      const users = await this.prisma.notificationDigestPreference.findMany({
+        where: { emailEnabled: true },
+        include: { user: true },
       });
 
-      if (!unreadNotifications.length) {
-        continue;
-      }
-
-      const html = this.renderDigestTemplate(entry.user.name ?? entry.user.email ?? 'there', unreadNotifications);
-      const recipient = entry.user.email;
-      if (!recipient) {
-        this.logger.warn(`Skipping digest for ${entry.userId}: no email address`);
-        continue;
-      }
-
-      try {
-        await this.transporter.sendMail({
-          from: this.config.get('EMAIL_FROM', 'noreply@hamplard.com'),
-          to: recipient,
-          subject: 'Your daily Hamplard digest',
-          text: `You have ${unreadNotifications.length} unread updates.`,
-          html,
+      for (const entry of users) {
+        const since = entry.lastDigestAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const unreadNotifications = await this.prisma.notification.findMany({
+          where: {
+            userId: entry.userId,
+            read: false,
+            createdAt: { gte: since },
+          },
+          orderBy: { createdAt: 'desc' },
         });
-        await this.prisma.notificationDigestPreference.update({
-          where: { id: entry.id },
-          data: { lastDigestAt: new Date() },
-        });
-        this.logger.log(`Digest email sent to ${recipient}`);
-      } catch (error) {
-        this.logger.error(`Digest email failed for ${recipient}`, error.message);
+
+        if (!unreadNotifications.length) {
+          continue;
+        }
+
+        const html = this.renderDigestTemplate(entry.user.name ?? entry.user.email ?? 'there', unreadNotifications);
+        const recipient = entry.user.email;
+        if (!recipient) {
+          this.logger.warn(`Skipping digest for ${entry.userId}: no email address`);
+          continue;
+        }
+
+        try {
+          await this.transporter.sendMail({
+            from: this.config.get('EMAIL_FROM', 'noreply@hamplard.com'),
+            to: recipient,
+            subject: 'Your daily Hamplard digest',
+            text: `You have ${unreadNotifications.length} unread updates.`,
+            html,
+          });
+          await this.prisma.notificationDigestPreference.update({
+            where: { id: entry.id },
+            data: { lastDigestAt: new Date() },
+          });
+          this.logger.log(`Digest email sent to ${recipient}`);
+        } catch (error: any) {
+          this.logger.error(`Digest email failed for ${recipient}`, error.message);
+        }
       }
+    };
+
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('notification-daily-digest', doDigest);
     }
+    return doDigest();
   }
 
   /** Emails a generated invoice PDF to the student. */

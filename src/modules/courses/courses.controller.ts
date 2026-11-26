@@ -8,6 +8,7 @@ import { AnnouncementsService } from './announcements.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
+import { SubmitCourseDto } from './dto/submit-course.dto';
 import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { ChangeCourseStatusDto } from './dto/change-course-status.dto';
 import { RejectCourseDto } from './dto/reject-course.dto';
@@ -117,9 +118,9 @@ export class CoursesController {
   submitForReview(
     @Param('id') id: string,
     @CurrentUser() user: CourseActor,
-    @Body() body: { txHash?: string },
+    @Body() dto: SubmitCourseDto,
   ) {
-    return this.coursesService.submitForReview(id, user, body.txHash);
+    return this.coursesService.submitForReview(id, user, dto.txHash);
   }
 
   @Patch(':id/status')

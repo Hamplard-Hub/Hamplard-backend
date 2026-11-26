@@ -1,8 +1,9 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { AuthUserCacheService } from '../../common/auth-user/auth-user-cache.service';
+import { PrismaService } from '../../common/prisma/prisma.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -11,6 +12,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // Issue #433 — the throttle guard shares this cached lookup so a role
     // change is reflected in both authentication and the rate-limit bucket.
     private readonly users: AuthUserCacheService,
+    @Optional() private readonly prisma?: PrismaService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -45,7 +47,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // before session tracking carry no `jti` and are let through; a `jti` with
     // no matching session row is also let through.
     const jti = payload.jti;
-    if (jti) {
+    if (this.prisma && jti) {
       const session = await this.prisma.session.findUnique({
         where: { jti },
         select: { revokedAt: true, expiresAt: true },

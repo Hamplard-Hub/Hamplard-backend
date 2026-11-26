@@ -1,14 +1,15 @@
 // lessons.service.ts
 import {
-  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger,
+  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger, Optional,
 } from '@nestjs/common';
 import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { DripScheduleService } from './drip-schedule.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
-import { DripScheduleService } from './drip-schedule.service';
 import { CdnService } from '../uploads/cdn.service';
+import { CertificatesService } from '../certificates/certificates.service';
+import { QueueService } from '../../common/queue/queue.service';
 
 @Injectable()
 export class LessonsService {
@@ -19,6 +20,8 @@ export class LessonsService {
     private readonly analytics: AnalyticsService,
     private readonly dripSchedule: DripScheduleService,
     private readonly cdn: CdnService,
+    @Optional() private readonly certificatesService?: CertificatesService,
+    @Optional() private readonly queueService?: QueueService,
   ) {}
 
   private async verifyCourseOwnership(
@@ -588,7 +591,7 @@ export class LessonsService {
 
   /**
    * Update video watch position (called periodically by the frontend player).
-   * 
+   *
    * Checks:
    * - Enrollment belongs to student
    * - Lesson belongs to course
@@ -648,6 +651,21 @@ export class LessonsService {
         } : {}),
       },
     });
+
+    if (progressPercent === 100) {
+      try {
+        if (this.queueService) {
+          await this.queueService.enqueueCertificateIssuance(enrollment.studentId, enrollment.courseId);
+        } else if (this.certificatesService) {
+          await this.certificatesService.issueAutomatic(enrollment.studentId, enrollment.courseId);
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not enqueue certificate issuance, falling back to direct: ${err.message}`);
+        if (this.certificatesService) {
+          await this.certificatesService.issueAutomatic(enrollment.studentId, enrollment.courseId);
+        }
+      }
+    }
 
     this.logger.debug(`Enrollment ${enrollmentId} progress: ${progressPercent}%`);
     return progressPercent;

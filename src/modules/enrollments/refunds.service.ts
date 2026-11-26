@@ -13,7 +13,6 @@ import { ProcessRefundDto } from './dto/process-refund.dto';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
-import { NotificationsService } from '../notifications/notifications.service';
 
 /** Refund requests must be filed within this many days of enrollment. */
 const REFUND_ELIGIBILITY_WINDOW_DAYS = 14;

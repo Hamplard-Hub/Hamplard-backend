@@ -1,7 +1,8 @@
 // dashboard.service.ts — issue #61: admin dashboard summary stats API
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import { DistributedLockService } from '../../common/scheduling/distributed-lock.service';
 import { DashboardQueryDto } from './dto/dashboard-query.dto';
 import { CourseStatus, EnrollmentStatus, UserRole } from '@prisma/client';
@@ -23,6 +24,7 @@ export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly lockService: DistributedLockService,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
   ) {}
 
   async getSummary(query: DashboardQueryDto) {
@@ -55,12 +57,19 @@ export class DashboardService {
 
   @Cron(CronExpression.EVERY_30_MINUTES)
   async handleScheduledRecalculation() {
-    // Issue #310: Use distributed lock to prevent duplicate runs across instances
-    await this.lockService.withLock('dashboard-stats-recalc', 35 * 60 * 1000, async () => {
-      this.logger.log('Recalculating admin dashboard summary stats...');
-      await this.recalculate();
-      this.logger.log('Admin dashboard summary stats recalculated.');
-    });
+    const doRecalculate = async () => {
+      // Issue #310: Use distributed lock to prevent duplicate runs across instances
+      await this.lockService.withLock('dashboard-stats-recalc', 35 * 60 * 1000, async () => {
+        this.logger.log('Recalculating admin dashboard summary stats...');
+        await this.recalculate();
+        this.logger.log('Admin dashboard summary stats recalculated.');
+      });
+    };
+
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('admin-dashboard-recalculation', doRecalculate);
+    }
+    return doRecalculate();
   }
 
   private async recalculate() {
