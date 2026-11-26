@@ -400,11 +400,35 @@ export class LessonsService {
 
   /**
    * Stores or updates the thumbnail URL on a lesson record.
-   * Called after video thumbnail extraction completes.
+   * Issue #436 — the caller must own the lesson's course (admins may edit any
+   * course). The route validates the body with UpdateLessonThumbnailDto.
    */
-  async updateThumbnailUrl(lessonId: string, thumbnailUrl: string) {
-    const lesson = await this.prisma.lesson.findUnique({ where: { id: lessonId } });
+  async updateThumbnailUrl(
+    lessonId: string,
+    thumbnailUrl: string,
+    user?: { id?: string; stellarAddress?: string; role?: string },
+  ) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      include: { module: { include: { course: { include: { instructor: true } } } } },
+    });
     if (!lesson) throw new NotFoundException('Lesson not found');
+
+    if (user && user.role !== UserRole.ADMIN) {
+      const course = lesson.module?.course;
+      const isOwner =
+        !!course &&
+        ((!!user.stellarAddress && course.instructorAddress === user.stellarAddress) ||
+          (!!user.id &&
+            (course.instructorAddress === user.id ||
+              course.instructor?.id === user.id)));
+
+      if (!isOwner) {
+        throw new ForbiddenException(
+          'You are not authorized to manage content for this course',
+        );
+      }
+    }
 
     return this.prisma.lesson.update({
       where: { id: lessonId },

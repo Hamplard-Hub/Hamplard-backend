@@ -20,6 +20,7 @@ import { SessionsService } from './sessions.service';
 import { TwoFactorController } from './two-factor.controller';
 import { TwoFactorService } from './two-factor.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { AuthUserCacheModule } from '../../common/auth-user/auth-user-cache.module';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -39,6 +40,7 @@ import { RedisRateLimitModule } from '../../common/redis-rate-limit/redis-rate-l
       ],
     }),
     RedisRateLimitModule,
+    AuthUserCacheModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

@@ -1,5 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   EngagementReportQueryDto,
@@ -54,9 +59,13 @@ export interface EngagementReport {
 export class EngagementReportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getReport(dto: EngagementReportQueryDto): Promise<EngagementReport> {
+  async getReport(
+    dto: EngagementReportQueryDto,
+    caller?: { id?: string; role?: string },
+  ): Promise<EngagementReport> {
     const scope = dto.scope ?? EngagementScope.PLATFORM;
     await this.validateScope(scope, dto);
+    await this.assertCallerMayView(scope, dto, caller);
     const period = this.resolvePeriod(dto);
     const thresholdDays = dto.inactiveDays ?? 14;
 
@@ -219,6 +228,49 @@ export class EngagementReportService {
         select: { id: true },
       });
       if (!course) throw new NotFoundException('Course not found');
+    }
+  }
+
+  /**
+   * Issue #435 — the platform-wide report is admin-only. An instructor may
+   * only request the COURSE scope for a course they actually teach; without
+   * this check the public scope options expose every student's watch time,
+   * streaks and inactivity flags.
+   */
+  private async assertCallerMayView(
+    scope: EngagementScope,
+    dto: EngagementReportQueryDto,
+    caller?: { id?: string; role?: string },
+  ): Promise<void> {
+    // Calls without a caller are internal/trusted (scheduled reports, tests).
+    if (!caller || caller.role === UserRole.ADMIN) return;
+
+    if (scope !== EngagementScope.COURSE) {
+      throw new ForbiddenException(
+        'Instructors may only request engagement reports for their own courses',
+      );
+    }
+
+    const course = await this.prisma.course.findUnique({
+      where: { id: dto.courseId },
+      select: {
+        id: true,
+        instructorAddress: true,
+        instructor: { select: { id: true } },
+      },
+    });
+
+    if (!course) throw new NotFoundException('Course not found');
+
+    const isOwner =
+      (!!caller.id &&
+        (course.instructor?.id === caller.id ||
+          course.instructorAddress === caller.id));
+
+    if (!isOwner) {
+      throw new ForbiddenException(
+        'You are not authorized to view this course engagement report',
+      );
     }
   }
 

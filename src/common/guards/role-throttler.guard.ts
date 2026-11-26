@@ -1,5 +1,7 @@
 // role-throttler.guard.ts
 // Issue #72 — differentiated throttling policy per authenticated role.
+// Issue #433 — the bucket role comes from the same cached user lookup as
+// JwtStrategy, never from a (possibly stale) role claim in the access token.
 //
 // Buckets: anon:<ip> (strictest), STUDENT:<id>, INSTRUCTOR:<id>, ADMIN:<id>.
 // Limits are env-tunable per bucket; every response carries X-RateLimit-*
@@ -17,6 +19,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Response } from 'express';
 import { RedisRateLimitService } from '../redis-rate-limit/redis-rate-limit.service';
+import { AuthUserCacheService } from '../auth-user/auth-user-cache.service';
 
 @Injectable()
 export class RoleThrottlerGuard implements CanActivate {
@@ -30,11 +33,12 @@ export class RoleThrottlerGuard implements CanActivate {
   constructor(
     private readonly config: ConfigService,
     private readonly rl: RedisRateLimitService,
+    private readonly users: AuthUserCacheService,
   ) {
     // Guards registered via APP_GUARD run before controller-level
-    // JwtAuthGuard has populated req.user, so we verify the bearer token
-    // here ourselves (same secret as AuthModule) instead of trusting an
-    // unverified claim that could escalate a client into a bigger bucket.
+    // JwtAuthGuard has populated req.user, so we verify the bearer token here
+    // ourselves. Only `sub` is used: the role is resolved from the shared
+    // cached user record, so demoted/banned users lose their larger bucket.
     this.jwt = new JwtService({ secret: config.get<string>('JWT_SECRET') });
 
     this.windowMs      = this.config.get<number>('ROLE_THROTTLE_WINDOW_MS', 60_000);
@@ -47,10 +51,15 @@ export class RoleThrottlerGuard implements CanActivate {
     };
   }
 
-  /** Resolves the authenticated subject, verifying the JWT when needed. */
-  private resolveSubject(req: Record<string, any>): { role: string; id: string } {
-    if (req.user?.role && req.user?.id) {
-      return { role: req.user.role, id: req.user.id };
+  /** Resolves the authenticated subject and its live role from the user cache. */
+  private async resolveSubject(req: Record<string, any>): Promise<{ role: string; id: string }> {
+    if (req.user?.id) {
+      // JwtAuthGuard already ran: req.user was built by JwtStrategy from the
+      // same cached lookup, so its role is authoritative.
+      if (req.user.isBanned || req.user.isDeactivated) {
+        return { role: 'anon', id: req.ip ?? 'unknown' };
+      }
+      return { role: req.user.role ?? 'anon', id: req.user.id };
     }
 
     const authHeader: string | undefined = req.headers?.authorization;
@@ -58,13 +67,17 @@ export class RoleThrottlerGuard implements CanActivate {
       try {
         const payload = this.jwt.verify(authHeader.slice(7)) as {
           sub?: string;
-          role?: string;
+          typ?: string;
         };
-        if (payload?.sub) {
-          return { role: payload.role ?? 'anon', id: payload.sub };
+        if (payload?.sub && payload.typ !== 'refresh') {
+          const user = await this.users.getUser(payload.sub);
+          if (user) {
+            this.users.assertActive(user);
+            return { role: user.role, id: user.id };
+          }
         }
       } catch {
-        // Expired or malformed token → fall through to the anonymous bucket.
+        // Expired/malformed token or unavailable user → anonymous bucket.
       }
     }
     return { role: 'anon', id: req.ip ?? 'unknown' };
@@ -75,7 +88,7 @@ export class RoleThrottlerGuard implements CanActivate {
     const req  = http.getRequest<Record<string, any>>();
     const res  = http.getResponse<Response>();
 
-    const subject    = this.resolveSubject(req);
+    const subject    = await this.resolveSubject(req);
     const roleBucket = this.limits[subject.role] !== undefined ? subject.role : 'anon';
     const max        = this.limits[roleBucket];
     const key        = `rl:role:${roleBucket}:${subject.id}`;
