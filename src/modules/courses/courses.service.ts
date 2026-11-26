@@ -44,6 +44,33 @@ export class CoursesService {
     ]);
   }
 
+  /** Notify every current wishlist entry once when a course's price decreases. */
+  private async notifyWishlistersOfPriceDrop(
+    courseId: string,
+    courseTitle: string,
+    previousPrice: number,
+    currentPrice: number,
+  ): Promise<void> {
+    if (currentPrice >= previousPrice) return;
+
+    const wishlistItems = await this.prisma.wishlistItem.findMany({
+      where: { courseId },
+      select: { studentId: true },
+    });
+
+    await Promise.all(
+      wishlistItems.map(({ studentId }) =>
+        this.notifications.notifyUser(
+          studentId,
+          NotificationType.COURSE_PRICE_DROP,
+          'A wishlisted course is now cheaper',
+          `The price of "${courseTitle}" dropped from ${previousPrice} to ${currentPrice}.`,
+          { courseId, previousPrice, currentPrice },
+        ),
+      ),
+    );
+  }
+
   /**
    * Issue #241 — only the course's instructor (matched by stellarAddress or id
    * against `instructorAddress`) or an ADMIN may mutate a course.
@@ -505,6 +532,15 @@ export class CoursesService {
     }
 
     const updated = await this.prisma.course.update({ where: { id: courseId }, data: dto });
+
+    if (dto.price !== undefined) {
+      await this.notifyWishlistersOfPriceDrop(
+        courseId,
+        course.title,
+        Number(course.price),
+        Number(dto.price),
+      );
+    }
 
     // Re-index if the course is active (search index should reflect changes)
     if (updated.status === CourseStatus.ACTIVE) {

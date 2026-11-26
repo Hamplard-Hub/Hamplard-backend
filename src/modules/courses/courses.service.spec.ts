@@ -24,6 +24,12 @@ const mockPrisma = {
   user: {
     findUnique: jest.fn(),
   },
+  adminAuditLog: {
+    create: jest.fn(),
+  },
+  wishlistItem: {
+    findMany: jest.fn(),
+  },
   coursePrerequisite: {
     findMany:   jest.fn(),
     findUnique: jest.fn(),
@@ -961,6 +967,46 @@ describe('CoursesService status transitions (issue #232)', () => {
         });
       });
 
+      it('notifies each wishlister once when the price decreases', async () => {
+        mockPrisma.course.findUnique.mockResolvedValue({
+          ...fullCourse(CourseStatus.ACTIVE),
+          price: 50,
+        });
+        mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, price: 40, status: CourseStatus.ACTIVE });
+        mockPrisma.wishlistItem.findMany.mockResolvedValue([
+          { studentId: 'student-1' },
+          { studentId: 'student-2' },
+        ]);
+
+        await service.update(MOCK_COURSE.id, OWNER, { price: 40 } as any);
+
+        expect(mockPrisma.wishlistItem.findMany).toHaveBeenCalledWith({
+          where: { courseId: MOCK_COURSE.id },
+          select: { studentId: true },
+        });
+        expect(mockNotifications.notifyUser).toHaveBeenCalledTimes(2);
+        expect(mockNotifications.notifyUser).toHaveBeenNthCalledWith(
+          1,
+          'student-1',
+          NotificationType.COURSE_PRICE_DROP,
+          'A wishlisted course is now cheaper',
+          expect.stringContaining('dropped from 50 to 40'),
+          { courseId: MOCK_COURSE.id, previousPrice: 50, currentPrice: 40 },
+        );
+      });
+
+      it('does not notify wishlisters when the price is unchanged or higher', async () => {
+        mockPrisma.course.findUnique.mockResolvedValue({
+          ...fullCourse(CourseStatus.ACTIVE),
+          price: 50,
+        });
+        mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, status: CourseStatus.ACTIVE });
+
+        await service.update(MOCK_COURSE.id, OWNER, { price: 50 } as any);
+        await service.update(MOCK_COURSE.id, OWNER, { price: 60 } as any);
+
+        expect(mockPrisma.wishlistItem.findMany).not.toHaveBeenCalled();
+        expect(mockNotifications.notifyUser).not.toHaveBeenCalled();
       it('blocks content and price changes on ACTIVE courses', async () => {
         mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
 
