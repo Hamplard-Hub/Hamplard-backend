@@ -96,8 +96,8 @@ export class AppConfigService {
     return this.config.get('STELLAR_NETWORK') ?? 'testnet';
   }
 
-  get stellarRpcUrl(): string {
-    return this.config.get('STELLAR_RPC_URL') ?? 'https://soroban-testnet.stellar.org';
+  get stellarRpcUrl(): string | undefined {
+    return this.config.get('STELLAR_RPC_URL');
   }
 
   get hamplardContractId(): string | undefined {

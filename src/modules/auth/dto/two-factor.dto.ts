@@ -13,3 +13,9 @@ export class DisableTwoFactorDto {
   @IsString() @IsNotEmpty()
   code: string;
 }
+
+export class RegenerateRecoveryCodesDto {
+  @ApiProperty({ example: '123456', description: 'Current TOTP code from the authenticator app' })
+  @IsString() @IsNotEmpty() @Length(6, 6)
+  code: string;
+}

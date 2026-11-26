@@ -61,12 +61,12 @@ export class DataExportController {
    * List the authenticated user's export requests (newest first).
    */
   @Get()
-  @ApiOperation({ summary: 'List your data export requests' })
+  @ApiOperation({ summary: 'List your data export requests (paginated)' })
   listMyExports(
     @CurrentUser('id') userId: string,
     @Query() query: QueryExportHistoryDto,
   ) {
-    return this.dataExportService.listMyExports(userId);
+    return this.dataExportService.listMyExports(userId, query.page, query.limit);
   }
 
   /**

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { OtpService, TooManyRequestsException } from './otp.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -37,9 +38,11 @@ describe('OtpService', () => {
       update: jest.fn(),
     },
     user: {
+      findFirst: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    $transaction: jest.fn(),
   };
 
   const mockConfigService = {
@@ -56,6 +59,11 @@ describe('OtpService', () => {
 
   beforeEach(async () => {
     fakeRl = new FakeRedisRateLimitService();
+    mockPrismaService.user.findFirst.mockReset().mockResolvedValue(null);
+    mockPrismaService.user.update.mockReset().mockResolvedValue({});
+    mockPrismaService.$transaction.mockReset().mockImplementation((callback) =>
+      callback(mockPrismaService),
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -190,6 +198,84 @@ describe('OtpService', () => {
       });
     });
 
+    it('returns 409 for another active verified owner without consuming the OTP', async () => {
+      mockPrismaService.phoneOtp.findFirst.mockResolvedValue(mockOtpRecord);
+      mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 1 });
+      mockPrismaService.user.findFirst.mockResolvedValue({ id: 'other-user' });
+
+      const result = service.verifyOtp('user-123', '+254712345678', '123456');
+
+      await expect(result).rejects.toBeInstanceOf(ConflictException);
+      await expect(result).rejects.toMatchObject({ status: 409 });
+      expect(mockPrismaService.user.findFirst).toHaveBeenCalledWith({
+        where: {
+          phoneNumber: '+254712345678',
+          isPhoneVerified: true,
+          deletedAt: null,
+          deactivatedAt: null,
+          id: { not: 'user-123' },
+        },
+        select: { id: true },
+      });
+      expect(mockPrismaService.$transaction).not.toHaveBeenCalled();
+      expect(mockPrismaService.user.update).not.toHaveBeenCalled();
+      expect(mockPrismaService.phoneOtp.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the current owner', { id: 'user-123' }],
+      ['an unverified account', { isPhoneVerified: false }],
+      ['a deleted account', { deletedAt: new Date() }],
+      ['a deactivated account', { deactivatedAt: new Date() }],
+      ['an account with a different number', { phoneNumber: '+254799999999' }],
+    ])('allows verification when the other record is %s', async (_label, overrides) => {
+      const owner = {
+        id: 'other-user', phoneNumber: '+254712345678', isPhoneVerified: true,
+        deletedAt: null, deactivatedAt: null, ...overrides,
+      };
+      mockPrismaService.phoneOtp.findFirst.mockResolvedValue(mockOtpRecord);
+      mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 1 });
+      mockPrismaService.user.findFirst.mockImplementation(async ({ where }) =>
+        owner.id !== where.id.not && owner.phoneNumber === where.phoneNumber &&
+        owner.isPhoneVerified === where.isPhoneVerified &&
+        owner.deletedAt === where.deletedAt && owner.deactivatedAt === where.deactivatedAt
+          ? { id: owner.id } : null,
+      );
+
+      await expect(service.verifyOtp('user-123', '+254712345678', '123456')).resolves.toBe(true);
+      expect(mockPrismaService.$transaction).toHaveBeenCalledTimes(1);
+      expect(mockPrismaService.user.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([{ target: ['phoneNumber'] }, { target: 'users_active_verified_phone_key' }])(
+      'returns 409 if a concurrent verification wins the unique constraint (%s)',
+      async ({ target }) => {
+        mockPrismaService.phoneOtp.findFirst.mockResolvedValue(mockOtpRecord);
+        mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 1 });
+        mockPrismaService.user.update.mockRejectedValue(
+          new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+            code: 'P2002', clientVersion: '5.22.0', meta: { target },
+          }),
+        );
+
+        await expect(service.verifyOtp('user-123', '+254712345678', '123456'))
+          .rejects.toMatchObject({ status: 409 });
+        expect(mockPrismaService.phoneOtp.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not disguise unrelated database errors as phone conflicts', async () => {
+      const error = new Prisma.PrismaClientKnownRequestError('Other constraint', {
+        code: 'P2002', clientVersion: '5.22.0', meta: { target: ['email'] },
+      });
+      mockPrismaService.phoneOtp.findFirst.mockResolvedValue(mockOtpRecord);
+      mockPrismaService.phoneOtp.updateMany.mockResolvedValue({ count: 1 });
+      mockPrismaService.user.update.mockRejectedValue(error);
+
+      await expect(service.verifyOtp('user-123', '+254712345678', '123456')).rejects.toBe(error);
+      expect(mockPrismaService.phoneOtp.update).not.toHaveBeenCalled();
+    });
+
     it('should reject expired OTP', async () => {
       const expiredOtp = {
         ...mockOtpRecord,
@@ -211,6 +297,8 @@ describe('OtpService', () => {
         service.verifyOtp('user-123', '+254712345678', '999999'),
       ).rejects.toThrow(UnauthorizedException);
 
+      expect(mockPrismaService.user.findFirst).not.toHaveBeenCalled();
+      expect(mockPrismaService.$transaction).not.toHaveBeenCalled();
       expect(mockPrismaService.phoneOtp.updateMany).toHaveBeenCalledWith({
         where: {
           id: 'otp-123',

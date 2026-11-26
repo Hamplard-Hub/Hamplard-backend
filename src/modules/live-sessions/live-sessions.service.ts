@@ -218,9 +218,15 @@ export class LiveSessionsService {
   }
 
   /**
-   * List upcoming sessions for a course or instructor.
+   * List upcoming sessions for a course or instructor (paginated).
    */
-  async getUpcomingSessions(courseId?: string, instructorAddress?: string, user?: any) {
+  async getUpcomingSessions(
+    courseId?: string,
+    instructorAddress?: string,
+    user?: any,
+    page = 1,
+    limit = 20,
+  ) {
     const where: any = {
       status: { in: [LiveSessionStatus.SCHEDULED, LiveSessionStatus.RESCHEDULED] },
       scheduledAt: { gte: new Date() },
@@ -229,22 +235,39 @@ export class LiveSessionsService {
     if (courseId) where.courseId = courseId;
     if (instructorAddress) where.instructorAddress = instructorAddress;
 
-    const sessions = await this.prisma.liveSession.findMany({
-      where,
-      include: {
-        course: {
-          select: {
-            id: true,
-            title: true,
-            thumbnailUrl: true,
-            instructor: { select: { id: true } },
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [sessions, total] = await Promise.all([
+      this.prisma.liveSession.findMany({
+        where,
+        include: {
+          course: {
+            select: {
+              id: true,
+              title: true,
+              thumbnailUrl: true,
+              instructor: { select: { id: true } },
+            },
           },
         },
-      },
-      orderBy: { scheduledAt: 'asc' },
-    });
+        orderBy: { scheduledAt: 'asc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.liveSession.count({ where }),
+    ]);
 
-    return this.shapeSessionResponses(sessions, user);
+    return {
+      data: await this.shapeSessionResponses(sessions, user),
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
+      },
+    };
   }
 
   async getSessionById(sessionId: string, user?: any) {

@@ -158,6 +158,42 @@ export class TwoFactorService {
   }
 
   // ------------------------------------------------------------------
+  // REGENERATE RECOVERY CODES
+  // ------------------------------------------------------------------
+
+  /**
+   * Regenerate recovery codes after confirming a valid TOTP code.
+   * Old recovery codes are immediately invalidated.
+   */
+  async regenerateRecoveryCodes(userId: string, code: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new BadRequestException('Two-factor authentication is not enabled for this account');
+    }
+
+    // Verify TOTP code (not recovery code — must use authenticator app)
+    const isValid = this.verifyTotp(user.twoFactorSecret, code);
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid two-factor authentication code');
+    }
+
+    // Generate new recovery codes
+    const { plainCodes, hashedCodes } = this.generateRecoveryCodes();
+
+    // Replace old codes with new ones
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorRecoveryCodes: hashedCodes },
+    });
+
+    this.logger.log(`Recovery codes regenerated for user ${userId}`);
+
+    return { recoveryCodes: plainCodes };
+  }
+
+  // ------------------------------------------------------------------
   // LOGIN-TIME VERIFICATION — TOTP code or a single-use recovery code
   // ------------------------------------------------------------------
 

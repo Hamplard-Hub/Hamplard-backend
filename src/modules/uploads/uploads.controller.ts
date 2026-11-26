@@ -13,6 +13,7 @@ import {
   Req,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -21,6 +22,13 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { UploadsService } from './uploads.service';
 import { VideoTranscodeService } from './video-transcode.service';
 import { VirusScanService } from './virus-scan.service';
+
+/**
+ * Default file size limit for general uploads: 500 MB
+ * Matches MAX_FILE_SIZE_MB in .env.example.
+ * Individual category limits (images, documents, videos) are applied by UploadsService.
+ */
+const DEFAULT_MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
 
 @ApiTags('uploads')
 @Controller('uploads')
@@ -36,7 +44,10 @@ export class UploadsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
   @ApiBearerAuth()
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', {
+    storage: memoryStorage(),
+    limits: { fileSize: DEFAULT_MAX_FILE_SIZE_BYTES },
+  }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload course asset (thumbnail/preview image)' })
   async uploadCourseAsset(
@@ -78,7 +89,10 @@ export class UploadsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
   @ApiBearerAuth()
-  @UseInterceptors(FileInterceptor('video'))
+  @UseInterceptors(FileInterceptor('video', {
+    storage: memoryStorage(),
+    limits: { fileSize: DEFAULT_MAX_FILE_SIZE_BYTES },
+  }))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload lesson video and trigger transcode pipeline' })
   async uploadLessonVideo(

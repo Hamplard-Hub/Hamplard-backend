@@ -15,6 +15,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -22,6 +23,7 @@ import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Min } from 'class-valid
 import { BadgeRequirementType, UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Roles, RolesGuard } from '../../common/guards/roles.guard';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { BadgesService, CreateBadgeInput, UpdateBadgeInput } from './badges.service';
 
 class CreateBadgeDto implements CreateBadgeInput {
@@ -93,9 +95,9 @@ export class BadgesController {
   constructor(private readonly badgesService: BadgesService) {}
 
   @Get('catalog')
-  @ApiOperation({ summary: 'List the configured badge catalog' })
-  getCatalog() {
-    return this.badgesService.getCatalog();
+  @ApiOperation({ summary: 'List the configured badge catalog (paginated)' })
+  getCatalog(@Query() pagination: PaginationQueryDto) {
+    return this.badgesService.getCatalog(pagination.page, pagination.limit);
   }
 
   @Get('catalog/active')

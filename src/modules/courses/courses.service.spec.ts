@@ -5,6 +5,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { CdnService } from '../uploads/cdn.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CourseStatus, NotificationType, UserRole } from '@prisma/client';
@@ -40,6 +42,10 @@ const mockPrisma = {
     findMany: jest.fn(),
     count: jest.fn(),
   },
+  adminAuditLog: {
+    create: jest.fn(),
+    create: jest.fn().mockResolvedValue({}),
+  },
   $getTransactionClient: jest.fn(),
   $transaction: jest.fn(),
 };
@@ -51,6 +57,7 @@ const ADMIN    = { id: 'admin-id',      stellarAddress: 'GADMIN', role: UserRole
 
 const mockNotifications = {
   notifyUser: jest.fn().mockResolvedValue({}),
+  notifyAdmins: jest.fn().mockResolvedValue([]),
 };
 
 const mockSearchService = {
@@ -127,6 +134,14 @@ describe('CoursesService', () => {
         { provide: CacheService, useValue: mockCache },
         { provide: ConfigService, useValue: { get: jest.fn(() => 20) } },
         FeeCalculatorService,
+        {
+          provide: CdnService,
+          // External (non-upload-store) URLs are returned unchanged, as in CdnService.
+          useValue: {
+            signLessonMediaUrl: jest.fn((url?: string | null) =>
+              url ? { url, expiresAt: null } : null),
+          },
+        },
       ],
     }).compile();
 
@@ -232,6 +247,145 @@ describe('CoursesService', () => {
   });
 
   // -------------------------------------------------
+  // REJECTION FEEDBACK PERSISTENCE (issue #444)
+  // -------------------------------------------------
+
+  describe('rejection feedback persistence (issue #444)', () => {
+    const REASON = 'Missing intro video and module 2 is empty';
+    const withCurriculum = (overrides: Record<string, unknown>) => ({
+      ...MOCK_COURSE,
+      modules: [],
+      _count: { enrollments: 0 },
+      instructor: { id: 'instructor-id', name: 'John', stellarAddress: 'GABC', avatarUrl: null, bio: null },
+      ...overrides,
+    });
+
+    it('persists rejectionReason and rejectedAt alongside the DRAFT transition', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.PENDING }));
+      mockPrisma.course.update.mockImplementation(async ({ data }: any) =>
+        withCurriculum({ ...data }),
+      );
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      const before = Date.now();
+      const result = await service.reject(MOCK_COURSE.id, 'admin-id', REASON);
+
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: { status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt: expect.any(Date) },
+      });
+      const { rejectedAt } = mockPrisma.course.update.mock.calls[0][0].data;
+      expect(rejectedAt.getTime()).toBeGreaterThanOrEqual(before);
+      expect(rejectedAt.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(result.rejectionReason).toBe(REASON);
+    });
+
+    it('still notifies the instructor with the reason and writes the audit log', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.PENDING }));
+      mockPrisma.course.update.mockResolvedValue(withCurriculum({ status: CourseStatus.DRAFT }));
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      await service.reject(MOCK_COURSE.id, 'admin-id', REASON);
+
+      expect(mockNotifications.notifyUser).toHaveBeenCalledWith(
+        'user-1',
+        'COURSE_REJECTED',
+        'Course review feedback',
+        `Your course "${MOCK_COURSE.title}" needs some changes before approval. Reason: ${REASON}`,
+        { courseId: MOCK_COURSE.id, reason: REASON },
+      );
+      expect(mockPrisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'COURSE_REJECTED',
+          targetId: MOCK_COURSE.id,
+          metadata: expect.objectContaining({ reason: REASON }),
+        }),
+      });
+    });
+
+    it('does not persist anything when the course is not PENDING', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.DRAFT }));
+
+      await expect(service.reject(MOCK_COURSE.id, 'admin-id', REASON)).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.course.update).not.toHaveBeenCalled();
+      expect(mockNotifications.notifyUser).not.toHaveBeenCalled();
+    });
+
+    it('exposes the reason to the owning instructor through course detail', async () => {
+      const rejectedAt = new Date('2026-11-20T10:00:00Z');
+      mockPrisma.course.findUnique.mockResolvedValue(
+        withCurriculum({ status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt }),
+      );
+
+      const detail: any = await service.findOneForViewer(MOCK_COURSE.id, 'instructor-id', UserRole.INSTRUCTOR);
+
+      expect(detail.rejectionReason).toBe(REASON);
+      expect(detail.rejectedAt).toEqual(rejectedAt);
+    });
+
+    it('hides a rejected (DRAFT) course — and its feedback — from other users', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(
+        withCurriculum({ status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt: new Date() }),
+      );
+
+      await expect(
+        service.findOneForViewer(MOCK_COURSE.id, 'someone-else', UserRole.STUDENT),
+      ).rejects.toThrow(NotFoundException);
+      await expect(service.findOneForViewer(MOCK_COURSE.id)).rejects.toThrow(NotFoundException);
+    });
+
+    it('clears rejectionReason and rejectedAt when the instructor resubmits', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(
+        withCurriculum({ status: CourseStatus.DRAFT, rejectionReason: REASON, rejectedAt: new Date() }),
+      );
+      mockPrisma.course.update.mockImplementation(async ({ data }: any) => withCurriculum({ ...data }));
+
+      const result: any = await service.submitForReview(MOCK_COURSE.id, OWNER, 'tx-hash');
+
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: {
+          status: CourseStatus.PENDING,
+          txHash: 'tx-hash',
+          rejectionReason: null,
+          rejectedAt: null,
+        },
+      });
+      expect(result.rejectionReason).toBeNull();
+      expect(result.rejectedAt).toBeNull();
+    });
+
+    it('clears stale rejection fields on approval so they are never published', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(withCurriculum({ status: CourseStatus.PENDING }));
+      mockPrisma.course.update.mockResolvedValue(withCurriculum({ status: CourseStatus.ACTIVE }));
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      await service.approve(MOCK_COURSE.id, 'admin-id');
+
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: expect.objectContaining({
+          status: CourseStatus.ACTIVE,
+          rejectionReason: null,
+          rejectedAt: null,
+        }),
+      });
+    });
+
+    it('does not let instructors set rejection fields through update()', async () => {
+      // UpdateCourseDto has no rejection fields; the global ValidationPipe
+      // (whitelist + forbidNonWhitelisted) rejects them before reaching here.
+      const { UpdateCourseDto } = await import('./dto/update-course.dto');
+      const { ValidationPipe } = await import('@nestjs/common');
+      const pipe = new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true });
+
+      await expect(
+        pipe.transform({ title: 'x', rejectionReason: null }, { type: 'body', metatype: UpdateCourseDto }),
+      ).rejects.toThrow();
+    });
+  });
+
+  // -------------------------------------------------
   // FIND ONE
   // -------------------------------------------------
 
@@ -306,7 +460,8 @@ describe('CoursesService', () => {
       role: 'STUDENT',
     });
     const paid = result.modules[0].lessons[1] as any;
-    expect(paid.videoUrl).toBe(PAID_LESSON.videoUrl);
+    // Issue #335: paid videos are only issued (signed) via GET /lessons/:id after the drip check.
+    expect(paid.videoUrl).toBeUndefined();
     expect(paid.content).toBe(PAID_LESSON.content);
   });
 
@@ -402,6 +557,121 @@ describe('CoursesService', () => {
       const result = await service.findAll({ category: 'Tailoring' });
       expect(result.data).toHaveLength(1);
     });
+    it('keeps newest-first ordering with an id tiebreaker by default', async () => {
+      mockPrisma.$transaction.mockResolvedValue([[], 0]);
+      await service.findAll({ status: CourseStatus.ACTIVE });
+      expect(mockPrisma.course.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }),
+      );
+    });
+  });
+
+  // -------------------------------------------------
+  // ADMIN PENDING QUEUE PAGINATION (issue #445)
+  // -------------------------------------------------
+
+  describe('findAll() — admin pending queue (issue #445)', () => {
+    // 45 PENDING courses (several sharing a createdAt) plus noise in other statuses.
+    const base = Date.UTC(2026, 0, 1);
+    const dataset = [
+      ...Array.from({ length: 45 }, (_, i) => ({
+        id: `PENDING-${String(i).padStart(3, '0')}`,
+        status: CourseStatus.PENDING,
+        // every 3 courses share a timestamp → exercises the id tiebreaker
+        createdAt: new Date(base + Math.floor(i / 3) * 60_000),
+      })),
+      ...[CourseStatus.ACTIVE, CourseStatus.DRAFT, CourseStatus.ARCHIVED].map((status, i) => ({
+        id: `OTHER-${i}`,
+        status,
+        createdAt: new Date(base - 1_000_000),
+      })),
+    ];
+
+    /** Minimal Prisma emulation honouring where.status, orderBy[], skip and take. */
+    const applyQuery = (args: any) => {
+      const rows = dataset.filter((c) => !args.where?.status || c.status === args.where.status);
+      const sorted = [...rows].sort((a: any, b: any) => {
+        for (const clause of args.orderBy ?? []) {
+          const [field, dir] = Object.entries(clause)[0] as [string, 'asc' | 'desc'];
+          const av = a[field] instanceof Date ? a[field].getTime() : a[field];
+          const bv = b[field] instanceof Date ? b[field].getTime() : b[field];
+          if (av < bv) return dir === 'asc' ? -1 : 1;
+          if (av > bv) return dir === 'asc' ? 1 : -1;
+        }
+        return 0;
+      });
+      return sorted.slice(args.skip ?? 0, (args.skip ?? 0) + (args.take ?? sorted.length));
+    };
+
+    beforeEach(() => {
+      mockPrisma.course.findMany.mockImplementation(async (args: any) => applyQuery(args));
+      mockPrisma.course.count.mockImplementation(
+        async (args: any) => dataset.filter((c) => c.status === args.where.status).length,
+      );
+      mockPrisma.$transaction.mockImplementation(async (ops: Promise<unknown>[]) => Promise.all(ops));
+    });
+
+    afterEach(() => {
+      mockPrisma.course.findMany.mockReset();
+      mockPrisma.course.count.mockReset();
+      mockPrisma.$transaction.mockReset();
+    });
+
+    const pendingPage = (page: number, limit = 20) =>
+      service.findAll({ status: CourseStatus.PENDING, page, limit, sortOrder: 'asc' });
+
+    it('orders oldest first with a deterministic id tiebreaker', async () => {
+      await pendingPage(1);
+      expect(mockPrisma.course.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { status: CourseStatus.PENDING },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          skip: 0,
+          take: 20,
+        }),
+      );
+    });
+
+    it('returns correct pagination meta for more than 20 pending courses', async () => {
+      const page1 = await pendingPage(1);
+      expect(page1.meta).toEqual({ total: 45, page: 1, limit: 20, totalPages: 3 });
+
+      const page3 = await pendingPage(3);
+      expect(page3.meta).toEqual({ total: 45, page: 3, limit: 20, totalPages: 3 });
+      expect(page3.data).toHaveLength(5);
+    });
+
+    it('walks every page without duplicates or omissions, oldest first', async () => {
+      const seen: any[] = [];
+      for (let page = 1; page <= 3; page++) {
+        const { data } = await pendingPage(page);
+        seen.push(...data);
+      }
+
+      const ids = seen.map((c) => c.id);
+      expect(ids).toHaveLength(45);
+      expect(new Set(ids).size).toBe(45);
+      expect(ids).toEqual(
+        dataset.filter((c) => c.status === CourseStatus.PENDING).map((c) => c.id),
+      );
+      // non-decreasing createdAt across page boundaries
+      for (let i = 1; i < seen.length; i++) {
+        expect(seen[i].createdAt.getTime()).toBeGreaterThanOrEqual(seen[i - 1].createdAt.getTime());
+      }
+    });
+
+    it('never leaks non-PENDING courses into the queue', async () => {
+      for (let page = 1; page <= 3; page++) {
+        const { data } = await pendingPage(page);
+        expect(data.every((c: any) => c.status === CourseStatus.PENDING)).toBe(true);
+      }
+    });
+
+    it('returns an empty page past the end', async () => {
+      const { data, meta } = await pendingPage(4);
+      expect(data).toEqual([]);
+      expect(meta.total).toBe(45);
+    });
   });
 });
 
@@ -446,7 +716,12 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       expect(mockPrisma.course.updateMany).toHaveBeenCalledWith({
         where: { id: MOCK_COURSE.id },
-        data: expect.objectContaining({ status: CourseStatus.ACTIVE, approvedAt: expect.any(Date) }),
+        data: expect.objectContaining({
+          status: CourseStatus.ACTIVE,
+          approvedAt: expect.any(Date),
+          rejectionReason: null,
+          rejectedAt: null,
+        }),
       });
       expect(mockSearchService.indexCourse).toHaveBeenCalledWith(
         expect.objectContaining({ id: MOCK_COURSE.id, status: CourseStatus.ACTIVE }),
@@ -499,6 +774,142 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       expect(mockSearchService.removeCourse).not.toHaveBeenCalled();
       expect(mockCache.invalidateNamespace).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('changeStatus() (issue #331)', () => {
+    const course = (status: CourseStatus, extra: Record<string, unknown> = {}) => ({
+      ...MOCK_COURSE,
+      status,
+      approvedAt: new Date(),
+      description: 'Learn tailoring',
+      language: 'English',
+      avgRating: 0,
+      totalReviews: 0,
+      thumbnailUrl: null,
+      instructor: { name: 'John' },
+      ...extra,
+    });
+
+    it('lets the owner archive an ACTIVE course, delisting it from search and caches', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+      mockPrisma.course.update.mockResolvedValue(course(CourseStatus.ARCHIVED));
+
+      const result = await service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ARCHIVED);
+
+      expect(result.status).toBe(CourseStatus.ARCHIVED);
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: { status: CourseStatus.ARCHIVED },
+      });
+      expect(mockSearchService.removeCourse).toHaveBeenCalledWith(MOCK_COURSE.id);
+      expect(mockSearchService.indexCourse).not.toHaveBeenCalled();
+      expectCachesInvalidated();
+      expect(mockPrisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('lets the owner pause and republish an approved course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.PAUSED));
+      mockPrisma.course.update.mockResolvedValue(course(CourseStatus.ACTIVE));
+
+      await service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ACTIVE);
+
+      expect(mockSearchService.indexCourse).toHaveBeenCalledWith(
+        expect.objectContaining({ id: MOCK_COURSE.id }),
+      );
+      expectCachesInvalidated();
+    });
+
+    it('prevents the owner from republishing a course that was never approved', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(
+        course(CourseStatus.PAUSED, { approvedAt: null }),
+      );
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ACTIVE),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.course.update).not.toHaveBeenCalled();
+    });
+
+    it('prevents a non-owner instructor from changing the status', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, NON_OWNER, CourseStatus.ARCHIVED),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.course.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an owner restoring an ARCHIVED course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ARCHIVED));
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.PAUSED),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects a no-op transition', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ACTIVE),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lets an admin unpublish any course and records an audit log entry', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+      mockPrisma.course.update.mockResolvedValue(course(CourseStatus.PAUSED));
+
+      await service.changeStatus(MOCK_COURSE.id, ADMIN, CourseStatus.PAUSED, 'Policy review');
+
+      expect(mockSearchService.removeCourse).toHaveBeenCalledWith(MOCK_COURSE.id);
+      expect(mockPrisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorId: ADMIN.id,
+          action: 'COURSE_PAUSED',
+          targetId: MOCK_COURSE.id,
+          metadata: expect.objectContaining({ from: 'ACTIVE', to: 'PAUSED', reason: 'Policy review' }),
+        }),
+      });
+    });
+
+    it('throws NotFoundException for an unknown course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.changeStatus('MISSING', OWNER, CourseStatus.ARCHIVED),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('findOne() for delisted courses (issue #331)', () => {
+    const delisted = (status: CourseStatus) => ({
+      ...MOCK_COURSE,
+      status,
+      modules: [],
+      _count: { enrollments: 1 },
+      instructor: { id: 'instructor-id', name: 'John', stellarAddress: 'GABC' },
+    });
+
+    it.each([CourseStatus.ARCHIVED, CourseStatus.PAUSED])(
+      'keeps a %s course accessible to enrolled students',
+      async (status) => {
+        mockPrisma.course.findUnique.mockResolvedValue(delisted(status));
+        mockPrisma.enrollment.findFirst.mockResolvedValue({ id: 'enroll-1' });
+
+        const result = await service.findOne(MOCK_COURSE.id, { userId: 'student-1' });
+
+        expect(result.status).toBe(status);
+      },
+    );
+
+    it('hides an ARCHIVED course from non-enrolled callers', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(delisted(CourseStatus.ARCHIVED));
+      mockPrisma.enrollment.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.findOne(MOCK_COURSE.id, { userId: 'stranger' }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -596,6 +1007,14 @@ describe('CoursesService status transitions (issue #232)', () => {
 
         expect(mockPrisma.wishlistItem.findMany).not.toHaveBeenCalled();
         expect(mockNotifications.notifyUser).not.toHaveBeenCalled();
+      it('blocks content and price changes on ACTIVE courses', async () => {
+        mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
+
+        await expect(service.update(MOCK_COURSE.id, OWNER, { title: 'Changed title' } as any))
+          .rejects.toThrow(ForbiddenException);
+        await expect(service.update(MOCK_COURSE.id, OWNER, { price: 75 } as any))
+          .rejects.toThrow(ForbiddenException);
+        expect(mockPrisma.course.update).not.toHaveBeenCalled();
       });
     });
 
@@ -614,6 +1033,16 @@ describe('CoursesService status transitions (issue #232)', () => {
       it.each([['owner', OWNER], ['admin', ADMIN]])('succeeds for the %s', async (_label, user) => {
         const result = await service.submitForReview(MOCK_COURSE.id, user);
         expect(result.status).toBe(CourseStatus.PENDING);
+      });
+
+      it('notifies admins that the course is awaiting review (issue #338)', async () => {
+        await service.submitForReview(MOCK_COURSE.id, OWNER);
+        expect(mockNotifications.notifyAdmins).toHaveBeenCalledWith(
+          NotificationType.COURSE_SUBMITTED_FOR_REVIEW,
+          'Course submitted for review',
+          expect.any(String),
+          expect.objectContaining({ courseId: MOCK_COURSE.id }),
+        );
       });
     });
 
