@@ -8,6 +8,7 @@ import { FilesController } from './files.controller';
 import { VirusScanService } from './virus-scan.service';
 import { VideoTranscodeService, VideoTranscodeProcessor, TRANSCODE_QUEUE } from './video-transcode.service';
 import { VideoThumbnailService } from './video-thumbnail.service';
+import { StorageFactory, STORAGE_DRIVER } from './storage';
 
 @Module({
   imports: [
@@ -19,6 +20,14 @@ import { VideoThumbnailService } from './video-thumbnail.service';
   // otherwise shadow UploadsController's GET routes.
   controllers: [CdnController, UploadsController, FilesController],
   providers: [
+    StorageFactory,
+    {
+      provide: STORAGE_DRIVER,
+      useFactory: (storageFactory: StorageFactory) => {
+        return storageFactory.createStorageDriver();
+      },
+      inject: [StorageFactory],
+    },
     UploadsService,
     CdnService,
     VirusScanService,
@@ -34,4 +43,4 @@ import { VideoThumbnailService } from './video-thumbnail.service';
     VideoThumbnailService,
   ],
 })
-export class UploadsModule {}
+export class UploadsModule { }

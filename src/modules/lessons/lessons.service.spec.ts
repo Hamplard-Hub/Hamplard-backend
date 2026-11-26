@@ -4,10 +4,17 @@ import { UserRole } from '@prisma/client';
 import { LessonsService } from './lessons.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { DripScheduleService } from './drip-schedule.service';
+import { CdnService } from '../uploads/cdn.service';
 
 describe('LessonsService (Ownership & IDOR Protection)', () => {
   let service: LessonsService;
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
+  const mockDripSchedule = {
+    isLessonUnlocked: jest.fn(),
+  };
+  const mockDripSchedule = { resyncCourseSchedules: jest.fn().mockResolvedValue(undefined) };
+  const mockCdn = { signLessonMediaUrl: jest.fn() };
 
   const mockPrisma = {
     course: {
@@ -16,13 +23,23 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
     },
     courseModule: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
     },
     lesson: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      deleteMany: jest.fn(),
+      count: jest.fn(),
     },
+    answer: { deleteMany: jest.fn() },
+    question: { deleteMany: jest.fn() },
+    assignmentSubmission: { deleteMany: jest.fn() },
+    assignment: { deleteMany: jest.fn() },
     enrollment: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -32,7 +49,9 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       upsert: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
+      deleteMany: jest.fn(),
     },
+    $transaction: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -41,11 +60,16 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         LessonsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: AnalyticsService, useValue: mockAnalytics },
+        { provide: DripScheduleService, useValue: mockDripSchedule },
+        { provide: CdnService, useValue: mockCdn },
       ],
     }).compile();
 
     service = module.get<LessonsService>(LessonsService);
     jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation((arg: any) =>
+      typeof arg === 'function' ? arg(mockPrisma) : Promise.all(arg),
+    );
   });
 
   describe('createModule()', () => {
@@ -229,6 +253,8 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         .mockResolvedValueOnce({
           id: 'enrollment-1',
           studentId: 'student-1',
+          courseId: 'course-1',
+          status: 'ACTIVE',
           course: {
             modules: [
               {
@@ -240,15 +266,11 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         .mockResolvedValueOnce({
           id: 'enrollment-1',
           studentId: 'student-1',
-          course: {
-            modules: [
-              {
-                lessons: [{ id: 'lesson-1' }, { id: 'lesson-2' }],
-              },
-            ],
-          },
+          status: 'ACTIVE',
         });
 
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
+      mockPrisma.lessonProgress.findUnique.mockResolvedValue(null);
       mockPrisma.lessonProgress.upsert.mockResolvedValue({
         id: 'lp-1',
         enrollmentId: 'enrollment-1',
@@ -300,11 +322,18 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
     });
 
     it('successfully updates watch progress when called by owner student', async () => {
-      mockPrisma.enrollment.findUnique.mockResolvedValue({
-        id: 'enrollment-1',
-        studentId: 'student-1',
-        course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
-      });
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
 
       mockPrisma.lessonProgress.upsert.mockResolvedValue({
         id: 'lp-1',
@@ -326,6 +355,419 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         create: { enrollmentId: 'enrollment-1', lessonId: 'lesson-1', watchedSecs: 45 },
         update: { watchedSecs: 45 },
       });
+    });
+  });
+
+  // ========================================================================
+  // ISSUE #437: Drip-locked lessons and enrollment status validation
+  // ========================================================================
+
+  describe('markLessonComplete() drip-lock protection', () => {
+    it('throws ForbiddenException if lesson is locked by drip schedule', async () => {
+      mockPrisma.enrollment.findUnique.mockResolvedValue({
+        id: 'enrollment-1',
+        studentId: 'student-1',
+        status: 'ACTIVE',
+        course: { modules: [{ lessons: [{ id: 'lesson-2' }] }] },
+      });
+
+      // Lesson is locked by drip schedule
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(false);
+
+      await expect(
+        service.markLessonComplete('student-1', 'enrollment-1', 'lesson-2', 300),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(mockDripSchedule.isLessonUnlocked).toHaveBeenCalledWith(
+        'enrollment-1',
+        'lesson-2',
+      );
+    });
+
+    it('rejects marking complete on refunded enrollment', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'REFUNDED',
+          course: {
+            modules: [{ lessons: [{ id: 'lesson-1' }] }],
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'REFUNDED',
+        });
+
+      await expect(
+        service.markLessonComplete('student-1', 'enrollment-1', 'lesson-1', 300),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects marking complete on completed enrollment', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'COMPLETED',
+          course: {
+            modules: [{ lessons: [{ id: 'lesson-1' }] }],
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'COMPLETED',
+        });
+
+      await expect(
+        service.markLessonComplete('student-1', 'enrollment-1', 'lesson-1', 300),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('allows marking complete when enrollment is ACTIVE and lesson is unlocked', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          courseId: 'course-1',
+          status: 'ACTIVE',
+          course: {
+            modules: [
+              {
+                lessons: [{ id: 'lesson-1' }, { id: 'lesson-2' }],
+              },
+            ],
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
+
+      mockPrisma.lessonProgress.findUnique.mockResolvedValue(null);
+      mockPrisma.lessonProgress.upsert.mockResolvedValue({
+        id: 'lp-1',
+        enrollmentId: 'enrollment-1',
+        lessonId: 'lesson-1',
+        completed: true,
+        watchedSecs: 300,
+      });
+      mockPrisma.lessonProgress.count.mockResolvedValue(1);
+      mockPrisma.enrollment.update.mockResolvedValue({});
+
+      const result = await service.markLessonComplete(
+        'student-1',
+        'enrollment-1',
+        'lesson-1',
+        300,
+      );
+
+      expect(result.completed).toBe(true);
+      expect(mockDripSchedule.isLessonUnlocked).toHaveBeenCalledWith(
+        'enrollment-1',
+        'lesson-1',
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalled();
+    });
+  });
+
+  describe('updateWatchProgress() drip-lock protection', () => {
+    it('throws ForbiddenException if lesson is locked by drip schedule', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-2' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(false);
+
+      await expect(
+        service.updateWatchProgress('student-1', 'enrollment-1', 'lesson-2', 45),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects watch progress on refunded enrollment', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'REFUNDED',
+        });
+
+      await expect(
+        service.updateWatchProgress('student-1', 'enrollment-1', 'lesson-1', 45),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('allows watch progress when enrollment is ACTIVE and lesson is unlocked', async () => {
+      mockPrisma.enrollment.findUnique
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          studentId: 'student-1',
+          course: { modules: [{ lessons: [{ id: 'lesson-1' }] }] },
+        })
+        .mockResolvedValueOnce({
+          id: 'enrollment-1',
+          status: 'ACTIVE',
+        });
+
+      mockDripSchedule.isLessonUnlocked.mockResolvedValue(true);
+
+      mockPrisma.lessonProgress.upsert.mockResolvedValue({
+        id: 'lp-1',
+        enrollmentId: 'enrollment-1',
+        lessonId: 'lesson-1',
+        watchedSecs: 45,
+      });
+
+      const result = await service.updateWatchProgress(
+        'student-1',
+        'enrollment-1',
+        'lesson-1',
+        45,
+      );
+
+      expect(result.watchedSecs).toBe(45);
+      expect(mockDripSchedule.isLessonUnlocked).toHaveBeenCalledWith(
+        'enrollment-1',
+        'lesson-1',
+      );
+  describe('content management (#330)', () => {
+    const owner = { id: 'instructor-1', stellarAddress: 'GINSTRUCTOR1', role: UserRole.INSTRUCTOR };
+    const stranger = { id: 'instructor-2', stellarAddress: 'GOTHER', role: UserRole.INSTRUCTOR };
+    const ownedCourse = {
+      id: 'course-1',
+      instructorAddress: 'GINSTRUCTOR1',
+      instructor: { id: 'instructor-1' },
+    };
+
+    it('updateModule() rejects a non-owner', async () => {
+      mockPrisma.courseModule.findUnique.mockResolvedValue({
+        id: 'mod-1', courseId: 'course-1', position: 0, course: ownedCourse,
+      });
+
+      await expect(service.updateModule('mod-1', { title: 'New' }, stranger)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockPrisma.courseModule.update).not.toHaveBeenCalled();
+    });
+
+    it('updateModule() renames without resyncing drip when position is unchanged', async () => {
+      mockPrisma.courseModule.findUnique.mockResolvedValue({
+        id: 'mod-1', courseId: 'course-1', position: 0, course: ownedCourse,
+      });
+      mockPrisma.courseModule.update.mockResolvedValue({ id: 'mod-1', title: 'New' });
+
+      const result = await service.updateModule('mod-1', { title: 'New' }, owner);
+
+      expect(result.title).toBe('New');
+      expect(mockPrisma.courseModule.update).toHaveBeenCalledWith({
+        where: { id: 'mod-1' },
+        data: { title: 'New' },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).not.toHaveBeenCalled();
+    });
+
+    it('updateLesson() throws NotFoundException for a missing lesson', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(null);
+
+      await expect(service.updateLesson('lesson-x', { title: 'A' }, owner)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('updateLesson() rejects a non-owner', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+
+      await expect(service.updateLesson('lesson-1', { title: 'A' }, stranger)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('updateLesson() updates only provided fields and resyncs drip on position change', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.lesson.update.mockResolvedValue({ id: 'lesson-1', title: 'A', position: 2 });
+
+      await service.updateLesson('lesson-1', { title: 'A', position: 2 }, owner);
+
+      expect(mockPrisma.lesson.update).toHaveBeenCalledWith({
+        where: { id: 'lesson-1' },
+        data: { title: 'A', position: 2 },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
+    });
+
+    it('deleteLesson() purges dependents, recounts totalLessons and resyncs drip', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.lesson.count.mockResolvedValue(4);
+
+      const result = await service.deleteLesson('lesson-1', owner);
+
+      expect(result).toEqual({ success: true, id: 'lesson-1' });
+      expect(mockPrisma.lessonProgress.deleteMany).toHaveBeenCalledWith({
+        where: { lessonId: { in: ['lesson-1'] } },
+      });
+      expect(mockPrisma.lesson.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['lesson-1'] } },
+      });
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'course-1' },
+        data: { totalLessons: 4 },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
+    });
+
+    it('deleteLesson() rejects a non-owner without deleting anything', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1', position: 0, module: { id: 'mod-1', courseId: 'course-1' },
+      });
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+
+      await expect(service.deleteLesson('lesson-1', stranger)).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('deleteModule() removes its lessons and the module, then recounts totalLessons', async () => {
+      mockPrisma.courseModule.findUnique.mockResolvedValue({
+        id: 'mod-1', courseId: 'course-1', position: 0, course: ownedCourse,
+      });
+      mockPrisma.lesson.findMany.mockResolvedValue([{ id: 'lesson-1' }, { id: 'lesson-2' }]);
+      mockPrisma.lesson.count.mockResolvedValue(0);
+
+      const result = await service.deleteModule('mod-1', owner);
+
+      expect(result).toEqual({ success: true, id: 'mod-1', deletedLessons: 2 });
+      expect(mockPrisma.lesson.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ['lesson-1', 'lesson-2'] } },
+      });
+      expect(mockPrisma.courseModule.delete).toHaveBeenCalledWith({ where: { id: 'mod-1' } });
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'course-1' },
+        data: { totalLessons: 0 },
+      });
+    });
+
+    it('reorderCourseContent() rejects modules from another course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.courseModule.findMany.mockResolvedValue([{ id: 'mod-1' }]);
+
+      await expect(
+        service.reorderCourseContent(
+          'course-1',
+          { modules: [{ id: 'foreign-mod', position: 0 }] },
+          owner,
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('reorderCourseContent() rejects lessons from another course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.courseModule.findMany.mockResolvedValue([{ id: 'mod-1' }]);
+      mockPrisma.lesson.findMany.mockResolvedValue([]);
+
+      await expect(
+        service.reorderCourseContent(
+          'course-1',
+          { lessons: [{ id: 'foreign-lesson', position: 0 }] },
+          owner,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('reorderCourseContent() rejects an empty payload', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+
+      await expect(service.reorderCourseContent('course-1', {}, owner)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('reorderCourseContent() applies all positions in one transaction and resyncs drip', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(ownedCourse);
+      mockPrisma.courseModule.findMany
+        .mockResolvedValueOnce([{ id: 'mod-1' }, { id: 'mod-2' }])
+        .mockResolvedValueOnce([]);
+      mockPrisma.lesson.findMany.mockResolvedValue([{ id: 'lesson-1' }]);
+      mockPrisma.courseModule.update.mockResolvedValue({});
+      mockPrisma.lesson.update.mockResolvedValue({});
+
+      await service.reorderCourseContent(
+        'course-1',
+        {
+          modules: [{ id: 'mod-1', position: 1 }, { id: 'mod-2', position: 0 }],
+          lessons: [{ id: 'lesson-1', position: 0, moduleId: 'mod-2' }],
+        },
+        owner,
+      );
+
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.courseModule.update).toHaveBeenCalledWith({
+        where: { id: 'mod-2' },
+        data: { position: 0 },
+      });
+      expect(mockPrisma.lesson.update).toHaveBeenCalledWith({
+        where: { id: 'lesson-1' },
+        data: { position: 0, moduleId: 'mod-2' },
+      });
+      expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
+
+  /** Issue #335 — students only ever receive short-lived signed video URLs. */
+  describe('findLessonForViewer()', () => {
+    it('replaces the stored videoUrl with a signed URL and its expiry', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({
+        id: 'lesson-1',
+        videoUrl: '/uploads/courses/c1/lessons/lesson-1/video.mp4',
+        module: { course: { id: 'c1' } },
+      });
+      mockCdn.signLessonMediaUrl.mockReturnValue({
+        url: 'https://cdn.hamplard.com/uploads/courses/c1/lessons/lesson-1/video.mp4?expires=1&signature=abc',
+        expiresAt: '2026-11-24T10:05:00.000Z',
+      });
+
+      const lesson = await service.findLessonForViewer('lesson-1');
+
+      expect(mockCdn.signLessonMediaUrl).toHaveBeenCalledWith('/uploads/courses/c1/lessons/lesson-1/video.mp4');
+      expect(lesson.videoUrl).toContain('signature=abc');
+      expect(lesson.videoUrlExpiresAt).toBe('2026-11-24T10:05:00.000Z');
+    });
+
+    it('returns null video fields for lessons without a video', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue({ id: 'lesson-2', videoUrl: null, module: {} });
+      mockCdn.signLessonMediaUrl.mockReturnValue(null);
+
+      const lesson = await service.findLessonForViewer('lesson-2');
+
+      expect(lesson.videoUrl).toBeNull();
+      expect(lesson.videoUrlExpiresAt).toBeNull();
+    });
+
+    it('throws NotFoundException for an unknown lesson', async () => {
+      mockPrisma.lesson.findUnique.mockResolvedValue(null);
+      await expect(service.findLessonForViewer('missing')).rejects.toThrow(NotFoundException);
     });
   });
 });

@@ -209,5 +209,63 @@ describe('ModerationService', () => {
         }),
       ).rejects.toThrow(NotFoundException);
     });
+
+    it('restores a PAUSED course to PUBLISHED when all reports are dismissed', async () => {
+      mockPrisma.abuseReport.findUnique.mockResolvedValue({
+        id: 'flag-1',
+        targetType: ReportTargetType.COURSE,
+        targetId: 'course-1',
+        status: ReportStatus.PENDING,
+      });
+      mockPrisma.abuseReport.update.mockResolvedValue({
+        id: 'flag-1',
+        status: ReportStatus.DISMISSED,
+        resolvedById: 'admin-1',
+      });
+      mockPrisma.abuseReport.count.mockResolvedValue(0);
+      mockPrisma.course.findUnique.mockResolvedValue({
+        id: 'course-1',
+        status: CourseStatus.PAUSED,
+      });
+      mockPrisma.course.update.mockResolvedValue({
+        id: 'course-1',
+        status: CourseStatus.PUBLISHED,
+      });
+
+      await service.resolveFlag('flag-1', 'admin-1', {
+        status: ReportStatus.DISMISSED,
+      });
+
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'course-1' },
+        data: { status: CourseStatus.PUBLISHED },
+      });
+    });
+  });
+
+  describe('createFlag() — enrollment guard', () => {
+    it('does not auto-pause a course when reports come from non-enrolled accounts', async () => {
+      mockPrisma.abuseReport.findFirst.mockResolvedValue(null);
+      mockPrisma.abuseReport.create.mockResolvedValue({
+        id: 'flag-3',
+        reporterId: 'user-3',
+        targetType: ReportTargetType.COURSE,
+        targetId: 'course-1',
+        category: ReportCategory.SPAM,
+        status: ReportStatus.PENDING,
+      });
+      mockPrisma.abuseReport.groupBy.mockResolvedValue(reporterGroups(3));
+      mockPrisma.enrollment.findMany.mockResolvedValue([]);
+
+      const result = await service.createFlag('user-3', {
+        targetType: ReportTargetType.COURSE,
+        targetId: 'course-1',
+        category: ReportCategory.SPAM,
+      });
+
+      expect(result.pendingCount).toBe(0);
+      expect(result.autoActionTaken).toBe(false);
+      expect(mockCourses.pauseCourse).not.toHaveBeenCalled();
+    });
   });
 });

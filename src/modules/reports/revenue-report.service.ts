@@ -2,7 +2,7 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RevenueReportQueryDto } from './dto/revenue-report-query.dto';
-import { EnrollmentStatus } from '@prisma/client';
+import { EnrollmentStatus, Prisma } from '@prisma/client';
 
 export interface CourseBucket {
   courseId: string;
@@ -12,6 +12,7 @@ export interface CourseBucket {
   instructorName: string | null;
   enrollmentCount: number;
   grossRevenue: number;
+  taxAmount: number;
   platformFee: number;
   instructorNet: number;
 }
@@ -23,6 +24,7 @@ export interface InstructorBucket {
   courseCount: number;
   enrollmentCount: number;
   grossRevenue: number;
+  taxAmount: number;
   platformFee: number;
   instructorNet: number;
 }
@@ -60,7 +62,29 @@ export class RevenueReportService {
     if (courseId) where.courseId = courseId;
     if (instructorAddress) where.course = { instructorAddress };
 
-    // Use SQL aggregation with the fee snapshot from enrollment
+    // Issue #332: aggregate the pricing snapshot stored on each enrollment
+    // (platform fee + tax captured at purchase time). Rows created before the
+    // snapshot existed fall back to the enrollment's fee percent.
+    const filters = Prisma.sql`
+      WHERE e."status" != 'REFUNDED'
+        ${courseId ? Prisma.sql`AND e."courseId" = ${courseId}` : Prisma.empty}
+        ${instructorAddress ? Prisma.sql`AND c."instructorAddress" = ${instructorAddress}` : Prisma.empty}
+        ${startDate && endDate
+          ? Prisma.sql`AND e."enrolledAt" BETWEEN ${new Date(startDate)} AND ${new Date(endDate)}`
+          : Prisma.empty}
+    `;
+    const platformFeeExpr = Prisma.sql`COALESCE(
+      e."platformFeeAmount",
+      (e."amountPaid" - e."taxAmount") * e."platformFeePercent" / 100
+    )`;
+    const aggregates = Prisma.sql`
+        COUNT(e.id)::int AS "enrollmentCount",
+        SUM(e."amountPaid")::decimal(20,2) AS "grossRevenue",
+        SUM(e."taxAmount")::decimal(20,2) AS "taxAmount",
+        SUM(${platformFeeExpr})::decimal(20,2) AS "platformFee",
+        SUM(e."amountPaid" - e."taxAmount" - ${platformFeeExpr})::decimal(20,2) AS "instructorNet"
+    `;
+
     const courseRows = await this.prisma.$queryRaw<CourseBucket[]>`
       SELECT
         c.id AS "courseId",
@@ -68,17 +92,11 @@ export class RevenueReportService {
         c."instructorAddress",
         u.id AS "instructorId",
         u.name AS "instructorName",
-        COUNT(e.id)::int AS "enrollmentCount",
-        SUM(e."amountPaid")::decimal(20,2) AS "grossRevenue",
-        SUM(e."amountPaid" * e."platformFeePercent" / 100)::decimal(20,2) AS "platformFee",
-        SUM(e."amountPaid" * (100 - e."platformFeePercent") / 100)::decimal(20,2) AS "instructorNet"
+        ${aggregates}
       FROM "enrollments" e
       JOIN "courses" c ON e."courseId" = c.id
       LEFT JOIN "users" u ON c."instructorAddress" = u."stellarAddress"
-      WHERE e."status" != 'REFUNDED'
-        ${courseId ? `AND e."courseId" = ${courseId}` : ''}
-        ${instructorAddress ? `AND c."instructorAddress" = ${instructorAddress}` : ''}
-        ${startDate && endDate ? `AND e."enrolledAt" BETWEEN ${new Date(startDate)} AND ${new Date(endDate)}` : ''}
+      ${filters}
       GROUP BY c.id, c.title, c."instructorAddress", u.id, u.name
       ORDER BY "grossRevenue" DESC
     `;
@@ -90,17 +108,11 @@ export class RevenueReportService {
         u.id AS "instructorId",
         u.name AS "instructorName",
         COUNT(DISTINCT c.id)::int AS "courseCount",
-        COUNT(e.id)::int AS "enrollmentCount",
-        SUM(e."amountPaid")::decimal(20,2) AS "grossRevenue",
-        SUM(e."amountPaid" * e."platformFeePercent" / 100)::decimal(20,2) AS "platformFee",
-        SUM(e."amountPaid" * (100 - e."platformFeePercent") / 100)::decimal(20,2) AS "instructorNet"
+        ${aggregates}
       FROM "enrollments" e
       JOIN "courses" c ON e."courseId" = c.id
       LEFT JOIN "users" u ON c."instructorAddress" = u."stellarAddress"
-      WHERE e."status" != 'REFUNDED'
-        ${courseId ? `AND e."courseId" = ${courseId}` : ''}
-        ${instructorAddress ? `AND c."instructorAddress" = ${instructorAddress}` : ''}
-        ${startDate && endDate ? `AND e."enrolledAt" BETWEEN ${new Date(startDate)} AND ${new Date(endDate)}` : ''}
+      ${filters}
       GROUP BY c."instructorAddress", u.id, u.name
       ORDER BY "grossRevenue" DESC
     `;
@@ -112,10 +124,11 @@ export class RevenueReportService {
       (acc, row) => ({
         enrollmentCount: acc.enrollmentCount + row.enrollmentCount,
         grossRevenue: this.round(acc.grossRevenue + Number(row.grossRevenue)),
+        taxAmount: this.round(acc.taxAmount + Number(row.taxAmount)),
         platformFee: this.round(acc.platformFee + Number(row.platformFee)),
         instructorNet: this.round(acc.instructorNet + Number(row.instructorNet)),
       }),
-      { enrollmentCount: 0, grossRevenue: 0, platformFee: 0, instructorNet: 0 },
+      { enrollmentCount: 0, grossRevenue: 0, taxAmount: 0, platformFee: 0, instructorNet: 0 },
     );
 
     const report = {
@@ -156,21 +169,22 @@ export class RevenueReportService {
     return Math.round(value * 100) / 100;
   }
 
-  private normalizeBucket<T extends { grossRevenue: number; platformFee: number; instructorNet: number }>(
-    bucket: T,
-  ): T {
+  private normalizeBucket<
+    T extends { grossRevenue: number; taxAmount: number; platformFee: number; instructorNet: number },
+  >(bucket: T): T {
     return {
       ...bucket,
-      grossRevenue: this.round(bucket.grossRevenue),
-      platformFee: this.round(bucket.platformFee),
-      instructorNet: this.round(bucket.instructorNet),
+      grossRevenue: this.round(Number(bucket.grossRevenue)),
+      taxAmount: this.round(Number(bucket.taxAmount ?? 0)),
+      platformFee: this.round(Number(bucket.platformFee)),
+      instructorNet: this.round(Number(bucket.instructorNet)),
     };
   }
 
   private toCsv(rows: CourseBucket[]): string {
     const headers = [
       'courseId', 'courseTitle', 'instructorName', 'instructorAddress',
-      'enrollmentCount', 'grossRevenue', 'platformFee', 'instructorNet',
+      'enrollmentCount', 'grossRevenue', 'taxAmount', 'platformFee', 'instructorNet',
     ];
     const escape = (value: unknown) => {
       const str = String(value ?? '');
@@ -179,7 +193,7 @@ export class RevenueReportService {
     const lines = rows.map((r) =>
       [
         r.courseId, r.courseTitle, r.instructorName, r.instructorAddress,
-        r.enrollmentCount, r.grossRevenue, r.platformFee, r.instructorNet,
+        r.enrollmentCount, r.grossRevenue, r.taxAmount, r.platformFee, r.instructorNet,
       ].map(escape).join(','),
     );
     return [headers.join(','), ...lines].join('\n');

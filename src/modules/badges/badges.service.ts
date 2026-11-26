@@ -26,8 +26,29 @@ export class BadgesService {
     return this.prisma.badge.create({ data: input });
   }
 
-  getCatalog() {
-    return this.prisma.badge.findMany({ orderBy: { createdAt: 'asc' } });
+  async getCatalog(page = 1, limit = 20) {
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.badge.findMany({
+        orderBy: { createdAt: 'asc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.badge.count(),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
+      },
+    };
   }
 
   getActiveBadges() {
@@ -48,7 +69,7 @@ export class BadgesService {
       ),
     );
 
-    return this.getCatalog();
+    return this.prisma.badge.findMany({ orderBy: { createdAt: 'asc' } });
   }
 
   async updateBadge(id: string, input: UpdateBadgeInput) {

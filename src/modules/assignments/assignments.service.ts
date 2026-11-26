@@ -249,12 +249,31 @@ export class AssignmentsService {
     return updated;
   }
 
-  async findSubmissionsByStudent(studentId: string) {
-    return this.prisma.assignmentSubmission.findMany({
-      where: { studentId },
-      include: { assignment: { include: { lesson: true } } },
-      orderBy: { submittedAt: 'desc' },
-    });
+  async findSubmissionsByStudent(studentId: string, page = 1, limit = 20) {
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.assignmentSubmission.findMany({
+        where: { studentId },
+        include: { assignment: { include: { lesson: true } } },
+        orderBy: { submittedAt: 'desc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.assignmentSubmission.count({ where: { studentId } }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
+      },
+    };
   }
 
   async findPendingForInstructor(

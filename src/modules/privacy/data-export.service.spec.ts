@@ -21,6 +21,7 @@ describe('DataExportService', () => {
       findUnique: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
+      count: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
     },
@@ -246,6 +247,8 @@ describe('DataExportService', () => {
       expect(failureCall[0].data.errorMessage).toContain('profile fetch failed');
     });
   });
+
+  describe('getExportStatus()', () => {
     it('returns the job when it belongs to the requester', async () => {
       mockPrisma.dataExportJob.findFirst.mockResolvedValue({ id: 'job-1', status: 'COMPLETED' });
 
@@ -267,18 +270,25 @@ describe('DataExportService', () => {
   });
 
   describe('listMyExports()', () => {
-    it('lists only the requesting user’s jobs, newest first', async () => {
+    it('lists only the requesting user’s jobs, newest first, paginated', async () => {
       mockPrisma.dataExportJob.findMany.mockResolvedValue([{ id: 'job-1' }]);
+      mockPrisma.dataExportJob.count.mockResolvedValue(1);
 
-      const result = await service.listMyExports(userId);
+      const result = await service.listMyExports(userId, 2, 10);
 
-      expect(result).toEqual([{ id: 'job-1' }]);
+      expect(result).toEqual({
+        data: [{ id: 'job-1' }],
+        meta: { total: 1, page: 2, limit: 10, totalPages: 1 },
+      });
       expect(mockPrisma.dataExportJob.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { userId },
           orderBy: { requestedAt: 'desc' },
+          skip: 10,
+          take: 10,
         }),
       );
+      expect(mockPrisma.dataExportJob.count).toHaveBeenCalledWith({ where: { userId } });
     });
   });
 
