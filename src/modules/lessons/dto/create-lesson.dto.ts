@@ -1,6 +1,7 @@
-import { IsString, IsNotEmpty, IsOptional, IsInt, Min, IsBoolean, IsEnum } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsInt, Min, IsBoolean, IsEnum, IsUrl } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { LessonType } from '@prisma/client';
+import { getUrlValidationOptions } from '../../../common/validators/url-validation';
 
 export class CreateLessonDto {
   @ApiProperty({ description: 'ID of the module this lesson belongs to', example: 'module-uuid-1' })
@@ -29,7 +30,7 @@ export class CreateLessonDto {
 
   @ApiPropertyOptional({ description: 'Video playback URL' })
   @IsOptional()
-  @IsString()
+  @IsUrl(getUrlValidationOptions())
   videoUrl?: string;
 
   @ApiPropertyOptional({ description: 'Video duration in seconds', example: 600 })
@@ -50,7 +51,7 @@ export class CreateLessonDto {
 
   @ApiPropertyOptional({ description: 'URL of the lesson thumbnail' })
   @IsOptional()
-  @IsString()
+  @IsUrl(getUrlValidationOptions())
   thumbnailUrl?: string;
 
   @ApiPropertyOptional({ description: 'Text content for text lessons' })
@@ -60,7 +61,7 @@ export class CreateLessonDto {
 
   @ApiPropertyOptional({ description: 'Supplementary resource URL' })
   @IsOptional()
-  @IsString()
+  @IsUrl(getUrlValidationOptions())
   resourceUrl?: string;
 
   @ApiProperty({ description: 'Ordering position within the module', example: 1 })
