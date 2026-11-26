@@ -5,6 +5,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { FeeCalculatorService } from '../billing/fee-calculator.service';
 import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CdnService } from '../uploads/cdn.service';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -23,6 +24,12 @@ const mockPrisma = {
   user: {
     findUnique: jest.fn(),
   },
+  adminAuditLog: {
+    create: jest.fn(),
+  },
+  wishlistItem: {
+    findMany: jest.fn(),
+  },
   coursePrerequisite: {
     findMany:   jest.fn(),
     findUnique: jest.fn(),
@@ -36,6 +43,7 @@ const mockPrisma = {
     count: jest.fn(),
   },
   adminAuditLog: {
+    create: jest.fn(),
     create: jest.fn().mockResolvedValue({}),
   },
   $getTransactionClient: jest.fn(),
@@ -769,6 +777,142 @@ describe('CoursesService status transitions (issue #232)', () => {
     });
   });
 
+  describe('changeStatus() (issue #331)', () => {
+    const course = (status: CourseStatus, extra: Record<string, unknown> = {}) => ({
+      ...MOCK_COURSE,
+      status,
+      approvedAt: new Date(),
+      description: 'Learn tailoring',
+      language: 'English',
+      avgRating: 0,
+      totalReviews: 0,
+      thumbnailUrl: null,
+      instructor: { name: 'John' },
+      ...extra,
+    });
+
+    it('lets the owner archive an ACTIVE course, delisting it from search and caches', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+      mockPrisma.course.update.mockResolvedValue(course(CourseStatus.ARCHIVED));
+
+      const result = await service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ARCHIVED);
+
+      expect(result.status).toBe(CourseStatus.ARCHIVED);
+      expect(mockPrisma.course.update).toHaveBeenCalledWith({
+        where: { id: MOCK_COURSE.id },
+        data: { status: CourseStatus.ARCHIVED },
+      });
+      expect(mockSearchService.removeCourse).toHaveBeenCalledWith(MOCK_COURSE.id);
+      expect(mockSearchService.indexCourse).not.toHaveBeenCalled();
+      expectCachesInvalidated();
+      expect(mockPrisma.adminAuditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('lets the owner pause and republish an approved course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.PAUSED));
+      mockPrisma.course.update.mockResolvedValue(course(CourseStatus.ACTIVE));
+
+      await service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ACTIVE);
+
+      expect(mockSearchService.indexCourse).toHaveBeenCalledWith(
+        expect.objectContaining({ id: MOCK_COURSE.id }),
+      );
+      expectCachesInvalidated();
+    });
+
+    it('prevents the owner from republishing a course that was never approved', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(
+        course(CourseStatus.PAUSED, { approvedAt: null }),
+      );
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ACTIVE),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.course.update).not.toHaveBeenCalled();
+    });
+
+    it('prevents a non-owner instructor from changing the status', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, NON_OWNER, CourseStatus.ARCHIVED),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.course.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an owner restoring an ARCHIVED course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ARCHIVED));
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.PAUSED),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects a no-op transition', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+
+      await expect(
+        service.changeStatus(MOCK_COURSE.id, OWNER, CourseStatus.ACTIVE),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lets an admin unpublish any course and records an audit log entry', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(course(CourseStatus.ACTIVE));
+      mockPrisma.course.update.mockResolvedValue(course(CourseStatus.PAUSED));
+
+      await service.changeStatus(MOCK_COURSE.id, ADMIN, CourseStatus.PAUSED, 'Policy review');
+
+      expect(mockSearchService.removeCourse).toHaveBeenCalledWith(MOCK_COURSE.id);
+      expect(mockPrisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorId: ADMIN.id,
+          action: 'COURSE_PAUSED',
+          targetId: MOCK_COURSE.id,
+          metadata: expect.objectContaining({ from: 'ACTIVE', to: 'PAUSED', reason: 'Policy review' }),
+        }),
+      });
+    });
+
+    it('throws NotFoundException for an unknown course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.changeStatus('MISSING', OWNER, CourseStatus.ARCHIVED),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('findOne() for delisted courses (issue #331)', () => {
+    const delisted = (status: CourseStatus) => ({
+      ...MOCK_COURSE,
+      status,
+      modules: [],
+      _count: { enrollments: 1 },
+      instructor: { id: 'instructor-id', name: 'John', stellarAddress: 'GABC' },
+    });
+
+    it.each([CourseStatus.ARCHIVED, CourseStatus.PAUSED])(
+      'keeps a %s course accessible to enrolled students',
+      async (status) => {
+        mockPrisma.course.findUnique.mockResolvedValue(delisted(status));
+        mockPrisma.enrollment.findFirst.mockResolvedValue({ id: 'enroll-1' });
+
+        const result = await service.findOne(MOCK_COURSE.id, { userId: 'student-1' });
+
+        expect(result.status).toBe(status);
+      },
+    );
+
+    it('hides an ARCHIVED course from non-enrolled callers', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue(delisted(CourseStatus.ARCHIVED));
+      mockPrisma.enrollment.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.findOne(MOCK_COURSE.id, { userId: 'stranger' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
   // ----------------------------------------------------------
   // COURSE OWNERSHIP (issue #241)
   // ----------------------------------------------------------
@@ -823,6 +967,46 @@ describe('CoursesService status transitions (issue #232)', () => {
         });
       });
 
+      it('notifies each wishlister once when the price decreases', async () => {
+        mockPrisma.course.findUnique.mockResolvedValue({
+          ...fullCourse(CourseStatus.ACTIVE),
+          price: 50,
+        });
+        mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, price: 40, status: CourseStatus.ACTIVE });
+        mockPrisma.wishlistItem.findMany.mockResolvedValue([
+          { studentId: 'student-1' },
+          { studentId: 'student-2' },
+        ]);
+
+        await service.update(MOCK_COURSE.id, OWNER, { price: 40 } as any);
+
+        expect(mockPrisma.wishlistItem.findMany).toHaveBeenCalledWith({
+          where: { courseId: MOCK_COURSE.id },
+          select: { studentId: true },
+        });
+        expect(mockNotifications.notifyUser).toHaveBeenCalledTimes(2);
+        expect(mockNotifications.notifyUser).toHaveBeenNthCalledWith(
+          1,
+          'student-1',
+          NotificationType.COURSE_PRICE_DROP,
+          'A wishlisted course is now cheaper',
+          expect.stringContaining('dropped from 50 to 40'),
+          { courseId: MOCK_COURSE.id, previousPrice: 50, currentPrice: 40 },
+        );
+      });
+
+      it('does not notify wishlisters when the price is unchanged or higher', async () => {
+        mockPrisma.course.findUnique.mockResolvedValue({
+          ...fullCourse(CourseStatus.ACTIVE),
+          price: 50,
+        });
+        mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, status: CourseStatus.ACTIVE });
+
+        await service.update(MOCK_COURSE.id, OWNER, { price: 50 } as any);
+        await service.update(MOCK_COURSE.id, OWNER, { price: 60 } as any);
+
+        expect(mockPrisma.wishlistItem.findMany).not.toHaveBeenCalled();
+        expect(mockNotifications.notifyUser).not.toHaveBeenCalled();
       it('blocks content and price changes on ACTIVE courses', async () => {
         mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
 

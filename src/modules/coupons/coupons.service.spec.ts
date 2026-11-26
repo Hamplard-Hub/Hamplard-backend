@@ -410,6 +410,9 @@ describe('CouponsService (Issue #145) — Validation of expiresAt and discount b
               return { id: `red-${state.redemptions.length}`, ...data };
             }),
           },
+          enrollment: {
+            update: jest.fn(async () => ({})),
+          },
         };
         mockPrisma.$transaction.mockImplementation(async (cb: any) => cb(tx));
         return { state, tx };

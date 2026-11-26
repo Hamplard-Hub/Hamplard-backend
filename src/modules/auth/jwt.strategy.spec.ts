@@ -8,6 +8,10 @@ describe('JwtStrategy', () => {
     user: {
       findUnique: jest.fn(),
     },
+    session: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
   };
 
   beforeEach(() => {
@@ -161,6 +165,82 @@ describe('JwtStrategy', () => {
         id: 'user-1',
         isDeactivated: true,
       });
+    });
+  });
+
+  describe('session revocation/expiry (issue #418)', () => {
+    const base = {
+      id: 'user-1',
+      stellarAddress: 'GABC',
+      googleId: null,
+      role: 'STUDENT',
+      isBanned: false,
+      isSuspended: false,
+      suspendedUntil: null,
+      deactivatedAt: null,
+      deletedAt: null,
+    };
+
+    beforeEach(() => {
+      prisma.user.findUnique.mockResolvedValue({ ...base });
+    });
+
+    it('rejects a revoked session token', async () => {
+      const future = new Date(Date.now() + 86400000);
+      prisma.session.findUnique.mockResolvedValue({ revokedAt: new Date(), expiresAt: future });
+      const strategy = new JwtStrategy(config as any, prisma as any);
+
+      await expect(
+        strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'access-jti' }),
+      ).rejects.toThrow('Session has been revoked');
+      expect(prisma.session.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired session token', async () => {
+      const past = new Date(Date.now() - 1000);
+      prisma.session.findUnique.mockResolvedValue({ revokedAt: null, expiresAt: past });
+      const strategy = new JwtStrategy(config as any, prisma as any);
+
+      await expect(
+        strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'access-jti' }),
+      ).rejects.toThrow('Session has expired');
+      expect(prisma.session.update).not.toHaveBeenCalled();
+    });
+
+    it('resolves and touches lastActiveAt for an active session', async () => {
+      const future = new Date(Date.now() + 86400000);
+      prisma.session.findUnique.mockResolvedValue({ revokedAt: null, expiresAt: future });
+      prisma.session.update.mockResolvedValue({});
+      const strategy = new JwtStrategy(config as any, prisma as any);
+
+      const result = await strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'access-jti' });
+
+      expect(result).toMatchObject({ id: 'user-1', jti: 'access-jti' });
+      expect(prisma.session.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { jti: 'access-jti' },
+          data: expect.objectContaining({ lastActiveAt: expect.any(Date) }),
+        }),
+      );
+    });
+
+    it('lets through a token whose jti has no session row', async () => {
+      prisma.session.findUnique.mockResolvedValue(null);
+      const strategy = new JwtStrategy(config as any, prisma as any);
+
+      await expect(
+        strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'orphan-jti' }),
+      ).resolves.toMatchObject({ id: 'user-1', jti: 'orphan-jti' });
+      expect(prisma.session.update).not.toHaveBeenCalled();
+    });
+
+    it('lets through legacy tokens that carry no jti', async () => {
+      const strategy = new JwtStrategy(config as any, prisma as any);
+
+      await expect(
+        strategy.validate({ sub: 'user-1', role: 'STUDENT' }),
+      ).resolves.toMatchObject({ id: 'user-1', jti: undefined });
+      expect(prisma.session.findUnique).not.toHaveBeenCalled();
     });
   });
 });

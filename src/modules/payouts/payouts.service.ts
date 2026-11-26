@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { KycService } from '../kyc/kyc.service';
+import { instructorNetFromSnapshot } from '../enrollments/pricing-snapshot';
 import { PayoutQueryDto } from './dto/payout-query.dto';
 import { CreatePayoutDto, UpdatePayoutStatusDto } from './dto/create-payout.dto';
 import { PayoutStatus, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
@@ -53,6 +54,8 @@ export class PayoutsService {
       select: {
         amountPaid: true,
         platformFeePercent: true,
+        platformFeeAmount: true,
+        taxAmount: true,
         refunds: {
           where: { status: { in: ['APPROVED', 'PROCESSED'] } },
           select: { approvedAmount: true },
@@ -63,11 +66,8 @@ export class PayoutsService {
     let earned = new Prisma.Decimal(0);
     let refunded = new Prisma.Decimal(0);
     for (const enrollment of enrollments) {
-      earned = earned.add(
-        new Prisma.Decimal(enrollment.amountPaid)
-          .mul(100 - enrollment.platformFeePercent)
-          .div(100),
-      );
+      // Issue #332: use the fee/tax snapshot captured at purchase time.
+      earned = earned.add(instructorNetFromSnapshot(enrollment));
       for (const refund of enrollment.refunds) {
         if (refund.approvedAmount !== null) {
           refunded = refunded.add(new Prisma.Decimal(refund.approvedAmount));

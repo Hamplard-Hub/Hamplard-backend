@@ -4,6 +4,7 @@ import {
   IsInt, Min, Max, IsUrl,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { getUrlValidationOptions } from '../../../common/validators/url-validation';
 
 export class CreateCourseDto {
   @ApiProperty({ example: 'COURSE-TAILORING-001' })
@@ -31,11 +32,11 @@ export class CreateCourseDto {
   language?: string;
 
   @ApiProperty({ required: false })
-  @IsOptional() @IsString()
+  @IsOptional() @IsUrl(getUrlValidationOptions())
   thumbnailUrl?: string;
 
   @ApiProperty({ required: false })
-  @IsOptional() @IsString()
+  @IsOptional() @IsUrl(getUrlValidationOptions())
   previewVideoUrl?: string;
 
   @ApiProperty({ example: 50, description: 'Price in USDC' })

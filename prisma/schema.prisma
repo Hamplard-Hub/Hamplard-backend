@@ -75,6 +75,7 @@ enum AssignmentStatus {
 enum NotificationType {
   COURSE_APPROVED
   COURSE_REJECTED
+  COURSE_PRICE_DROP
   ENROLLMENT_CONFIRMED
   LESSON_UNLOCKED
   ASSIGNMENT_SUBMITTED
@@ -100,6 +101,7 @@ enum NotificationType {
   REFUND_PROCESSED
   REFERRAL_REWARD_ISSUED
   COURSE_INTEREST_REMINDER
+  COURSE_ANNOUNCEMENT   // instructor announcement to enrolled students
   COURSE_SUBMITTED_FOR_REVIEW // for admins
 }
 
@@ -331,6 +333,7 @@ model User {
   payoutSchedule      PayoutSchedule?       @relation("PayoutSchedule")
   referralCode        ReferralCode?
   referralsMade       Referral[]            @relation("ReferralsMade")
+  announcementsCreated Announcement[]       @relation("AnnouncementsCreated")
   referralReceived    Referral?             @relation("ReferredBy")
   referralRewards     ReferralReward[]      @relation("ReferralRewards")
   deviceTokens        NotificationDeviceToken[]
@@ -475,6 +478,7 @@ model Course {
   dripConfig    CourseDripConfig?
   backups       CourseBackup[]
   leaderboardSnapshots LeaderboardSnapshot[]
+  announcements Announcement[]
 
   @@map("courses")
 }
@@ -491,6 +495,24 @@ model CourseSearchTerm {
   @@index([searchCount])
   @@index([lastSearchedAt])
   @@map("course_search_terms")
+}
+
+model Announcement {
+  id        String   @id @default(uuid())
+  courseId  String
+  createdById String
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  course    Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("AnnouncementsCreated", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([courseId])
+  @@index([createdAt])
+  @@map("announcements")
 }
 
 model CourseModule {
@@ -645,6 +667,13 @@ model Enrollment {
   courseId        String
   amountPaid      Decimal          // USDC paid
   platformFeePercent Int           @default(20) // Fee snapshot at enrollment time
+  // Pricing snapshot captured when the enrollment is verified (#332) so
+  // reports and payouts never change retroactively with course edits.
+  listPrice         Decimal?       // course list price at purchase
+  platformFeeAmount Decimal?       // platform fee in USDC at purchase
+  taxAmount         Decimal        @default(0) // tax portion of amountPaid
+  discountAmount    Decimal        @default(0) // listPrice - (amountPaid - taxAmount), never negative
+  discountSource    String?        // COUPON | REFERRAL | BUNDLE | null
   txHash          String?          // on-chain enrollment tx
   status          EnrollmentStatus @default(ACTIVE)
   progressPercent Int              @default(0)  // 0-100

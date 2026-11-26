@@ -12,6 +12,7 @@ import { DripScheduleService } from '../lessons/drip-schedule.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
+import { buildPricingSnapshot } from './pricing-snapshot';
 import { CheckoutQuoteService } from '../billing/checkout-quote.service';
 
 @Injectable()
@@ -126,6 +127,7 @@ export class EnrollmentsService {
             courseId,
             txHash,
             amountPaid: new Prisma.Decimal(verifiedAmountPaid),
+            ...buildPricingSnapshot(course, verifiedAmountPaid),
             platformFeePercent: course.platformFeePercent,
             listPrice: new Prisma.Decimal(quote.listPrice),
             couponDiscount: new Prisma.Decimal(quote.coupon?.discountAmount ?? 0),

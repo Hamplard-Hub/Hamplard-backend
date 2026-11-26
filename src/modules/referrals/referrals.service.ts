@@ -548,6 +548,17 @@ export class ReferralsService {
       throw new BadRequestException('This referral reward is not available for redemption');
     }
 
+    // Issue #332: record the discount source on the enrollment snapshot.
+    if (discountAmount > 0) {
+      await this.prisma.enrollment.update({
+        where: { id: enrollmentId },
+        data: {
+          discountSource: 'REFERRAL',
+          discountAmount: Number(discountAmount.toFixed(2)),
+        },
+      });
+    }
+
     return this.prisma.referralReward.findUnique({ where: { id: rewardId } });
   }
 

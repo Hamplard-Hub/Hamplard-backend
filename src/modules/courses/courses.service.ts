@@ -1,6 +1,6 @@
 import {
   Injectable, NotFoundException, ForbiddenException,
-  ConflictException, Logger,
+  ConflictException, BadRequestException, Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
@@ -13,6 +13,7 @@ import { CourseStatus, NotificationType, UserRole, AuditAction, AuditTargetType,
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
+import { ManualCourseStatus } from './dto/change-course-status.dto';
 
 /** Authenticated caller as attached to the request by JwtStrategy. */
 export interface CourseActor {
@@ -41,6 +42,33 @@ export class CoursesService {
       this.cache.invalidateNamespace('courses:list'),
       this.cache.invalidateNamespace('courses:categories'),
     ]);
+  }
+
+  /** Notify every current wishlist entry once when a course's price decreases. */
+  private async notifyWishlistersOfPriceDrop(
+    courseId: string,
+    courseTitle: string,
+    previousPrice: number,
+    currentPrice: number,
+  ): Promise<void> {
+    if (currentPrice >= previousPrice) return;
+
+    const wishlistItems = await this.prisma.wishlistItem.findMany({
+      where: { courseId },
+      select: { studentId: true },
+    });
+
+    await Promise.all(
+      wishlistItems.map(({ studentId }) =>
+        this.notifications.notifyUser(
+          studentId,
+          NotificationType.COURSE_PRICE_DROP,
+          'A wishlisted course is now cheaper',
+          `The price of "${courseTitle}" dropped from ${previousPrice} to ${currentPrice}.`,
+          { courseId, previousPrice, currentPrice },
+        ),
+      ),
+    );
   }
 
   /**
@@ -323,6 +351,7 @@ export class CoursesService {
       (!!viewer?.userId && (viewer.userId === (course as any).instructorId || viewer.userId === (course as any).instructor?.id));
     const isAdmin = !!viewer?.isAdmin || viewer?.role === UserRole.ADMIN || viewer?.role === 'ADMIN';
 
+    // Owners and admins always get the full view.
     // Hide non-ACTIVE courses from everyone except the owner and admins.
     if (course.status !== CourseStatus.ACTIVE && !isOwner && !isAdmin) {
       throw new NotFoundException(`Course ${id} not found`);
@@ -333,6 +362,18 @@ export class CoursesService {
       return this.withLessonMedia(course, () => true);
     }
 
+    if (course.status !== CourseStatus.ACTIVE) {
+      // Paused/archived courses are delisted but stay accessible to students
+      // who already enrolled (#331). Every other non-ACTIVE course is hidden.
+      const isDelisted =
+        course.status === CourseStatus.PAUSED || course.status === CourseStatus.ARCHIVED;
+      if (isDelisted && (await this.isEnrolled(course.id, viewer))) {
+        return course;
+      }
+      throw new NotFoundException(`Course ${id} not found`);
+    }
+
+    // Enrolled students get the full curriculum.
     // Enrolled students get the full curriculum. Paid lesson videos are only
     // handed out (as short-lived signed URLs) by GET /lessons/:id, after the
     // drip schedule check — issue #335.
@@ -492,6 +533,15 @@ export class CoursesService {
 
     const updated = await this.prisma.course.update({ where: { id: courseId }, data: dto });
 
+    if (dto.price !== undefined) {
+      await this.notifyWishlistersOfPriceDrop(
+        courseId,
+        course.title,
+        Number(course.price),
+        Number(dto.price),
+      );
+    }
+
     // Re-index if the course is active (search index should reflect changes)
     if (updated.status === CourseStatus.ACTIVE) {
       await this.indexCourseForSearch(updated.id);
@@ -518,6 +568,97 @@ export class CoursesService {
   // Used by on-chain event sync and auto-moderation. Each transition keeps
   // the Meilisearch index and the Redis course-list caches in step with the
   // DB status: only ACTIVE courses are indexed.
+
+  /**
+   * Issue #331 — instructor/admin initiated status change.
+   *
+   * Allowed transitions:
+   *  - ACTIVE → PAUSED             (owner or admin: unpublish / pause)
+   *  - PAUSED → ACTIVE             (admin, or owner of a previously approved course)
+   *  - DRAFT | PENDING | ACTIVE | PAUSED → ARCHIVED   (owner or admin)
+   *  - ARCHIVED → PAUSED           (admin only: restore without relisting)
+   *
+   * ACTIVE courses are (re)indexed for search; every other status is removed
+   * from the search index. Course list caches are always purged. Enrolled
+   * students keep access to PAUSED/ARCHIVED courses via findOne().
+   */
+  async changeStatus(
+    courseId: string,
+    user: CourseActor,
+    status: ManualCourseStatus,
+    reason?: string,
+    ipAddress?: string,
+  ) {
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: { instructor: true },
+    });
+    if (!course) throw new NotFoundException(`Course ${courseId} not found`);
+    this.assertCourseOwner(course, user);
+
+    const isAdmin = user.role === UserRole.ADMIN;
+    const from = course.status;
+
+    if (from === status) {
+      throw new BadRequestException(`Course is already ${status}`);
+    }
+
+    let allowed = false;
+    switch (status) {
+      case CourseStatus.PAUSED:
+        allowed = from === CourseStatus.ACTIVE || (from === CourseStatus.ARCHIVED && isAdmin);
+        break;
+      case CourseStatus.ACTIVE:
+        allowed = from === CourseStatus.PAUSED && (isAdmin || !!course.approvedAt);
+        break;
+      case CourseStatus.ARCHIVED:
+        allowed = true;
+        break;
+    }
+
+    if (!allowed) {
+      throw new ForbiddenException(`Cannot change course status from ${from} to ${status}`);
+    }
+
+    const updated = await this.prisma.course.update({
+      where: { id: courseId },
+      data: { status },
+    });
+
+    if (status === CourseStatus.ACTIVE) {
+      await this.indexCourseForSearch(courseId);
+    } else {
+      await this.removeCourseFromSearch(courseId);
+    }
+    await this.invalidateCourseCaches();
+
+    if (isAdmin) {
+      await this.prisma.adminAuditLog.create({
+        data: {
+          actorId: user.id,
+          action:
+            status === CourseStatus.ARCHIVED
+              ? AuditAction.COURSE_ARCHIVED
+              : status === CourseStatus.PAUSED
+                ? AuditAction.COURSE_PAUSED
+                : AuditAction.COURSE_APPROVED,
+          targetType: AuditTargetType.COURSE,
+          targetId: courseId,
+          metadata: {
+            courseTitle: course.title,
+            instructorAddress: course.instructorAddress,
+            from,
+            to: status,
+            ...(reason ? { reason } : {}),
+          },
+          ipAddress,
+        },
+      });
+    }
+
+    this.logger.log(`Course ${courseId}: ${from} → ${status} by ${user.id}`);
+    return updated;
+  }
 
   /** Marks a course ACTIVE, indexes it for search and purges list caches. */
   async approveCourse(courseId: string): Promise<boolean> {

@@ -1,7 +1,66 @@
 import { StellarService, CONTRACT_EVENT_PAGE_LIMIT } from './stellar.service';
+import { ConfigService } from '@nestjs/config';
 
 // Note: StellarService.verifyEnrollmentTransaction is removed (dead code, unsafe).
 // Enrollment verification should match on txHash, the `student_enrolled` topic and the student address.
+
+describe('StellarService.onModuleInit', () => {
+  const createService = (config: Record<string, string | undefined>) =>
+    new StellarService({
+      get: (key: string) => config[key],
+    } as ConfigService);
+
+  it('allows HTTP for localhost RPC endpoints', async () => {
+    const service = createService({
+      STELLAR_NETWORK: 'testnet',
+      STELLAR_RPC_URL: 'http://localhost:8000',
+      HAMPLARD_CONTRACT_ID: 'CONTRACT',
+    });
+
+    await expect(service.onModuleInit()).resolves.toBeUndefined();
+    expect(service.getContractId()).toBe('CONTRACT');
+  });
+
+  it('allows HTTP for standalone RPC endpoints and uses the standalone passphrase', async () => {
+    const service = createService({
+      STELLAR_NETWORK: 'standalone',
+      STELLAR_RPC_URL: 'http://stellar-node:8000',
+      HAMPLARD_CONTRACT_ID: 'CONTRACT',
+    });
+
+    await expect(service.onModuleInit()).resolves.toBeUndefined();
+    expect(service.getNetworkPassphrase()).toBe('Standalone Network ; February 2017');
+  });
+
+  it('rejects HTTP RPC URLs for mainnet', async () => {
+    const service = createService({
+      STELLAR_NETWORK: 'mainnet',
+      STELLAR_RPC_URL: 'http://localhost:8000',
+      HAMPLARD_CONTRACT_ID: 'CONTRACT',
+    });
+
+    await expect(service.onModuleInit()).rejects.toThrow(/not allowed for the Stellar mainnet/);
+  });
+
+  it('rejects HTTP RPC URLs for remote testnet endpoints', async () => {
+    const service = createService({
+      STELLAR_NETWORK: 'testnet',
+      STELLAR_RPC_URL: 'http://rpc.example.com',
+      HAMPLARD_CONTRACT_ID: 'CONTRACT',
+    });
+
+    await expect(service.onModuleInit()).rejects.toThrow(/only allowed for localhost or the standalone network/);
+  });
+
+  it.each([
+    [{ STELLAR_NETWORK: 'typo', STELLAR_RPC_URL: 'https://rpc.example.com', HAMPLARD_CONTRACT_ID: 'CONTRACT' }, /Invalid STELLAR_NETWORK/],
+    [{ STELLAR_NETWORK: 'testnet', HAMPLARD_CONTRACT_ID: 'CONTRACT' }, /STELLAR_RPC_URL is required/],
+    [{ STELLAR_NETWORK: 'testnet', STELLAR_RPC_URL: 'https://rpc.example.com' }, /HAMPLARD_CONTRACT_ID is required/],
+  ])('fails fast for invalid or missing configuration', async (config, error) => {
+    const service = createService(config);
+    await expect(service.onModuleInit()).rejects.toThrow(error);
+  });
+});
 
 describe('StellarService.fetchContractEvents', () => {
   it('uses the last event paging token instead of startLedger for the next page', async () => {

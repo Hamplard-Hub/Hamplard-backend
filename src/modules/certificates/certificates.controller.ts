@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Body, Param, UseGuards, HttpCode, HttpStatus,
+  Controller, Get, Post, Patch, Body, Param, Query, UseGuards, HttpCode, HttpStatus,
   Res,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiProduces } from '@nestjs/swagger';
@@ -8,6 +8,7 @@ import { CertificatesService, CertificateRequester } from './certificates.servic
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { UserRole } from '@prisma/client';
 
 import {
@@ -39,9 +40,12 @@ export class CertificatesController {
   @Get('my/all')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get all certificates for the authenticated student' })
-  findMy(@CurrentUser('id') studentId: string) {
-    return this.certificatesService.findByStudent(studentId);
+  @ApiOperation({ summary: 'Get all certificates for the authenticated student (paginated)' })
+  findMy(
+    @CurrentUser('id') studentId: string,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.certificatesService.findByStudent(studentId, pagination.page, pagination.limit);
   }
 
   @Post()

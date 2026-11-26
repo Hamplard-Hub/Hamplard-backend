@@ -29,3 +29,19 @@ export class PaginationQueryDto {
   @Max(100)
   limit?: number = 20;
 }
+
+export function normalizePagination(page = 1, limit = 20) {
+  const pageNum = Math.max(1, page);
+  const pageLimit = Math.min(100, Math.max(1, limit));
+  const skip = (pageNum - 1) * pageLimit;
+  return { page: pageNum, limit: pageLimit, skip };
+}
+
+export function buildPaginationMeta(total: number, page: number, limit: number) {
+  return {
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+  };
+}

@@ -11,11 +11,15 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --no-error-on-unmatched-pattern",
+    "lint:fix": "eslint \"{src,apps,libs,test}/**/*.ts\" --no-error-on-unmatched-pattern --fix",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:cov": "jest --coverage --coverageReporters=text --coverageReporters=text-summary --coverageReporters=lcov --coverageReporters=json-summary",
+    "format": "prettier --write \"src/**/*.ts\""
     "test:cov": "jest --coverage",
     "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\""
     "search:reindex": "ts-node -r tsconfig-paths/register src/scripts/reindex-search.ts"
   },
   "dependencies": {
@@ -109,8 +113,44 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.(t|j)s",
+      "!**/dto/**",
+      "!**/*.module.ts",
+      "!**/main.ts",
+      "!**/swagger.config.ts"
     ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 30,
+        "functions": 35,
+        "lines": 40,
+        "statements": 40
+      },
+      "./modules/auth/**": {
+        "branches": 45,
+        "functions": 50,
+        "lines": 55,
+        "statements": 55
+      },
+      "./modules/payouts/**": {
+        "branches": 30,
+        "functions": 40,
+        "lines": 45,
+        "statements": 45
+      },
+      "./modules/events/**": {
+        "branches": 30,
+        "functions": 40,
+        "lines": 45,
+        "statements": 45
+      },
+      "./common/queue/**": {
+        "branches": 30,
+        "functions": 40,
+        "lines": 45,
+        "statements": 45
+      }
+    },
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   },

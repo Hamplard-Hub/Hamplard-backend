@@ -4,9 +4,12 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { CoursesService, CourseActor } from './courses.service';
+import { AnnouncementsService } from './announcements.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { SetPrerequisitesDto } from './dto/set-prerequisites.dto';
+import { CreateAnnouncementDto } from './dto/create-announcement.dto';
+import { ChangeCourseStatusDto } from './dto/change-course-status.dto';
 import { RejectCourseDto } from './dto/reject-course.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
@@ -22,7 +25,10 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 @ApiTags('courses')
 @Controller('courses')
 export class CoursesController {
-  constructor(private readonly coursesService: CoursesService) {}
+  constructor(
+    private readonly coursesService: CoursesService,
+    private readonly announcementsService: AnnouncementsService,
+  ) {}
 
   // -------------------------------------------------------
   // PUBLIC ROUTES — no auth needed for browsing
@@ -114,6 +120,26 @@ export class CoursesController {
     @Body() body: { txHash?: string },
   ) {
     return this.coursesService.submitForReview(id, user, body.txHash);
+  }
+
+  @Patch(':id/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Pause, republish or archive a course (owner or admin)',
+    description:
+      'PAUSED/ARCHIVED courses are removed from the catalog and search but stay ' +
+      'accessible to already-enrolled students. Only admins may restore an ARCHIVED ' +
+      'course (to PAUSED) or republish a course that was never approved.',
+  })
+  changeStatus(
+    @Param('id') id: string,
+    @CurrentUser() user: CourseActor,
+    @Body() dto: ChangeCourseStatusDto,
+  ) {
+    return this.coursesService.changeStatus(id, user, dto.status, dto.reason);
   }
 
   // --------------------------------------------------------
@@ -226,5 +252,51 @@ export class CoursesController {
     @Query() pagination: PaginationQueryDto,
   ) {
     return this.coursesService.getStudentRoster(id, user, pagination.page, pagination.limit);
+  }
+
+  // -------------------------------------------------------
+  // ANNOUNCEMENTS (issue #362)
+  // -------------------------------------------------------
+
+  @Post(':id/announcements')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Post an announcement to all enrolled students in a course',
+    description: 'Instructor or admin creates an announcement. Notifications are queued for all enrolled students.',
+  })
+  createAnnouncement(
+    @Param('id') courseId: string,
+    @CurrentUser() user: CourseActor,
+    @Body() dto: CreateAnnouncementDto,
+  ) {
+    return this.announcementsService.createAnnouncement(courseId, user, dto);
+  }
+
+  @Get(':id/announcements')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get announcements for a course',
+    description: 'Enrolled students and course owner/admin can retrieve announcements.',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  getAnnouncements(
+    @Param('id') courseId: string,
+    @CurrentUser('id') userId?: string,
+    @CurrentUser('role') userRole?: string,
+    @Query('page') page: string = '1',
+    @Query('limit') limit: string = '20',
+  ) {
+    return this.announcementsService.getAnnouncementsForCourse(
+      courseId,
+      parseInt(page, 10),
+      parseInt(limit, 10),
+      userId,
+      userRole,
+    );
   }
 }

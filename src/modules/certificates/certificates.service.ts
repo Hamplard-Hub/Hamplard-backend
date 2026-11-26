@@ -206,12 +206,31 @@ export class CertificatesService {
     return updated;
   }
 
-  async findByStudent(studentId: string) {
-    return this.prisma.certificate.findMany({
-      where: { studentId },
-      include: { course: { include: { instructor: { select: { name: true } } } } },
-      orderBy: { issuedAt: 'desc' },
-    });
+  async findByStudent(studentId: string, page = 1, limit = 20) {
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.certificate.findMany({
+        where: { studentId },
+        include: { course: { include: { instructor: { select: { name: true } } } } },
+        orderBy: { issuedAt: 'desc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.certificate.count({ where: { studentId } }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
+      },
+    };
   }
 
   /**

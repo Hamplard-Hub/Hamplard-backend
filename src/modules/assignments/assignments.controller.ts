@@ -11,6 +11,7 @@ import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { ReviewAssignmentDto } from './dto/review-assignment.dto';
 import { PendingSubmissionsQueryDto } from './dto/pending-submissions-query.dto';
 import { SubmitAssignmentDto } from './dto/submit-assignment.dto';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
 @ApiTags('assignments')
 @ApiBearerAuth()
@@ -75,9 +76,16 @@ export class AssignmentsController {
   }
 
   @Get('my/submissions')
-  @ApiOperation({ summary: 'Get all assignment submissions by the authenticated student' })
-  mySubmissions(@CurrentUser('id') studentId: string) {
-    return this.assignmentsService.findSubmissionsByStudent(studentId);
+  @ApiOperation({ summary: 'Get all assignment submissions by the authenticated student (paginated)' })
+  mySubmissions(
+    @CurrentUser('id') studentId: string,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.assignmentsService.findSubmissionsByStudent(
+      studentId,
+      pagination.page,
+      pagination.limit,
+    );
   }
 
   @Get('instructor/pending')
