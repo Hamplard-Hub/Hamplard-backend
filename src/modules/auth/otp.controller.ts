@@ -1,10 +1,13 @@
 import { Controller, Post, Get, Body, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { OtpService } from './otp.service';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
+@ApiTags('otp')
+@ApiBearerAuth()
 @Controller('otp')
 @UseGuards(JwtAuthGuard)
 export class OtpController {
@@ -17,7 +20,7 @@ export class OtpController {
   @Post('send')
   @HttpCode(HttpStatus.OK)
   async sendOtp(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser('id') userId: string,
     @Body() dto: SendOtpDto,
   ): Promise<{ message: string }> {
     await this.otpService.sendOtp(userId, dto.phoneNumber, dto.countryCode);
@@ -33,7 +36,7 @@ export class OtpController {
   @Post('verify')
   @HttpCode(HttpStatus.OK)
   async verifyOtp(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser('id') userId: string,
     @Body() dto: VerifyOtpDto,
   ): Promise<{ message: string; verified: boolean }> {
     const verified = await this.otpService.verifyOtp(userId, dto.phoneNumber, dto.otp);
@@ -48,7 +51,7 @@ export class OtpController {
    * Get phone verification status for current user
    */
   @Get('status')
-  async getStatus(@CurrentUser('sub') userId: string) {
+  async getStatus(@CurrentUser('id') userId: string) {
     return this.otpService.getVerificationStatus(userId);
   }
 }

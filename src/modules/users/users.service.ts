@@ -5,10 +5,14 @@ import { AuditAction, AuditTargetType } from '@prisma/client';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { PUBLIC_USER_SELECT, PublicUserDto } from './dto/public-user.dto';
 import { SafeUser, toSafeUser } from './user-serializer';
+import { CacheService } from '../../common/cache/cache.service';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) { }
 
   /** Issue #234 — strips the TOTP secret and recovery-code hashes from a user record. */
   toSafeUser<T extends Parameters<typeof toSafeUser>[0]>(user: T): SafeUser<T> {
@@ -55,9 +59,18 @@ export class UsersService {
     }
   }
 
-  async getInstructorStats(instructorAddress: string) {
+  /**
+   * Issue #434 — scope stats by the instructor relation (user id), not by the
+   * optional Stellar address. A missing identifier is rejected rather than
+   * silently becoming an unfiltered platform-wide query.
+   */
+  async getInstructorStats(instructorId: string) {
+    if (!instructorId) {
+      throw new BadRequestException('Instructor identifier is required');
+    }
+
     const courses = await this.prisma.course.findMany({
-      where: { instructorAddress },
+      where: { instructor: { id: instructorId } },
       include: { _count: { select: { enrollments: true } } },
     });
 
@@ -105,6 +118,8 @@ export class UsersService {
         suspensionReason: null,
       },
     });
+
+    await this.invalidateAuthState(userId, true);
 
     // Create audit log
     await this.prisma.adminAuditLog.create({
@@ -154,6 +169,8 @@ export class UsersService {
         banReason: null,
       },
     });
+
+    await this.invalidateAuthState(userId);
 
     // Create audit log
     await this.prisma.adminAuditLog.create({
@@ -228,6 +245,8 @@ export class UsersService {
       },
     });
 
+    await this.invalidateAuthState(userId, true);
+
     // Create audit log
     await this.prisma.adminAuditLog.create({
       data: {
@@ -278,6 +297,8 @@ export class UsersService {
         suspensionReason: null,
       },
     });
+
+    await this.invalidateAuthState(userId);
 
     // Create audit log
     await this.prisma.adminAuditLog.create({
@@ -356,5 +377,21 @@ export class UsersService {
       suspendedAt: user.suspendedAt,
       suspendedUntil: user.suspendedUntil,
     };
+  }
+
+  private async invalidateAuthState(userId: string, revokeCredentials = false) {
+    if (revokeCredentials) {
+      const revokedAt = new Date();
+      await this.prisma.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt },
+      });
+      await this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt },
+      });
+    }
+
+    await this.cache.del(`jwt:user:${userId}`);
   }
 }

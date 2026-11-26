@@ -4,7 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { GoogleAuth } from 'google-auth-library';
 import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, UserRole } from '@prisma/client';
 import { QueueService } from '../../common/queue/queue.service';
 import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
@@ -80,6 +80,48 @@ export class NotificationsService {
       return { ...notification, emailJobId };
     } catch (error) {
       this.logger.error(`Failed to notify user ${userId}`, error.message);
+    }
+  }
+
+  /**
+   * Issue #338 — fans a notification out to every active ADMIN user so new
+   * queue items (disputes, KYC, refunds, course reviews) are noticed promptly.
+   *
+   * Admins opt out per type through the regular preference endpoint
+   * (`PATCH /notifications/preferences/:type`): an admin with email, push and
+   * in-app all disabled for the type is skipped entirely. Partially disabled
+   * channels are honoured by notifyUser as usual.
+   *
+   * Never throws — a notification failure must not fail the business action.
+   */
+  async notifyAdmins(
+    type: NotificationType,
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+  ) {
+    try {
+      const admins = await this.prisma.user.findMany({
+        where: { role: UserRole.ADMIN, isBanned: false, deletedAt: null, deactivatedAt: null },
+        select: { id: true },
+      });
+      if (!admins.length) return [];
+
+      const adminIds = admins.map((admin) => admin.id);
+      const optedOut = await this.prisma.notificationPreference.findMany({
+        where: { userId: { in: adminIds }, type, email: false, push: false, inApp: false },
+        select: { userId: true },
+      });
+      const optedOutIds = new Set(optedOut.map((pref) => pref.userId));
+      const recipients = adminIds.filter((id) => !optedOutIds.has(id));
+
+      const results = await Promise.all(
+        recipients.map((adminId) => this.notifyUser(adminId, type, title, message, data)),
+      );
+      return results.filter(Boolean);
+    } catch (error) {
+      this.logger.error(`Failed to notify admins (${type})`, error.message);
+      return [];
     }
   }
 
@@ -571,6 +613,9 @@ export class NotificationsService {
       PAYMENT_RECEIVED: '💰',
       NEW_ENROLLMENT: '👋',
       DISPUTE_FILED: '⚠️',
+      KYC_SUBMITTED: '🪪',
+      REFUND_REQUESTED: '↩️',
+      COURSE_SUBMITTED_FOR_REVIEW: '🔍',
       DISPUTE_RESOLVED: '✅',
       KYC_APPROVED: '🪪',
       KYC_REJECTED: '❌',

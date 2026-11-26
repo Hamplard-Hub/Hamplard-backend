@@ -45,8 +45,8 @@ export class UsersController {
 
   @Get('me/instructor-stats')
   @ApiOperation({ summary: 'Get instructor revenue and enrollment stats' })
-  getInstructorStats(@CurrentUser('stellarAddress') address: string) {
-    return this.usersService.getInstructorStats(address);
+  getInstructorStats(@CurrentUser('id') instructorId: string) {
+    return this.usersService.getInstructorStats(instructorId);
   }
 
   // ============================================================

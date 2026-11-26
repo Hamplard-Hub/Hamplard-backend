@@ -5,12 +5,13 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StellarService } from '../../common/stellar/stellar.service';
-import { RefundStatus, EnrollmentStatus, UserRole, AuditAction, AuditTargetType } from '@prisma/client';
+import { RefundStatus, EnrollmentStatus, UserRole, AuditAction, AuditTargetType, NotificationType } from '@prisma/client';
 import { CreateRefundDto } from './dto/create-refund.dto';
 import { ApproveRefundDto } from './dto/approve-refund.dto';
 import { RejectRefundDto } from './dto/reject-refund.dto';
 import { ProcessRefundDto } from './dto/process-refund.dto';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { SERVER_ANALYTICS_EVENTS } from '../analytics/dto/track-analytics-event.dto';
 
 /** Refund requests must be filed within this many days of enrollment. */
@@ -24,6 +25,7 @@ export class RefundsService {
     private readonly prisma: PrismaService,
     private readonly stellar: StellarService,
     private readonly analytics: AnalyticsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ----------------------------------------------------------
@@ -91,6 +93,14 @@ export class RefundsService {
     });
 
     this.logger.log(`Refund requested: ${refund.id} for enrollment ${dto.enrollmentId}`);
+
+    // Issue #338 — surface the request in the admin refund queue
+    await this.notifications.notifyAdmins(
+      NotificationType.REFUND_REQUESTED,
+      'New refund request',
+      `A student requested a refund of ${requestedAmount} USDC`,
+      { refundId: refund.id, enrollmentId: dto.enrollmentId, studentId, requestedAmount },
+    );
     return refund;
   }
 
@@ -179,6 +189,7 @@ export class RefundsService {
       );
     }
 
+    const reviewedAt = new Date();
     const updated = await this.prisma.refund.update({
       where: { id },
       data: {
@@ -186,6 +197,8 @@ export class RefundsService {
         approvedAmount,
         isPartial: approvedAmount < amountPaid,
         adminNote: dto.adminNote,
+        reviewedById: adminId,
+        reviewedAt,
       },
     });
 
@@ -208,14 +221,28 @@ export class RefundsService {
       },
     });
 
+    await this.notifications.notifyUser(
+      refund.studentId,
+      NotificationType.REFUND_APPROVED,
+      'Refund request approved',
+      `Your refund request was approved for ${approvedAmount} USDC.${dto.adminNote ? ` Admin note: ${dto.adminNote}` : ''}`,
+      { refundId: id, status: RefundStatus.APPROVED, approvedAmount, adminNote: dto.adminNote ?? null },
+    );
+
     return updated;
   }
 
   async reject(id: string, adminId: string, dto: RejectRefundDto, ipAddress?: string) {
     const refund = await this.getPendingOrThrow(id);
+    const reviewedAt = new Date();
     const updated = await this.prisma.refund.update({
       where: { id },
-      data: { status: RefundStatus.REJECTED, adminNote: dto.reason },
+      data: {
+        status: RefundStatus.REJECTED,
+        adminNote: dto.reason,
+        reviewedById: adminId,
+        reviewedAt,
+      },
     });
 
     // Audit log
@@ -234,6 +261,14 @@ export class RefundsService {
         ipAddress,
       },
     });
+
+    await this.notifications.notifyUser(
+      refund.studentId,
+      NotificationType.REFUND_REJECTED,
+      'Refund request rejected',
+      `Your refund request was rejected. Admin note: ${dto.reason}`,
+      { refundId: id, status: RefundStatus.REJECTED, adminNote: dto.reason },
+    );
 
     return updated;
   }

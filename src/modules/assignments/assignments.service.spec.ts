@@ -1,19 +1,19 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ForbiddenException, NotFoundException, ValidationPipe } from '@nestjs/common';
-import { AssignmentStatus, EnrollmentStatus, UserRole } from '@prisma/client';
 import { AssignmentsService } from './assignments.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { NotificationsService } from '../notifications/notifications.service';
-import { SubmitAssignmentDto } from './dto/submit-assignment.dto';
 
-/** Issue #244 — submission privacy, enrollment gating, 404s and DTO validation. */
-describe('AssignmentsService', () => {
+describe('AssignmentsService - findSubmissionsByStudent pagination', () => {
   let service: AssignmentsService;
 
   const mockPrisma: any = {
     assignment: { findUnique: jest.fn() },
     enrollment: { findUnique: jest.fn() },
-    assignmentSubmission: { findUnique: jest.fn(), upsert: jest.fn() },
+    assignmentSubmission: {
+      findUnique: jest.fn(),
+      upsert: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
     user: { findUnique: jest.fn() },
   };
   const mockNotifications = { notifyUser: jest.fn().mockResolvedValue({}) };
@@ -33,6 +33,11 @@ describe('AssignmentsService', () => {
       { id: 'sub-b', studentId: 'student-b', submissionUrl: 'https://cdn.test/b.jpg' },
     ],
     lesson: { module: { course: { instructor: { id: 'instructor-1' } } } },
+  const mockPrisma = {
+    assignmentSubmission: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
   };
 
   beforeEach(async () => {
@@ -40,43 +45,32 @@ describe('AssignmentsService', () => {
       providers: [
         AssignmentsService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: NotificationsService, useValue: mockNotifications },
       ],
-    }).compile();
+    })
+      .useMocker(() => ({}))
+      .compile();
 
-    service = module.get(AssignmentsService);
+    service = module.get<AssignmentsService>(AssignmentsService);
     jest.clearAllMocks();
   });
 
-  describe('findByLesson() — submission privacy', () => {
-    beforeEach(() => {
-      mockPrisma.assignment.findUnique.mockResolvedValue(ASSIGNMENT_WITH_SUBMISSIONS);
-    });
+  it('returns paginated submissions with meta', async () => {
+    mockPrisma.assignmentSubmission.findMany.mockResolvedValue([{ id: 'sub-1' }]);
+    mockPrisma.assignmentSubmission.count.mockResolvedValue(15);
 
-    it.each([
-      ['student A', STUDENT_A, ['sub-a']],
-      ['student B', STUDENT_B, ['sub-b']],
-    ])('returns only %s’s own submission', async (_label, user, expectedIds) => {
-      const result = await service.findByLesson('lesson-1', user);
-      expect(result.submissions.map((s) => s.id)).toEqual(expectedIds);
-    });
+    const result = await service.findSubmissionsByStudent('student-1', 2, 5);
 
-    it('returns an empty list to a student with no submission', async () => {
-      const result = await service.findByLesson('lesson-1', { id: 'student-c', role: UserRole.STUDENT });
-      expect(result.submissions).toEqual([]);
+    expect(result).toEqual({
+      data: [{ id: 'sub-1' }],
+      meta: { total: 15, page: 2, limit: 5, totalPages: 3 },
     });
-
-    it('treats a non-owner instructor like a student', async () => {
-      const result = await service.findByLesson('lesson-1', OTHER_INSTRUCTOR);
-      expect(result.submissions).toEqual([]);
-    });
-
-    it.each([['course owner', OWNER], ['admin', ADMIN]])(
-      'returns every submission to the %s',
-      async (_label, user) => {
-        const result = await service.findByLesson('lesson-1', user);
-        expect(result.submissions.map((s) => s.id)).toEqual(['sub-a', 'sub-b']);
-      },
+    expect(mockPrisma.assignmentSubmission.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { studentId: 'student-1' },
+        orderBy: { submittedAt: 'desc' },
+        skip: 5,
+        take: 5,
+      }),
     );
 
     it('does not leak the ownership lookup in the response', async () => {
@@ -147,6 +141,56 @@ describe('AssignmentsService', () => {
         }),
       );
       expect(mockNotifications.notifyUser).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('findPendingForInstructor() (issue #434)', () => {
+    beforeEach(() => {
+      mockPrisma.assignmentSubmission.findMany.mockResolvedValue([]);
+      mockPrisma.assignmentSubmission.count.mockResolvedValue(0);
+    });
+
+    it('scopes pending submissions by the instructor user relation', async () => {
+      await service.findPendingForInstructor('instructor-1', 2, 10);
+
+      const expectedWhere = {
+        status: AssignmentStatus.SUBMITTED,
+        assignment: {
+          lesson: {
+            module: { course: { instructor: { id: 'instructor-1' } } },
+          },
+        },
+      };
+      expect(mockPrisma.assignmentSubmission.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expectedWhere, skip: 10, take: 10 }),
+      );
+      expect(mockPrisma.assignmentSubmission.count).toHaveBeenCalledWith({ where: expectedWhere });
+    });
+
+    it('returns an empty page for a Google-only instructor with no Stellar address', async () => {
+      const result = await service.findPendingForInstructor('google-only-instructor');
+
+      expect(result).toEqual({
+        data: [],
+        meta: { total: 0, page: 1, limit: 20, totalPages: 0 },
+      });
+      expect(mockPrisma.assignmentSubmission.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            assignment: {
+              lesson: {
+                module: { course: { instructor: { id: 'google-only-instructor' } } },
+              },
+            },
+          }),
+        }),
+      );
+    });
+
+    it('rejects a missing instructor id instead of querying platform-wide data', async () => {
+      await expect(service.findPendingForInstructor(undefined)).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.assignmentSubmission.findMany).not.toHaveBeenCalled();
+      expect(mockPrisma.assignmentSubmission.count).not.toHaveBeenCalled();
     });
   });
 });

@@ -209,6 +209,22 @@ export class DripScheduleService {
   }
 
   /**
+   * Re-sync unlock schedules for every active enrollment of a course.
+   * Called after lessons/modules are deleted or reordered (#330) so
+   * sequential pacing follows the new content order.
+   */
+  async resyncCourseSchedules(courseId: string) {
+    const enrollments = await this.prisma.enrollment.findMany({
+      where: { courseId, status: 'ACTIVE' },
+      select: { id: true },
+    });
+
+    for (const enrollment of enrollments) {
+      await this.calculateAndSyncUnlockSchedule(enrollment.id);
+    }
+  }
+
+  /**
    * Validates if a student has access to a lesson based on drip schedule and preview status.
    */
   async validateLessonAccess(studentId: string, lessonId: string) {

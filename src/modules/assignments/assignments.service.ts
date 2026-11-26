@@ -1,8 +1,8 @@
 // assignments.service.ts
 import {
-  Injectable, NotFoundException, ForbiddenException, Logger,
+  Injectable, NotFoundException, ForbiddenException, BadRequestException, Logger,
 } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AssignmentStatus, EnrollmentStatus, NotificationType } from '@prisma/client';
@@ -249,34 +249,65 @@ export class AssignmentsService {
     return updated;
   }
 
-  async findSubmissionsByStudent(studentId: string) {
-    return this.prisma.assignmentSubmission.findMany({
-      where: { studentId },
-      include: { assignment: { include: { lesson: true } } },
-      orderBy: { submittedAt: 'desc' },
-    });
+  async findSubmissionsByStudent(studentId: string, page = 1, limit = 20) {
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.assignmentSubmission.findMany({
+        where: { studentId },
+        include: { assignment: { include: { lesson: true } } },
+        orderBy: { submittedAt: 'desc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.assignmentSubmission.count({ where: { studentId } }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
+      },
+    };
   }
 
+  /**
+   * Issue #434 — scope by the instructor relation (user id), never by the
+   * optional Stellar address. Google-only users have no address, and a missing
+   * address must never turn into an unfiltered platform-wide query.
+   */
   async findPendingForInstructor(
-    instructorAddress: string,
+    instructorId: string,
     page?: number,
     limit?: number,
   ) {
+    if (!instructorId) {
+      throw new BadRequestException('Instructor identifier is required');
+    }
+
     const pageNum = Math.max(1, page ?? 1);
     const pageLimit = Math.min(100, Math.max(1, limit ?? 20));
     const skip = (pageNum - 1) * pageLimit;
+    const instructorScope: Prisma.AssignmentSubmissionWhereInput = {
+      assignment: {
+        lesson: {
+          module: {
+            course: { instructor: { id: instructorId } },
+          },
+        },
+      },
+    };
 
     const [data, total] = await Promise.all([
       this.prisma.assignmentSubmission.findMany({
         where: {
           status: AssignmentStatus.SUBMITTED,
-          assignment: {
-            lesson: {
-              module: {
-                course: { instructorAddress },
-              },
-            },
-          },
+          ...instructorScope,
         },
         include: {
           assignment: { include: { lesson: true } },
@@ -289,13 +320,7 @@ export class AssignmentsService {
       this.prisma.assignmentSubmission.count({
         where: {
           status: AssignmentStatus.SUBMITTED,
-          assignment: {
-            lesson: {
-              module: {
-                course: { instructorAddress },
-              },
-            },
-          },
+          ...instructorScope,
         },
       }),
     ]);

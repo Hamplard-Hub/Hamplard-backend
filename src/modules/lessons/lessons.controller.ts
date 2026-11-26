@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Body, Param, UseGuards, HttpCode, HttpStatus,
+  Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { LessonsService } from './lessons.service';
@@ -7,11 +7,14 @@ import { DripScheduleService } from './drip-schedule.service';
 import { ConfigureCourseDripDto } from './dto/configure-course-drip.dto';
 import { ConfigureLessonDripDto } from './dto/configure-lesson-drip.dto';
 import { OverrideInstructorDripDto } from './dto/override-instructor-drip.dto';
+import { UpdateLessonThumbnailDto } from './dto/update-lesson-thumbnail.dto';
 import { CreateModuleDto } from './dto/create-module.dto';
 import { CreateLessonDto } from './dto/create-lesson.dto';
-import { UpdateLessonThumbnailDto } from './dto/update-lesson-thumbnail.dto';
 import { CompleteLessonDto } from './dto/complete-lesson.dto';
 import { RecordLessonProgressDto } from './dto/record-lesson-progress.dto';
+import { UpdateModuleDto } from './dto/update-module.dto';
+import { UpdateLessonDto } from './dto/update-lesson.dto';
+import { ReorderCourseContentDto } from './dto/reorder-course-content.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -28,12 +31,17 @@ export class LessonsController {
   ) {}
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get lesson content (validating drip unlock schedule)' })
+  @ApiOperation({
+    summary: 'Get lesson content (validating drip unlock schedule)',
+    description:
+      'The returned videoUrl is a short-lived signed URL (see videoUrlExpiresAt); ' +
+      're-fetch the lesson to get a fresh one once it expires.',
+  })
   async findOne(@Param('id') id: string, @CurrentUser('id') userId: string) {
     if (userId) {
       await this.dripScheduleService.validateLessonAccess(userId, id);
     }
-    return this.lessonsService.findLesson(id);
+    return this.lessonsService.findLessonForViewer(id);
   }
 
   @Post('modules')
@@ -60,6 +68,69 @@ export class LessonsController {
     return this.lessonsService.createLesson(dto.moduleId, dto, user);
   }
 
+  @Patch('modules/:moduleId')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rename or reposition a course module' })
+  updateModule(
+    @Param('moduleId') moduleId: string,
+    @Body() dto: UpdateModuleDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.lessonsService.updateModule(moduleId, dto, user);
+  }
+
+  @Delete('modules/:moduleId')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a course module and all of its lessons' })
+  deleteModule(
+    @Param('moduleId') moduleId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.lessonsService.deleteModule(moduleId, user);
+  }
+
+  @Patch('courses/:courseId/reorder')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk reorder modules and lessons of a course' })
+  reorderCourseContent(
+    @Param('courseId') courseId: string,
+    @Body() dto: ReorderCourseContentDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.lessonsService.reorderCourseContent(courseId, dto, user);
+  }
+
+  @Patch(':id')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Edit a lesson' })
+  updateLesson(
+    @Param('id') lessonId: string,
+    @Body() dto: UpdateLessonDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.lessonsService.updateLesson(lessonId, dto, user);
+  }
+
+  @Delete(':id')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a lesson' })
+  deleteLesson(
+    @Param('id') lessonId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.lessonsService.deleteLesson(lessonId, user);
+  }
+
   @Patch(':id/thumbnail')
   @UseGuards(RolesGuard)
   @Roles(UserRole.INSTRUCTOR, UserRole.ADMIN)
@@ -68,8 +139,13 @@ export class LessonsController {
   updateThumbnail(
     @Param('id') lessonId: string,
     @Body() dto: UpdateLessonThumbnailDto,
+    @CurrentUser() user: any,
   ) {
-    return this.lessonsService.updateThumbnailUrl(lessonId, dto.thumbnailUrl);
+    return this.lessonsService.updateThumbnailUrl(
+      lessonId,
+      dto.thumbnailUrl,
+      user,
+    );
   }
 
   @Post(':id/complete')

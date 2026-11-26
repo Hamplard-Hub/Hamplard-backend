@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -15,6 +16,7 @@ import { SessionsService, DeviceMetadata } from './sessions.service';
 import { toSafeUser } from '../users/user-serializer';
 import { CacheService } from '../../common/cache/cache.service';
 import { TwoFactorService } from './two-factor.service';
+import { issueSessionedTokenPair } from './sessioned-token';
 
 export interface GoogleIdentity {
   googleId: string;
@@ -79,10 +81,7 @@ export class GoogleAuthService {
 
   async consumeOAuthState(state: string): Promise<boolean> {
     const key = `google:oauth:state:${state}`;
-    const exists = await this.cache.get<string>(key);
-    if (!exists) return false;
-    await this.cache.del(key);
-    return true;
+    return (await this.cache.getDel<string>(key)) !== null;
   }
 
   // ------------------------------------------------------------------
@@ -101,10 +100,7 @@ export class GoogleAuthService {
 
   async consumeAuthCode(code: string): Promise<object | null> {
     const key = `google:auth:code:${code}`;
-    const tokens = await this.cache.get<object>(key);
-    if (!tokens) return null;
-    await this.cache.del(key);
-    return tokens;
+    return await this.cache.getDel<object>(key);
   }
 
   /** Returns the FRONTEND_URL to redirect to after a successful OAuth callback. */
@@ -182,6 +178,19 @@ export class GoogleAuthService {
       throw new UnauthorizedException('Account has been deleted');
     }
 
+    if (existing?.isBanned) {
+      await this.refreshTokens.revokeUserFamilies(existing.id);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (existing?.isSuspended) {
+      const suspendedUntil = existing.suspendedUntil ? new Date(existing.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.refreshTokens.revokeUserFamilies(existing.id);
+        throw new ForbiddenException('User is suspended');
+      }
+    }
+
     // ---- Enforce 2FA for Google logins on 2FA-enabled accounts ----
     if (existing?.twoFactorEnabled) {
       // We cannot interactively prompt for a TOTP here during the OAuth redirect
@@ -197,37 +206,31 @@ export class GoogleAuthService {
     try {
       const user = existing
         ? await this.prisma.user.update({
-            where: { id: existing.id },
-            data: {
-              googleId: identity.googleId,
-              email: existing.email ?? identity.email,
-              name: existing.name ?? identity.name,
-              avatarUrl: existing.avatarUrl ?? identity.avatarUrl,
-            },
-          })
+          where: { id: existing.id },
+          data: {
+            googleId: identity.googleId,
+            email: existing.email ?? identity.email,
+            name: existing.name ?? identity.name,
+            avatarUrl: existing.avatarUrl ?? identity.avatarUrl,
+          },
+        })
         : await this.prisma.user.create({
-            data: {
-              googleId: identity.googleId,
-              email: identity.email,
-              name: identity.name,
-              avatarUrl: identity.avatarUrl,
-              role: 'STUDENT',
-            },
-          });
-
-      const tokens = await this.refreshTokens.issueTokenPair(user);
-      const decoded = this.jwt.decode(tokens.accessToken) as { exp?: number; jti?: string } | null;
-      if (decoded?.jti) {
-        const expiresAt = decoded.exp
-          ? new Date(decoded.exp * 1000)
-          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        await this.sessions.createSession({
-          userId: user.id,
-          jti: decoded.jti,
-          expiresAt,
-          meta: deviceMeta,
+          data: {
+            googleId: identity.googleId,
+            email: identity.email,
+            name: identity.name,
+            avatarUrl: identity.avatarUrl,
+            role: 'STUDENT',
+          },
         });
-      }
+
+      const tokens = await issueSessionedTokenPair(
+        this.refreshTokens,
+        this.jwt,
+        this.sessions,
+        user,
+        deviceMeta,
+      );
 
       // Issue #234 — never return the TOTP secret or recovery-code hashes
       return { ...tokens, user: toSafeUser(user) };
@@ -274,6 +277,19 @@ export class GoogleAuthService {
       throw new UnauthorizedException('Account has been deleted');
     }
 
+    if (existing?.isBanned) {
+      await this.refreshTokens.revokeUserFamilies(existing.id);
+      throw new ForbiddenException('User is banned');
+    }
+
+    if (existing?.isSuspended) {
+      const suspendedUntil = existing.suspendedUntil ? new Date(existing.suspendedUntil) : null;
+      if (!suspendedUntil || suspendedUntil > new Date()) {
+        await this.refreshTokens.revokeUserFamilies(existing.id);
+        throw new ForbiddenException('User is suspended');
+      }
+    }
+
     if (!existing?.twoFactorEnabled) {
       // Account does not have 2FA — fall through to the normal login path.
       return this.login(identity, deviceMeta);
@@ -296,19 +312,13 @@ export class GoogleAuthService {
         },
       });
 
-      const tokens = await this.refreshTokens.issueTokenPair(user);
-      const decoded = this.jwt.decode(tokens.accessToken) as { exp?: number; jti?: string } | null;
-      if (decoded?.jti) {
-        const expiresAt = decoded.exp
-          ? new Date(decoded.exp * 1000)
-          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        await this.sessions.createSession({
-          userId: user.id,
-          jti: decoded.jti,
-          expiresAt,
-          meta: deviceMeta,
-        });
-      }
+      const tokens = await issueSessionedTokenPair(
+        this.refreshTokens,
+        this.jwt,
+        this.sessions,
+        user,
+        deviceMeta,
+      );
 
       return { ...tokens, user: toSafeUser(user) };
     } catch (error) {

@@ -10,6 +10,8 @@ import { TopCoursesController } from './top-courses.controller';
 import { TopCoursesService } from './top-courses.service';
 import { InstructorReportController } from './instructor-report.controller';
 import { InstructorReportService } from './instructor-report.service';
+import { InstructorDashboardController } from './instructor-dashboard.controller';
+import { InstructorDashboardService } from './instructor-dashboard.service';
 
 @Module({
   controllers: [
@@ -18,6 +20,7 @@ import { InstructorReportService } from './instructor-report.service';
     RevenueReportController,
     TopCoursesController,
     InstructorReportController,
+    InstructorDashboardController,
   ],
   providers: [
     ReportsService,
@@ -25,6 +28,7 @@ import { InstructorReportService } from './instructor-report.service';
     RevenueReportService,
     TopCoursesService,
     InstructorReportService,
+    InstructorDashboardService,
   ],
   exports: [
     ReportsService,
@@ -32,6 +36,7 @@ import { InstructorReportService } from './instructor-report.service';
     RevenueReportService,
     TopCoursesService,
     InstructorReportService,
+    InstructorDashboardService,
   ],
 })
 export class ReportsModule {}

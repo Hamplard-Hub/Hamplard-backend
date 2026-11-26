@@ -6,6 +6,7 @@ import { DripScheduleService } from './drip-schedule.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { EnrollmentsModule } from '../enrollments/enrollments.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { UploadsModule } from '../uploads/uploads.module';
 import { CertificatesModule } from '../certificates/certificates.module';
 import { QueueModule } from '../../common/queue/queue.module';
 
@@ -14,6 +15,7 @@ import { QueueModule } from '../../common/queue/queue.module';
     ScheduleModule.forRoot(),
     NotificationsModule,
     AnalyticsModule,
+    UploadsModule,
     forwardRef(() => EnrollmentsModule),
     CertificatesModule,
     QueueModule,

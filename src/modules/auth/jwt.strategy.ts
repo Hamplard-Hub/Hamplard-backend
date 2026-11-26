@@ -1,30 +1,18 @@
-import { Injectable, UnauthorizedException, ForbiddenException, Optional } from '@nestjs/common';
+import { Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
+import { AuthUserCacheService } from '../../common/auth-user/auth-user-cache.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { CacheService } from '../../common/cache/cache.service';
-
-interface UserCacheEntry {
-  id: string;
-  stellarAddress: string | null;
-  googleId: string | null;
-  role: string;
-  isBanned: boolean;
-  isSuspended: boolean;
-  suspendedUntil: string | null;
-  deactivatedAt: string | null;
-  deletedAt: string | null;
-}
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  private readonly inMemoryCache = new Map<string, { data: UserCacheEntry; expiresAt: number }>();
-
   constructor(
     config: ConfigService,
-    private readonly prisma: PrismaService,
-    @Optional() private readonly cacheService?: CacheService,
+    // Issue #433 — the throttle guard shares this cached lookup so a role
+    // change is reflected in both authentication and the rate-limit bucket.
+    private readonly users: AuthUserCacheService,
+    @Optional() private readonly prisma?: PrismaService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -43,74 +31,39 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Invalid token payload');
     }
 
-    let user: UserCacheEntry | null = null;
-    const cacheKey = `jwt:user:${userId}`;
-
-    if (this.cacheService) {
-      user = await this.cacheService.get<UserCacheEntry>(cacheKey);
-    } else {
-      const cached = this.inMemoryCache.get(userId);
-      if (cached && cached.expiresAt > Date.now()) {
-        user = cached.data;
-      }
+    const user = await this.users.getUser(userId);
+    if (!user) {
+      throw new UnauthorizedException('User no longer exists');
     }
 
-    if (!user) {
-      const dbUser = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          stellarAddress: true,
-          googleId: true,
-          role: true,
-          isBanned: true,
-          isSuspended: true,
-          suspendedUntil: true,
-          deactivatedAt: true,
-          deletedAt: true,
-        },
+    // Issues #74/#75 — deleted accounts are dead; suspended/banned ones are
+    // rejected here. The guard uses the same assertion for its bucket.
+    this.users.assertActive(user);
+
+    // Issues #69/#418 — session revocation/expiry is enforced here so it is
+    // shared by every guard built on the 'jwt' strategy. JwtAuthGuard rejects
+    // the request; OptionalJwtAuthGuard turns a revoked/expired token into an
+    // anonymous caller (its handleRequest swallows the error). Tokens issued
+    // before session tracking carry no `jti` and are let through; a `jti` with
+    // no matching session row is also let through.
+    const jti = payload.jti;
+    if (this.prisma && jti) {
+      const session = await this.prisma.session.findUnique({
+        where: { jti },
+        select: { revokedAt: true, expiresAt: true },
       });
 
-      if (!dbUser) {
-        throw new UnauthorizedException('User no longer exists');
-      }
+      if (session) {
+        if (session.revokedAt) {
+          throw new UnauthorizedException('Session has been revoked');
+        }
+        if (session.expiresAt <= new Date()) {
+          throw new UnauthorizedException('Session has expired');
+        }
 
-      user = {
-        id: dbUser.id,
-        stellarAddress: dbUser.stellarAddress,
-        googleId: dbUser.googleId,
-        role: dbUser.role,
-        isBanned: dbUser.isBanned,
-        isSuspended: dbUser.isSuspended,
-        suspendedUntil: dbUser.suspendedUntil ? dbUser.suspendedUntil.toISOString() : null,
-        deactivatedAt: dbUser.deactivatedAt ? dbUser.deactivatedAt.toISOString() : null,
-        deletedAt: dbUser.deletedAt ? dbUser.deletedAt.toISOString() : null,
-      };
-
-      if (this.cacheService) {
-        await this.cacheService.set(cacheKey, user, 30);
-      } else {
-        this.inMemoryCache.set(userId, {
-          data: user,
-          expiresAt: Date.now() + 30000,
-        });
-      }
-    }
-
-    // Issues #74/#75 — deleted accounts are dead; deactivated ones are flagged
-    // so JwtAuthGuard can restrict them to the reactivation route.
-    if (user.deletedAt) {
-      throw new UnauthorizedException('Account has been deleted');
-    }
-
-    if (user.isBanned) {
-      throw new ForbiddenException('User is banned');
-    }
-
-    if (user.isSuspended) {
-      const suspendedUntil = user.suspendedUntil ? new Date(user.suspendedUntil) : null;
-      if (!suspendedUntil || suspendedUntil > new Date()) {
-        throw new ForbiddenException('User is suspended');
+        this.prisma.session
+          .update({ where: { jti }, data: { lastActiveAt: new Date() } })
+          .catch(() => undefined);
       }
     }
 
@@ -122,8 +75,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       isBanned: user.isBanned,
       isSuspended: user.isSuspended,
       isDeactivated: Boolean(user.deactivatedAt),
-      jti: payload.jti,
+      jti,
     };
   }
 }
-

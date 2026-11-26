@@ -1,5 +1,10 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -222,6 +227,63 @@ describe('EngagementReport (Issue #64)', () => {
       expect(report.summary.lessons.completionRate).toBe(0);
       expect(report.summary.inactivity.inactiveStudents).toBe(0);
       expect(mockPrisma.lessonProgress.groupBy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('caller scoping (issue #435)', () => {
+    const instructor = { id: 'instructor-1', role: UserRole.INSTRUCTOR };
+    const admin = { id: 'admin-1', role: UserRole.ADMIN };
+
+    it('forbids an instructor from requesting the platform-wide report', async () => {
+      await expect(
+        service.getReport(
+          query({ scope: EngagementScope.PLATFORM }),
+          instructor,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.enrollment.findMany).not.toHaveBeenCalled();
+    });
+
+    it('forbids an instructor from requesting another instructor course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue({
+        id: 'course-1',
+        instructorAddress: 'GOTHER',
+        instructor: { id: 'other-instructor' },
+      });
+
+      await expect(
+        service.getReport(
+          query({ scope: EngagementScope.COURSE, courseId: 'course-1' }),
+          instructor,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.enrollment.findMany).not.toHaveBeenCalled();
+    });
+
+    it('allows an instructor to request their own course', async () => {
+      mockPrisma.course.findUnique.mockResolvedValue({
+        id: 'course-1',
+        instructorAddress: 'GINSTRUCTOR1',
+        instructor: { id: 'instructor-1' },
+      });
+
+      const report = await service.getReport(
+        query({ scope: EngagementScope.COURSE, courseId: 'course-1' }),
+        instructor,
+      );
+
+      expect(report.scope).toBe(EngagementScope.COURSE);
+      expect(mockPrisma.enrollment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ courseId: 'course-1' }) }),
+      );
+    });
+
+    it('allows an admin to request platform scope', async () => {
+      const report = await service.getReport(
+        query({ scope: EngagementScope.PLATFORM }),
+        admin,
+      );
+      expect(report.scope).toBe(EngagementScope.PLATFORM);
     });
   });
 });

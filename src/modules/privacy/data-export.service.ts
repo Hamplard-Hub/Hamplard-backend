@@ -222,23 +222,42 @@ export class DataExportService {
   }
 
   /**
-   * List every export request made by the authenticated user, newest first.
+   * List export requests made by the authenticated user, newest first (paginated).
    */
-  async listMyExports(userId: string) {
-    return this.prisma.dataExportJob.findMany({
-      where: { userId },
-      orderBy: { requestedAt: 'desc' },
-      select: {
-        id: true,
-        status: true,
-        errorMessage: true,
-        requestedAt: true,
-        completedAt: true,
-        expiresAt: true,
-        downloadCount: true,
-        fileSizeBytes: true,
+  async listMyExports(userId: string, page = 1, limit = 20) {
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.dataExportJob.findMany({
+        where: { userId },
+        orderBy: { requestedAt: 'desc' },
+        skip,
+        take: pageLimit,
+        select: {
+          id: true,
+          status: true,
+          errorMessage: true,
+          requestedAt: true,
+          completedAt: true,
+          expiresAt: true,
+          downloadCount: true,
+          fileSizeBytes: true,
+        },
+      }),
+      this.prisma.dataExportJob.count({ where: { userId } }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
       },
-    });
+    };
   }
 
   // ----------------------------------------------------------

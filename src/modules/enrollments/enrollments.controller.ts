@@ -8,8 +8,8 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { AdminSearchEnrollmentsDto } from './dto/admin-search-enrollments.dto';
+import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 
 @ApiTags('enrollments')
 @ApiBearerAuth()
@@ -24,16 +24,19 @@ export class EnrollmentsController {
    *
    * Issue #403: amountPaid is no longer accepted from the request body.
    * It is verified from the on-chain transaction instead.
+   *
+   * Issue #333: quoteId (from POST /checkout/quote) is required; the on-chain
+   * amount must match the quote total.
    */
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Register on-chain enrollment in the DB' })
+  @ApiOperation({ summary: 'Register on-chain enrollment in the DB (requires a checkout quote)' })
   create(
     @CurrentUser('id') studentId: string,
-    @Body() dto: CreateEnrollmentDto,
+    @Body() body: CreateEnrollmentDto,
   ) {
     return this.enrollmentsService.create(
-      studentId, dto.courseId, dto.txHash,
+      studentId, body.courseId, body.txHash, body.quoteId,
     );
   }
 

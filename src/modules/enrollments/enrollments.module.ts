@@ -11,6 +11,7 @@ import { InvoicesModule } from '../invoices/invoices.module';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { LessonsModule } from '../lessons/lessons.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { FeeCalculatorModule } from '../billing/fee-calculator.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     NotificationsModule,
     InvoicesModule,
     ReferralsModule,
+    FeeCalculatorModule,
     forwardRef(() => LessonsModule),
   ],
   controllers: [EnrollmentsController, RefundsController, FraudController],
