@@ -9,6 +9,7 @@ import { CreateBundleDto } from './dto/create-bundle.dto';
 import { EnrollBundleDto } from './dto/enroll-bundle.dto';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { FraudCheckResult } from '../enrollments/fraud-detection.service';
+import { buildPricingSnapshot } from '../enrollments/pricing-snapshot';
 
 @Injectable()
 export class BundlesService {
@@ -185,6 +186,7 @@ export class BundlesService {
               courseId: course.id,
               amountPaid: allocated,
               txHash: dto.txHash,
+              ...buildPricingSnapshot(course, allocated, 'BUNDLE'),
             }],
             skipDuplicates: true,
           });

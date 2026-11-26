@@ -28,6 +28,7 @@ describe('RefundsService server analytics', () => {
   };
   const stellar = { getTransactionStatus: jest.fn() };
   const analytics = { trackEvent: jest.fn() };
+  const notifications = { notifyAdmins: jest.fn().mockResolvedValue([]) };
   const notifications = { notifyUser: jest.fn() };
   let service: RefundsService;
 

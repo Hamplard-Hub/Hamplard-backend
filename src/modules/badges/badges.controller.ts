@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -12,6 +13,7 @@ import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Min } from 'class-valid
 import { BadgeRequirementType, UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Roles, RolesGuard } from '../../common/guards/roles.guard';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { BadgesService, CreateBadgeInput, UpdateBadgeInput } from './badges.service';
 
 class CreateBadgeDto implements CreateBadgeInput {
@@ -83,9 +85,9 @@ export class BadgesController {
   constructor(private readonly badgesService: BadgesService) {}
 
   @Get('catalog')
-  @ApiOperation({ summary: 'List the configured badge catalog' })
-  getCatalog() {
-    return this.badgesService.getCatalog();
+  @ApiOperation({ summary: 'List the configured badge catalog (paginated)' })
+  getCatalog(@Query() pagination: PaginationQueryDto) {
+    return this.badgesService.getCatalog(pagination.page, pagination.limit);
   }
 
   @Get('catalog/active')
@@ -163,8 +165,29 @@ export class BadgesService {
     return this.prisma.badge.create({ data: input });
   }
 
-  getCatalog() {
-    return this.prisma.badge.findMany({ orderBy: { createdAt: 'asc' } });
+  async getCatalog(page = 1, limit = 20) {
+    const pageNum = Math.max(1, page);
+    const pageLimit = Math.min(100, Math.max(1, limit));
+    const skip = (pageNum - 1) * pageLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.badge.findMany({
+        orderBy: { createdAt: 'asc' },
+        skip,
+        take: pageLimit,
+      }),
+      this.prisma.badge.count(),
+    ]);
+
+    return {
+      data,
+      meta: {
+        total,
+        page: pageNum,
+        limit: pageLimit,
+        totalPages: Math.ceil(total / pageLimit),
+      },
+    };
   }
 
   getActiveBadges() {
@@ -185,7 +208,7 @@ export class BadgesService {
       ),
     );
 
-    return this.getCatalog();
+    return this.prisma.badge.findMany({ orderBy: { createdAt: 'asc' } });
   }
 
   async updateBadge(id: string, input: UpdateBadgeInput) {

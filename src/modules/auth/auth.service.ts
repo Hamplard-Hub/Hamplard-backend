@@ -245,7 +245,12 @@ export class AuthService {
 
   async refresh(refreshToken: string, deviceMeta?: DeviceMetadata): Promise<TokenPair> {
     const tokens = await this.refreshTokens.rotate(refreshToken);
-    await trackAccessTokenSession(this.jwt, this.sessions, tokens.accessToken, deviceMeta);
+    let familyId = (tokens as any).familyId;
+    if (!familyId && tokens.refreshToken) {
+      const decodedRefresh = this.jwt.decode(tokens.refreshToken) as { familyId?: string } | null;
+      familyId = decodedRefresh?.familyId;
+    }
+    await trackAccessTokenSession(this.jwt, this.sessions, tokens.accessToken, deviceMeta, familyId);
     return tokens;
   }
 

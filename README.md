@@ -901,6 +901,8 @@ docker compose up --build
 docker compose up -d
 ```
 
+> **Environment file loading order:** `ConfigModule` loads `['.env.local', '.env']` — values in `.env.local` override `.env` for local development. Both `.env` and `.env*.local` are gitignored and must never be committed.
+
 `docker compose up` automatically runs database migrations on startup. To populate demo seed data, run:
 
 ```bash

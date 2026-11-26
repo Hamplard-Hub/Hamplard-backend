@@ -30,6 +30,13 @@ export enum LogLevel {
   Silent = 'silent',
 }
 
+export enum StellarNetwork {
+  Testnet = 'testnet',
+  Mainnet = 'mainnet',
+  Futurenet = 'futurenet',
+  Standalone = 'standalone',
+}
+
 export class EnvironmentVariables {
   // Server
   @IsEnum(Environment)
@@ -110,13 +117,13 @@ export class EnvironmentVariables {
   GOOGLE_CALLBACK_URL: string = 'http://localhost:3000/api/v1/auth/google/callback';
 
   // Stellar
-  @IsString()
+  @IsEnum(StellarNetwork)
   @IsOptional()
-  STELLAR_NETWORK: string = 'testnet';
+  STELLAR_NETWORK: StellarNetwork = StellarNetwork.Testnet;
 
   @IsString()
   @IsOptional()
-  STELLAR_RPC_URL: string = 'https://soroban-testnet.stellar.org';
+  STELLAR_RPC_URL?: string;
 
   @IsString()
   @IsOptional()
@@ -354,6 +361,13 @@ export class EnvironmentVariables {
   @IsOptional()
   CDN_SIGNED_URL_TTL_SECONDS: number = 3600;
 
+  /** Lifetime of signed lesson video URLs handed to students (issue #335). */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  LESSON_VIDEO_URL_TTL_SECONDS: number = 300;
+
   @IsString()
   @IsOptional()
   CDN_PURGE_URL?: string;
@@ -511,6 +525,28 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   PLATFORM_NAME: string = 'Hamplard';
+
+  /** Postal address printed on invoices (issue #334). */
+  @IsString()
+  @IsOptional()
+  PLATFORM_ADDRESS?: string;
+
+  /** Tax / VAT registration number printed on invoices (issue #334). */
+  @IsString()
+  @IsOptional()
+  PLATFORM_TAX_ID?: string;
+
+  /** HMAC secret for signing checkout quotes; falls back to JWT_SECRET (issue #333). */
+  @IsString()
+  @IsOptional()
+  CHECKOUT_QUOTE_SECRET?: string;
+
+  /** How long a checkout quote stays valid, in seconds (issue #333). */
+  @Type(() => Number)
+  @IsInt()
+  @Min(30)
+  @IsOptional()
+  CHECKOUT_QUOTE_TTL_SECONDS: number = 900;
 
   @Type(() => Number)
   @IsNumber()

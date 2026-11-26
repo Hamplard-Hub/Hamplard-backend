@@ -114,6 +114,33 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       }
     }
 
+    // Issues #69/#418 — session revocation/expiry is enforced here so it is
+    // shared by every guard built on the 'jwt' strategy. JwtAuthGuard rejects
+    // the request; OptionalJwtAuthGuard turns a revoked/expired token into an
+    // anonymous caller (its handleRequest swallows the error). Tokens issued
+    // before session tracking carry no `jti` and are let through; a `jti` with
+    // no matching session row is also let through.
+    const jti = payload.jti;
+    if (jti) {
+      const session = await this.prisma.session.findUnique({
+        where: { jti },
+        select: { revokedAt: true, expiresAt: true },
+      });
+
+      if (session) {
+        if (session.revokedAt) {
+          throw new UnauthorizedException('Session has been revoked');
+        }
+        if (session.expiresAt <= new Date()) {
+          throw new UnauthorizedException('Session has expired');
+        }
+
+        this.prisma.session
+          .update({ where: { jti }, data: { lastActiveAt: new Date() } })
+          .catch(() => undefined);
+      }
+    }
+
     return {
       id: user.id,
       stellarAddress: user.stellarAddress || payload.stellarAddress,
@@ -122,7 +149,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       isBanned: user.isBanned,
       isSuspended: user.isSuspended,
       isDeactivated: Boolean(user.deactivatedAt),
-      jti: payload.jti,
+      jti,
     };
   }
 }
