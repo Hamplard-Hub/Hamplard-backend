@@ -100,6 +100,7 @@ enum NotificationType {
   REFUND_PROCESSED
   REFERRAL_REWARD_ISSUED
   COURSE_INTEREST_REMINDER
+  COURSE_ANNOUNCEMENT   // instructor announcement to enrolled students
   COURSE_SUBMITTED_FOR_REVIEW // for admins
 }
 
@@ -331,6 +332,7 @@ model User {
   payoutSchedule      PayoutSchedule?       @relation("PayoutSchedule")
   referralCode        ReferralCode?
   referralsMade       Referral[]            @relation("ReferralsMade")
+  announcementsCreated Announcement[]       @relation("AnnouncementsCreated")
   referralReceived    Referral?             @relation("ReferredBy")
   referralRewards     ReferralReward[]      @relation("ReferralRewards")
   deviceTokens        NotificationDeviceToken[]
@@ -475,6 +477,7 @@ model Course {
   dripConfig    CourseDripConfig?
   backups       CourseBackup[]
   leaderboardSnapshots LeaderboardSnapshot[]
+  announcements Announcement[]
 
   @@map("courses")
 }
@@ -491,6 +494,24 @@ model CourseSearchTerm {
   @@index([searchCount])
   @@index([lastSearchedAt])
   @@map("course_search_terms")
+}
+
+model Announcement {
+  id        String   @id @default(uuid())
+  courseId  String
+  createdById String
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  course    Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("AnnouncementsCreated", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([courseId])
+  @@index([createdAt])
+  @@map("announcements")
 }
 
 model CourseModule {
