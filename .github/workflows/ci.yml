@@ -11,6 +11,8 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://hamplard:password@localhost:5432/hamplard_db
 
     steps:
       - name: Check out repository
