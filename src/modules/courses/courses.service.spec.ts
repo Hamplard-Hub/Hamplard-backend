@@ -1135,3 +1135,4 @@ describe('CoursesService status transitions (issue #232)', () => {
     });
   });
 });
+});

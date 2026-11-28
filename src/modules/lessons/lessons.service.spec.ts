@@ -409,6 +409,9 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
       });
 
       expect(mockPrisma.lesson.update).toHaveBeenCalled();
+    });
+  });
+
   // ========================================================================
   // ISSUE #437: Drip-locked lessons and enrollment status validation
   // ========================================================================
@@ -597,6 +600,9 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         'enrollment-1',
         'lesson-1',
       );
+    });
+  });
+
   describe('content management (#330)', () => {
     const owner = { id: 'instructor-1', stellarAddress: 'GINSTRUCTOR1', role: UserRole.INSTRUCTOR };
     const stranger = { id: 'instructor-2', stellarAddress: 'GOTHER', role: UserRole.INSTRUCTOR };
@@ -785,6 +791,8 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
         data: { position: 0, moduleId: 'mod-2' },
       });
       expect(mockDripSchedule.resyncCourseSchedules).toHaveBeenCalledWith('course-1');
+    });
+  });
 
   /** Issue #335 — students only ever receive short-lived signed video URLs. */
   describe('findLessonForViewer()', () => {

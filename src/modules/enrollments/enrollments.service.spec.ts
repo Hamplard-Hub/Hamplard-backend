@@ -18,14 +18,12 @@ describe('EnrollmentsService', () => {
   let fraudDetectionService: FraudDetectionService;
   let stellarService: StellarService;
 
-  const mockPrismaService = {
   const mockPrisma = {
     enrollment: {
       findUnique: jest.fn(),
       findMany: jest.fn(),
       create: jest.fn(),
       count: jest.fn(),
-      findMany: jest.fn(),
     },
     coursePrerequisite: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -34,14 +32,8 @@ describe('EnrollmentsService', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
-    enrollment: {
-      findUnique: jest.fn(),
-      count: jest.fn(),
-    },
     payment: {
       findUnique: jest.fn(),
-    user: { findUnique: jest.fn().mockResolvedValue(null) },
-    payment: {
       findUnique: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'payment-1' }),
     },
@@ -53,6 +45,7 @@ describe('EnrollmentsService', () => {
     },
     $transaction: jest.fn(),
   };
+  const mockPrismaService = mockPrisma;
 
   const mockFraudDetectionService = {
     processFraudCheck: jest.fn(),
@@ -70,6 +63,7 @@ describe('EnrollmentsService', () => {
 
   const mockInvoicesService = {
     generateForEnrollment: jest.fn(),
+  };
   const mockInvoices = {
     generateInvoice: jest.fn().mockResolvedValue({}),
     generateForEnrollment: jest.fn().mockResolvedValue({}),
@@ -327,16 +321,6 @@ describe('EnrollmentsService', () => {
     });
   });
 
-  describe('verifyPaymentTransaction', () => {
-    const mockCourse = { price: new Prisma.Decimal('100') };
-    const mockStudent = { stellarAddress: 'GAXYZ123' };
-
-    beforeEach(() => {
-      mockPrismaService.payment.findUnique.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue(mockStudent);
-      mockPrismaService.course.findUnique.mockResolvedValue(mockCourse);
-      mockStellarService.getContractId.mockReturnValue('contract-123');
-    });
   it('records an enrollment analytics event after creating the enrollment', async () => {
     mockPrisma.course.findUnique
       .mockResolvedValueOnce({
@@ -382,21 +366,16 @@ describe('EnrollmentsService', () => {
     );
   });
 
-  it('allows querying HELD fraud flags even when no enrollment exists', async () => {
-    const heldFlag = {
-      id: 'flag-held-uuid-1',
-      enrollmentId: null,
-      studentId: 'student-1',
-      blockedCourseId: 'course-1',
-      blockedAmountPaid: 500,
-      riskScore: 95,
-      riskLevel: FraudRiskLevel.CRITICAL,
-      reasons: ['HIGH_DAILY_VOLUME'],
-      status: FraudFlagStatus.HELD,
-      enrollment: null,
-      student: { id: 'student-1', name: 'John Doe', email: 'john@example.com' },
-      reviewedBy: null,
-    };
+  describe('verifyPaymentTransaction', () => {
+    const mockCourse = { price: new Prisma.Decimal('100') };
+    const mockStudent = { stellarAddress: 'GAXYZ123' };
+
+    beforeEach(() => {
+      mockPrismaService.payment.findUnique.mockResolvedValue(null);
+      mockPrismaService.user.findUnique.mockResolvedValue(mockStudent);
+      mockPrismaService.course.findUnique.mockResolvedValue(mockCourse);
+      mockStellarService.getContractId.mockReturnValue('contract-123');
+    });
 
     it('should return verified amount from on-chain data', async () => {
       mockStellarService.verifyEnrollmentTransaction.mockResolvedValue({

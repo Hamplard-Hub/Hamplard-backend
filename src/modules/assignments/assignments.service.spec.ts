@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException, ForbiddenException, NotFoundException, ValidationPipe } from '@nestjs/common';
+import { AssignmentStatus, EnrollmentStatus, UserRole } from '@prisma/client';
 import { AssignmentsService } from './assignments.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { SubmitAssignmentDto } from './dto/submit-assignment.dto';
 
 describe('AssignmentsService - findSubmissionsByStudent pagination', () => {
   let service: AssignmentsService;
@@ -33,18 +37,13 @@ describe('AssignmentsService - findSubmissionsByStudent pagination', () => {
       { id: 'sub-b', studentId: 'student-b', submissionUrl: 'https://cdn.test/b.jpg' },
     ],
     lesson: { module: { course: { instructor: { id: 'instructor-1' } } } },
-  const mockPrisma = {
-    assignmentSubmission: {
-      findMany: jest.fn(),
-      count: jest.fn(),
-    },
   };
-
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AssignmentsService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: NotificationsService, useValue: mockNotifications },
       ],
     })
       .useMocker(() => ({}))
@@ -72,16 +71,16 @@ describe('AssignmentsService - findSubmissionsByStudent pagination', () => {
         take: 5,
       }),
     );
+  });
 
-    it('does not leak the ownership lookup in the response', async () => {
-      const result = await service.findByLesson('lesson-1', ADMIN);
-      expect(result).not.toHaveProperty('lesson');
-    });
+  it('does not leak the ownership lookup in the response', async () => {
+    const result = await service.findByLesson('lesson-1', ADMIN);
+    expect(result).not.toHaveProperty('lesson');
+  });
 
-    it('throws NotFoundException when the lesson has no assignment', async () => {
-      mockPrisma.assignment.findUnique.mockResolvedValue(null);
-      await expect(service.findByLesson('missing', STUDENT_A)).rejects.toThrow(NotFoundException);
-    });
+  it('throws NotFoundException when the lesson has no assignment', async () => {
+    mockPrisma.assignment.findUnique.mockResolvedValue(null);
+    await expect(service.findByLesson('missing', STUDENT_A)).rejects.toThrow(NotFoundException);
   });
 
   describe('submit() — existence and enrollment checks', () => {
