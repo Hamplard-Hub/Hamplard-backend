@@ -668,7 +668,6 @@ describe('CoursesService', () => {
       expect(meta.total).toBe(45);
     });
   });
-});
 
 // ----------------------------------------------------------
 // STATUS TRANSITIONS — search index + cache sync (issue #232)
@@ -965,7 +964,7 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       it('notifies each wishlister once when the price decreases', async () => {
         mockPrisma.course.findUnique.mockResolvedValue({
-          ...fullCourse(CourseStatus.ACTIVE),
+          ...fullCourse(CourseStatus.DRAFT),
           price: 50,
         });
         mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, price: 40, status: CourseStatus.ACTIVE });
@@ -993,7 +992,7 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       it('does not notify wishlisters when the price is unchanged or higher', async () => {
         mockPrisma.course.findUnique.mockResolvedValue({
-          ...fullCourse(CourseStatus.ACTIVE),
+          ...fullCourse(CourseStatus.DRAFT),
           price: 50,
         });
         mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, status: CourseStatus.ACTIVE });
@@ -1003,6 +1002,8 @@ describe('CoursesService status transitions (issue #232)', () => {
 
         expect(mockPrisma.wishlistItem.findMany).not.toHaveBeenCalled();
         expect(mockNotifications.notifyUser).not.toHaveBeenCalled();
+      });
+
       it('blocks content and price changes on ACTIVE courses', async () => {
         mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
 

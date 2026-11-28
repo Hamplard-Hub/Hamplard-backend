@@ -19,6 +19,14 @@ import { STORAGE_DRIVER } from './storage';
 
 jest.mock('clamscan', () => jest.fn());
 
+const consumeFileStream = (file: StreamableFile) =>
+  new Promise<void>((resolve, reject) => {
+    const stream = file.getStream();
+    stream.once('error', reject);
+    stream.once('end', resolve);
+    stream.resume();
+  });
+
 describe('FilesController', () => {
   let controller: FilesController;
   let cdn: CdnService;
@@ -116,7 +124,7 @@ describe('FilesController', () => {
         'Content-Security-Policy': "default-src 'none'; sandbox",
       }),
     );
-    file.getStream().destroy();
+    await consumeFileStream(file);
   });
 
   it('serves unknown types as an octet-stream attachment', async () => {
@@ -126,7 +134,7 @@ describe('FilesController', () => {
 
     expect(file.options.type).toBe('application/octet-stream');
     expect(file.options.disposition).toBe('attachment; filename="page.html"');
-    file.getStream().destroy();
+    await consumeFileStream(file);
   });
 
   it('returns 404 for missing files', async () => {
@@ -202,7 +210,7 @@ describe('FilesController', () => {
       expect(res.set).toHaveBeenCalledWith(
         expect.objectContaining({ 'Cache-Control': 'private, no-store' }),
       );
-      file.getStream().destroy();
+      await consumeFileStream(file);
     });
   });
 });

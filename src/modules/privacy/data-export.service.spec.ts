@@ -402,10 +402,10 @@ describe('DataExportService', () => {
       expect(mockPrisma.dataExportJob.updateMany).toHaveBeenCalledTimes(1);
     });
 
-    it('does not throw when the cleanup fails', async () => {
+    it('rethrows failures so the scheduler can record them', async () => {
       mockPrisma.dataExportJob.updateMany.mockRejectedValue(new Error('db down'));
 
-      await expect(service.handleScheduledCleanup()).resolves.toBeUndefined();
+      await expect(service.handleScheduledCleanup()).rejects.toThrow('db down');
     });
   });
 });

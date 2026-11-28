@@ -1,8 +1,9 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { performance } from 'perf_hooks';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CronMonitorService } from '../cron-monitor/cron-monitor.service';
 import { LeaderboardQueryDto, LeaderboardScope } from './dto/leaderboard-query.dto';
 
 export interface LeaderboardEntry {
@@ -41,7 +42,10 @@ interface StudentPointsRow {
 export class LeaderboardService {
   private readonly logger = new Logger(LeaderboardService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly cronMonitor?: CronMonitorService,
+  ) {}
 
   async getLeaderboard(query: LeaderboardQueryDto) {
     if (query.scope === LeaderboardScope.COURSE && !query.courseId) {
@@ -95,9 +99,16 @@ export class LeaderboardService {
 
   @Cron(CronExpression.EVERY_HOUR)
   async handlePeriodicRecalculation() {
-    this.logger.log('Starting periodic leaderboard ranking recalculation...');
-    await this.recalculateRankings();
-    this.logger.log('Periodic leaderboard ranking recalculation completed.');
+    const doRecalculate = async () => {
+      this.logger.log('Starting periodic leaderboard ranking recalculation...');
+      await this.recalculateRankings();
+      this.logger.log('Periodic leaderboard ranking recalculation completed.');
+    };
+
+    if (this.cronMonitor) {
+      return this.cronMonitor.run('leaderboard-recalculation', doRecalculate);
+    }
+    return doRecalculate();
   }
 
   async recalculateRankings() {

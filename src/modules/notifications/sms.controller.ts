@@ -4,6 +4,7 @@ import { SmsService } from './sms.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard, Roles } from '../../common/guards/roles.guard';
 import { UserRole, SmsTemplateKey } from '@prisma/client';
+import { SmsCallbackDto } from './dto/sms-callback.dto';
 
 @ApiTags('sms')
 @Controller('notifications/sms')
@@ -41,7 +42,7 @@ export class SmsController {
   @ApiHeader({ name: 'X-Webhook-Signature', required: true, description: 'HMAC-SHA256 signature of request payload' })
   handleCallback(
     @Headers('x-webhook-signature') signature: string,
-    @Body() payload: { id: string; status: string; phoneNumber?: string },
+    @Body() payload: SmsCallbackDto,
   ) {
     const isValid = this.smsService.verifyWebhookSignature(signature, payload);
     if (!isValid) {

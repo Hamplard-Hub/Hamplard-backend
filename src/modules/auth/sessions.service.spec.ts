@@ -132,6 +132,25 @@ describe('SessionsService', () => {
     });
   });
 
+  it('lists sessions as non-current when no active JTI is supplied', async () => {
+    mockPrisma.session.findMany.mockResolvedValue([
+      {
+        id: 'session-1',
+        jti: 'session-jti',
+        deviceLabel: 'Chrome on Windows',
+        userAgent: 'browser',
+        ipAddress: '127.0.0.1',
+        createdAt: new Date(),
+        lastActiveAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    ]);
+
+    await expect(service.listSessions('user-1')).resolves.toEqual([
+      expect.objectContaining({ id: 'session-1', isCurrent: false }),
+    ]);
+  });
+
   describe('revokeAllExceptCurrent()', () => {
     it('revokes other sessions and their linked refresh token families, preserving current family', async () => {
       mockPrisma.session.findMany.mockResolvedValue([

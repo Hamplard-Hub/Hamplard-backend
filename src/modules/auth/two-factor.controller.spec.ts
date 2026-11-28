@@ -17,6 +17,7 @@ describe('TwoFactorController — Admin 2FA Guard Integration', () => {
     enable: jest.fn(),
     disable: jest.fn(),
     getStatus: jest.fn(),
+    regenerateRecoveryCodes: jest.fn(),
   };
 
   const mockConfigService = {
@@ -56,6 +57,22 @@ describe('TwoFactorController — Admin 2FA Guard Integration', () => {
     it('should have Admin2faGuard applied to the controller', () => {
       const guards = Reflect.getMetadata('__guards__', TwoFactorController);
       expect(guards).toBeDefined();
+    });
+
+    describe('controller service calls', () => {
+      it('forwards setup, enable, disable, status, and recovery-code requests', () => {
+        controller.setup('user-1');
+        controller.enable('user-1', { code: 'enable-code' } as any);
+        controller.disable('user-1', { code: 'disable-code' } as any);
+        controller.status('user-1');
+        controller.regenerateRecoveryCodes('user-1', { code: 'recovery-code' } as any);
+
+        expect(mockTwoFactorService.generateSecret).toHaveBeenCalledWith('user-1');
+        expect(mockTwoFactorService.enable).toHaveBeenCalledWith('user-1', 'enable-code');
+        expect(mockTwoFactorService.disable).toHaveBeenCalledWith('user-1', 'disable-code');
+        expect(mockTwoFactorService.getStatus).toHaveBeenCalledWith('user-1');
+        expect(mockTwoFactorService.regenerateRecoveryCodes).toHaveBeenCalledWith('user-1', 'recovery-code');
+      });
     });
   });
 

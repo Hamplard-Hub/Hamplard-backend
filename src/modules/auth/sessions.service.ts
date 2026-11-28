@@ -41,8 +41,7 @@ export class SessionsService {
     meta?: DeviceMetadata;
     familyId?: string;
   }) {
-    const { userId, jti, expiresAt, meta, familyId } = params;
-    const { userId, jti, refreshFamilyId, expiresAt, meta } = params;
+    const { userId, jti, refreshFamilyId, expiresAt, meta, familyId } = params;
     return this.prisma.session.create({
       data: {
         userId,

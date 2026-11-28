@@ -5,7 +5,9 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CertificatesService } from '../certificates/certificates.service';
 import { CreateExamDto } from './dto/create-exam.dto';
 import { SubmitExamDto } from './dto/submit-exam.dto';
 import { EnrollmentStatus, Prisma, UserRole } from '@prisma/client';
@@ -21,7 +23,10 @@ export interface ExamViewer {
 export class ExamsService {
   private readonly logger = new Logger(ExamsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
 
   /**
    * Create or update exam for a course (instructor operation).
@@ -201,12 +206,33 @@ export class ExamsService {
    * Submit an exam attempt, validate passing score, and track history.
    */
   async submitExam(studentId: string, examId: string, dto: SubmitExamDto) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // Serialise submissions per student and exam: a parallel request waits here,
       // then sees the attempt recorded by the first one and hits the cooldown.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${studentId}::text), hashtext(${examId}::text))`;
       return this.recordAttempt(tx, studentId, examId, dto);
     });
+
+    if (result.passed) {
+      try {
+        const certificatesService = this.moduleRef.get(CertificatesService, { strict: false });
+        if (certificatesService) {
+          const exam = await this.prisma.exam.findUnique({ where: { id: examId } });
+          if (exam) {
+            const enrollment = await this.prisma.enrollment.findUnique({
+              where: { studentId_courseId: { studentId, courseId: exam.courseId } },
+            });
+            if (enrollment && enrollment.status === 'COMPLETED') {
+              await certificatesService.issueAutomatic(studentId, exam.courseId);
+            }
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not automatically issue certificate on exam pass: ${err.message}`);
+      }
+    }
+
+    return result;
   }
 
   private async recordAttempt(
