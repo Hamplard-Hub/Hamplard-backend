@@ -188,7 +188,7 @@ describe('JwtStrategy', () => {
     it('rejects a revoked session token', async () => {
       const future = new Date(Date.now() + 86400000);
       prisma.session.findUnique.mockResolvedValue({ revokedAt: new Date(), expiresAt: future });
-      const strategy = new JwtStrategy(config as any, prisma as any);
+      const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
       await expect(
         strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'access-jti' }),
@@ -199,7 +199,7 @@ describe('JwtStrategy', () => {
     it('rejects an expired session token', async () => {
       const past = new Date(Date.now() - 1000);
       prisma.session.findUnique.mockResolvedValue({ revokedAt: null, expiresAt: past });
-      const strategy = new JwtStrategy(config as any, prisma as any);
+      const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
       await expect(
         strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'access-jti' }),
@@ -211,7 +211,7 @@ describe('JwtStrategy', () => {
       const future = new Date(Date.now() + 86400000);
       prisma.session.findUnique.mockResolvedValue({ revokedAt: null, expiresAt: future });
       prisma.session.update.mockResolvedValue({});
-      const strategy = new JwtStrategy(config as any, prisma as any);
+      const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
       const result = await strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'access-jti' });
 
@@ -226,7 +226,7 @@ describe('JwtStrategy', () => {
 
     it('lets through a token whose jti has no session row', async () => {
       prisma.session.findUnique.mockResolvedValue(null);
-      const strategy = new JwtStrategy(config as any, prisma as any);
+      const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
       await expect(
         strategy.validate({ sub: 'user-1', role: 'STUDENT', jti: 'orphan-jti' }),
@@ -235,7 +235,7 @@ describe('JwtStrategy', () => {
     });
 
     it('lets through legacy tokens that carry no jti', async () => {
-      const strategy = new JwtStrategy(config as any, prisma as any);
+      const strategy = new JwtStrategy(config as any, new AuthUserCacheService(prisma as any));
 
       await expect(
         strategy.validate({ sub: 'user-1', role: 'STUDENT' }),

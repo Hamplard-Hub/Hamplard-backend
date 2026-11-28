@@ -333,7 +333,6 @@ export class UploadsService {
       thumbnailAtSecs,
     );
 
-    const originUrl = `/uploads/${relativePath}`;
     // Stored as an origin path only — lesson media is private (issue #335), so
     // students get a short-lived signed URL from GET /lessons/:id instead.
     const originUrl = `/uploads/${subfolder}/${filename}`;

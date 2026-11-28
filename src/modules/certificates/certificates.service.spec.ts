@@ -25,6 +25,7 @@ const mockPrisma = {
     update: jest.fn(),
     updateMany: jest.fn(),
     findMany: jest.fn(),
+    count: jest.fn(),
   },
   user: { findUnique: jest.fn() },
   adminAuditLog: { create: jest.fn().mockResolvedValue({}) },

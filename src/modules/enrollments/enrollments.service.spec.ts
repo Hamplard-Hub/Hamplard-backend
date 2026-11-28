@@ -10,7 +10,8 @@ import { ReferralsService } from '../referrals/referrals.service';
 import { DripScheduleService } from '../lessons/drip-schedule.service';
 import { StellarService } from '../../common/stellar/stellar.service';
 import { AnalyticsService } from '../analytics/analytics.service';
-import { CourseStatus, FraudFlagStatus, FraudRiskLevel } from '@prisma/client';
+import { CheckoutQuoteService } from '../billing/checkout-quote.service';
+import { CourseStatus, FraudRiskLevel } from '@prisma/client';
 
 describe('EnrollmentsService', () => {
   let service: EnrollmentsService;
@@ -34,54 +35,50 @@ describe('EnrollmentsService', () => {
     },
     payment: {
       findUnique: jest.fn(),
-      findUnique: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'payment-1' }),
     },
     user: {
       findUnique: jest.fn(),
     },
-    coursePrerequisite: {
-      findMany: jest.fn(),
-    },
     $transaction: jest.fn(),
   };
-  const mockPrismaService = mockPrisma;
 
   const mockFraudDetectionService = {
     processFraudCheck: jest.fn(),
   };
 
-  const mockStellarService = {
+  const mockStellar = {
     getTransactionStatus: jest.fn(),
     getContractId: jest.fn(),
     verifyEnrollmentTransaction: jest.fn(),
   };
 
-  const mockNotificationsService = {
-    notifyUser: jest.fn(),
-  };
-
-  const mockInvoicesService = {
-    generateForEnrollment: jest.fn(),
+  const mockNotifications = {
+    notifyUser: jest.fn().mockResolvedValue({}),
   };
   const mockInvoices = {
-    generateInvoice: jest.fn().mockResolvedValue({}),
     generateForEnrollment: jest.fn().mockResolvedValue({}),
   };
 
   const mockReferrals = {
-    processReward: jest.fn().mockResolvedValue({}),
     trackConversion: jest.fn().mockResolvedValue({}),
   };
 
-  const mockReferralsService = {
-    trackConversion: jest.fn(),
-  };
-
-  const mockDripScheduleService = {
-    calculateAndSyncUnlockSchedule: jest.fn(),
-  };
+  const mockDripSchedule = { calculateAndSyncUnlockSchedule: jest.fn().mockResolvedValue({}) };
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
+  const mockCheckoutQuotes = {
+    getUsableQuote: jest.fn().mockResolvedValue({
+      quoteId: 'quote-1',
+      listPrice: 100,
+      coupon: null,
+      referralReward: null,
+      taxRegion: 'DEFAULT',
+      taxRatePercent: 0,
+      taxAmount: 0,
+      total: 100,
+    }),
+    consumeWithinTransaction: jest.fn().mockResolvedValue(undefined),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -89,42 +86,15 @@ describe('EnrollmentsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EnrollmentsService,
-        FraudDetectionService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: FraudDetectionService, useValue: mockFraudDetectionService },
         { provide: NotificationsService, useValue: mockNotifications },
         { provide: InvoicesService, useValue: mockInvoices },
         { provide: ReferralsService, useValue: mockReferrals },
         { provide: DripScheduleService, useValue: mockDripSchedule },
         { provide: StellarService, useValue: mockStellar },
         { provide: AnalyticsService, useValue: mockAnalytics },
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-        {
-          provide: FraudDetectionService,
-          useValue: mockFraudDetectionService,
-        },
-        {
-          provide: StellarService,
-          useValue: mockStellarService,
-        },
-        {
-          provide: NotificationsService,
-          useValue: mockNotificationsService,
-        },
-        {
-          provide: InvoicesService,
-          useValue: mockInvoicesService,
-        },
-        {
-          provide: ReferralsService,
-          useValue: mockReferralsService,
-        },
-        {
-          provide: DripScheduleService,
-          useValue: mockDripScheduleService,
-        },
+        { provide: CheckoutQuoteService, useValue: mockCheckoutQuotes },
       ],
     }).compile();
 
@@ -155,18 +125,18 @@ describe('EnrollmentsService', () => {
     };
 
     beforeEach(() => {
-      mockPrismaService.course.findUnique.mockResolvedValue(mockCourse);
-      mockPrismaService.enrollment.findUnique.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue(mockStudent);
-      mockPrismaService.payment.findUnique.mockResolvedValue(null);
-      mockPrismaService.coursePrerequisite.findMany.mockResolvedValue([]);
+      mockPrisma.course.findUnique.mockResolvedValue(mockCourse);
+      mockPrisma.enrollment.findUnique.mockResolvedValue(null);
+      mockPrisma.user.findUnique.mockResolvedValue(mockStudent);
+      mockPrisma.payment.findUnique.mockResolvedValue(null);
+      mockPrisma.coursePrerequisite.findMany.mockResolvedValue([]);
       mockFraudDetectionService.processFraudCheck.mockResolvedValue(mockFraudResult);
-      mockStellarService.verifyEnrollmentTransaction.mockResolvedValue({
+      mockStellar.verifyEnrollmentTransaction.mockResolvedValue({
         studentAddress: mockStudent.stellarAddress,
         courseId: mockCourse.id,
         amountPaid: 100,
       });
-      mockStellarService.getContractId.mockReturnValue('contract-123');
+      mockStellar.getContractId.mockReturnValue('contract-123');
     });
 
     it('Issue #404: should wrap payment, enrollment, and course stats in a transaction', async () => {
@@ -186,14 +156,14 @@ describe('EnrollmentsService', () => {
         course: { update: jest.fn().mockResolvedValue(mockCourse) },
       };
 
-      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+      mockPrisma.$transaction.mockImplementation(async (callback) => {
         return callback(mockTx);
       });
 
-      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123', 'quote-1');
 
       // Verify the transaction was called
-      expect(mockPrismaService.$transaction).toHaveBeenCalled();
+      expect(mockPrisma.$transaction).toHaveBeenCalled();
 
       // Verify all three operations happened within the transaction
       expect(mockTx.payment.create).toHaveBeenCalled();
@@ -202,25 +172,22 @@ describe('EnrollmentsService', () => {
     });
 
     it('Issue #404: should rollback enrollment if payment creation fails (P2002)', async () => {
-      const p2002Error = new Prisma.PrismaClientKnownRequestError(
-        'Unique constraint failed on txHash',
-        'P2002',
-        '4.0.0',
-        { target: ['txHash'] },
-      );
+      const p2002Error = new Prisma.PrismaClientKnownRequestError('Unique constraint failed on txHash', {
+        code: 'P2002', clientVersion: '5.22.0', meta: { target: ['txHash'] },
+      });
 
-      mockPrismaService.$transaction.mockRejectedValue(p2002Error);
+      mockPrisma.$transaction.mockRejectedValue(p2002Error);
 
       await expect(
-        service.create(mockStudent.id, mockCourse.id, 'tx-hash-123'),
+        service.create(mockStudent.id, mockCourse.id, 'tx-hash-123', 'quote-1'),
       ).rejects.toThrow(ConflictException);
 
       // Verify the enrollment was not created (would be part of the same transaction)
-      expect(mockPrismaService.enrollment.findUnique).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.enrollment.findUnique).toHaveBeenCalledTimes(1);
     });
 
     it('Issue #403: should verify payment transaction comprehensively', async () => {
-      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+      mockPrisma.$transaction.mockImplementation(async (callback) => {
         const mockTx = {
           payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
           enrollment: {
@@ -239,10 +206,10 @@ describe('EnrollmentsService', () => {
         return callback(mockTx);
       });
 
-      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123', 'quote-1');
 
       // Verify comprehensive verification was called with all required parameters
-      expect(mockStellarService.verifyEnrollmentTransaction).toHaveBeenCalledWith(
+      expect(mockStellar.verifyEnrollmentTransaction).toHaveBeenCalledWith(
         'tx-hash-123',
         'contract-123',
         mockStudent.stellarAddress,
@@ -252,7 +219,7 @@ describe('EnrollmentsService', () => {
     });
 
     it('Issue #405: should not run fraud check twice', async () => {
-      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+      mockPrisma.$transaction.mockImplementation(async (callback) => {
         const mockTx = {
           payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
           enrollment: {
@@ -271,7 +238,7 @@ describe('EnrollmentsService', () => {
         return callback(mockTx);
       });
 
-      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123', 'quote-1');
 
       // Verify fraud check was called only once (pre-enrollment, with null id)
       expect(mockFraudDetectionService.processFraudCheck).toHaveBeenCalledTimes(1);
@@ -293,7 +260,7 @@ describe('EnrollmentsService', () => {
 
       mockFraudDetectionService.processFraudCheck.mockResolvedValue(mockFlagResult);
 
-      mockPrismaService.$transaction.mockImplementation(async (callback) => {
+      mockPrisma.$transaction.mockImplementation(async (callback) => {
         const mockTx = {
           payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
           enrollment: {
@@ -312,7 +279,7 @@ describe('EnrollmentsService', () => {
         return callback(mockTx);
       });
 
-      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123');
+      await service.create(mockStudent.id, mockCourse.id, 'tx-hash-123', 'quote-1');
 
       // Verify processFraudCheck was called with shouldPersistFlag=true in post-check
       // (this happens inside runPostEnrollmentSteps)
@@ -322,37 +289,54 @@ describe('EnrollmentsService', () => {
   });
 
   it('records an enrollment analytics event after creating the enrollment', async () => {
-    mockPrisma.course.findUnique
-      .mockResolvedValueOnce({
-        id: 'course-1',
-        title: 'Course 1',
-        status: CourseStatus.ACTIVE,
-        platformFeePercent: 20,
-        instructorAddress: 'instructor-address',
-      })
-      .mockResolvedValueOnce({ id: 'course-1', title: 'Course 1' });
+    mockPrisma.course.findUnique.mockResolvedValue({
+      id: 'course-1',
+      title: 'Course 1',
+      status: CourseStatus.ACTIVE,
+      platformFeePercent: 20,
+      price: 100,
+      instructorAddress: 'instructor-address',
+    });
     mockPrisma.enrollment.findUnique.mockResolvedValue(null);
     mockPrisma.coursePrerequisite.findMany.mockResolvedValue([]);
-    mockPrisma.enrollment.create.mockResolvedValue({
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'student-1', stellarAddress: 'GSTUDENT' });
+    mockCheckoutQuotes.getUsableQuote.mockResolvedValue({
+      quoteId: 'quote-1',
+      listPrice: 100,
+      coupon: null,
+      referralReward: null,
+      taxRegion: 'DEFAULT',
+      taxRatePercent: 0,
+      taxAmount: 0,
+      total: 100,
+    });
+    mockStellar.verifyEnrollmentTransaction.mockResolvedValue({
+      studentAddress: 'GSTUDENT',
+      courseId: 'course-1',
+      amountPaid: 100,
+    });
+    const tx = {
+      payment: { create: jest.fn().mockResolvedValue({ id: 'payment-1' }) },
+      enrollment: {
+        create: jest.fn().mockResolvedValue({
       id: 'enrollment-1',
       studentId: 'student-1',
       courseId: 'course-1',
       course: { title: 'Course 1', instructorAddress: 'instructor-address' },
       student: {},
-    });
-    mockPrisma.course.update.mockResolvedValue({});
-    mockStellar.getTransactionStatus.mockResolvedValue({
-      successful: true,
-      status: 'SUCCESS',
-    });
-    jest.spyOn(fraudDetection, 'processFraudCheck').mockResolvedValue({
+        }),
+      },
+      course: { update: jest.fn().mockResolvedValue({}) },
+    };
+    mockPrisma.$transaction.mockImplementation((callback: any) => callback(tx));
+    mockFraudDetectionService.processFraudCheck.mockResolvedValue({
       action: 'ALLOW',
       score: 0,
       riskLevel: FraudRiskLevel.LOW,
       reasons: [],
     });
 
-    await service.create('student-1', 'course-1', 'tx-1', 100);
+    await service.create('student-1', 'course-1', 'tx-1', 'quote-1');
 
     expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -371,14 +355,14 @@ describe('EnrollmentsService', () => {
     const mockStudent = { stellarAddress: 'GAXYZ123' };
 
     beforeEach(() => {
-      mockPrismaService.payment.findUnique.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue(mockStudent);
-      mockPrismaService.course.findUnique.mockResolvedValue(mockCourse);
-      mockStellarService.getContractId.mockReturnValue('contract-123');
+      mockPrisma.payment.findUnique.mockResolvedValue(null);
+      mockPrisma.user.findUnique.mockResolvedValue(mockStudent);
+      mockPrisma.course.findUnique.mockResolvedValue(mockCourse);
+      mockStellar.getContractId.mockReturnValue('contract-123');
     });
 
     it('should return verified amount from on-chain data', async () => {
-      mockStellarService.verifyEnrollmentTransaction.mockResolvedValue({
+      mockStellar.verifyEnrollmentTransaction.mockResolvedValue({
         studentAddress: mockStudent.stellarAddress,
         courseId: 'course-1',
         amountPaid: 150,
@@ -395,7 +379,7 @@ describe('EnrollmentsService', () => {
 
     it('should reject if transaction student address does not match', async () => {
       const error = new Error('Student address mismatch: enrollment is for a different wallet');
-      mockStellarService.verifyEnrollmentTransaction.mockRejectedValue(error);
+      mockStellar.verifyEnrollmentTransaction.mockRejectedValue(error);
 
       await expect(
         service.verifyPaymentTransaction('tx-hash-123', 'student-1', 'course-1'),
@@ -404,7 +388,7 @@ describe('EnrollmentsService', () => {
 
     it('should reject if amount is insufficient', async () => {
       const error = new Error('Insufficient payment: transaction amount (50) is less than course price (100)');
-      mockStellarService.verifyEnrollmentTransaction.mockRejectedValue(error);
+      mockStellar.verifyEnrollmentTransaction.mockRejectedValue(error);
 
       await expect(
         service.verifyPaymentTransaction('tx-hash-123', 'student-1', 'course-1'),
@@ -412,7 +396,7 @@ describe('EnrollmentsService', () => {
     });
 
     it('should reject if payment has already been used', async () => {
-      mockPrismaService.payment.findUnique.mockResolvedValue({
+      mockPrisma.payment.findUnique.mockResolvedValue({
         id: 'payment-1',
         txHash: 'tx-hash-123',
       });

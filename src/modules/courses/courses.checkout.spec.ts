@@ -54,6 +54,7 @@ describe('CoursesService.getCheckoutBreakdown() (issue #441)', () => {
       {} as any,
       {} as any,
       { get: jest.fn() } as any,
+      {} as any,
     );
   });
 

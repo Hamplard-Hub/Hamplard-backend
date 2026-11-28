@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { AuditLogService } from './audit-log.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { DistributedLockService } from '../../common/scheduling/distributed-lock.service';
 import { AuditAction, AuditTargetType } from '@prisma/client';
 
 describe('AuditLogService', () => {
@@ -21,6 +22,9 @@ describe('AuditLogService', () => {
   const mockConfig = {
     get: jest.fn().mockImplementation((key, defaultValue) => defaultValue),
   };
+  const mockLockService = {
+    withLock: jest.fn((_name, _ttl, callback) => callback()),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -28,6 +32,7 @@ describe('AuditLogService', () => {
         AuditLogService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: ConfigService, useValue: mockConfig },
+        { provide: DistributedLockService, useValue: mockLockService },
       ],
     }).compile();
 

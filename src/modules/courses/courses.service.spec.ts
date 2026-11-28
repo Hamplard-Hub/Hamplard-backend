@@ -7,7 +7,6 @@ import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CdnService } from '../uploads/cdn.service';
-import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CourseStatus, NotificationType, UserRole } from '@prisma/client';
 
@@ -23,9 +22,6 @@ const mockPrisma = {
   },
   user: {
     findUnique: jest.fn(),
-  },
-  adminAuditLog: {
-    create: jest.fn(),
   },
   wishlistItem: {
     findMany: jest.fn(),
@@ -43,7 +39,6 @@ const mockPrisma = {
     count: jest.fn(),
   },
   adminAuditLog: {
-    create: jest.fn(),
     create: jest.fn().mockResolvedValue({}),
   },
   $getTransactionClient: jest.fn(),
@@ -691,6 +686,7 @@ describe('CoursesService status transitions (issue #232)', () => {
       mockSearchService as any,
       mockCache as any,
       { get: jest.fn(() => 20) } as any,
+      {} as any,
     );
   });
 

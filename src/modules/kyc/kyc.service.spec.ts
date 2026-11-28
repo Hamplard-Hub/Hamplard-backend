@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { KycService } from './kyc.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { StorageService } from '../storage/storage.service';
+import { UploadsService } from '../uploads/uploads.service';
 
 describe('KycService - findMySubmissions pagination', () => {
   let service: KycService;
@@ -21,7 +21,7 @@ describe('KycService - findMySubmissions pagination', () => {
         KycService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: {} },
-        { provide: StorageService, useValue: {} },
+        { provide: UploadsService, useValue: {} },
       ],
     }).compile();
 

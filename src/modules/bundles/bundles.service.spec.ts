@@ -37,7 +37,7 @@ describe('BundlesService', () => {
     assertCourseActive: jest.fn((course: { status: CourseStatus }) => {
       if (course.status !== CourseStatus.ACTIVE) throw new ForbiddenException();
     }),
-    verifyPaymentTransaction: jest.fn(),
+    verifyPaymentTransactionBasic: jest.fn(),
     runPreEnrollmentChecks: jest.fn(),
     runPostEnrollmentSteps: jest.fn(),
   };
@@ -48,7 +48,7 @@ describe('BundlesService', () => {
     mockPrisma.bundle.findUnique.mockResolvedValue(bundle);
     mockPrisma.bundleEnrollment.findUnique.mockResolvedValue(null);
     mockPrisma.enrollment.findMany.mockResolvedValue([]);
-    mockEnrollments.verifyPaymentTransaction.mockResolvedValue(undefined);
+    mockEnrollments.verifyPaymentTransactionBasic.mockResolvedValue(undefined);
     mockEnrollments.runPreEnrollmentChecks.mockResolvedValue({ action: 'ALLOW', score: 0, reasons: [] });
     mockEnrollments.runPostEnrollmentSteps.mockResolvedValue(undefined);
 
@@ -114,14 +114,14 @@ describe('BundlesService', () => {
     it('verifies the payment tx and records a BUNDLE payment', async () => {
       await service.enroll('student-1', 'bundle-1', dto);
 
-      expect(mockEnrollments.verifyPaymentTransaction).toHaveBeenCalledWith('tx-bundle');
+      expect(mockEnrollments.verifyPaymentTransactionBasic).toHaveBeenCalledWith('tx-bundle');
       expect(tx.payment.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ txHash: 'tx-bundle', paymentType: 'BUNDLE' }),
       });
     });
 
     it('does not enroll when the on-chain payment cannot be verified', async () => {
-      mockEnrollments.verifyPaymentTransaction.mockRejectedValue(new BadRequestException('not found'));
+      mockEnrollments.verifyPaymentTransactionBasic.mockRejectedValue(new BadRequestException('not found'));
 
       await expect(service.enroll('student-1', 'bundle-1', dto)).rejects.toBeInstanceOf(BadRequestException);
       expect(mockPrisma.$transaction).not.toHaveBeenCalled();

@@ -74,6 +74,7 @@ describe('AssignmentsService - findSubmissionsByStudent pagination', () => {
   });
 
   it('does not leak the ownership lookup in the response', async () => {
+    mockPrisma.assignment.findUnique.mockResolvedValue(ASSIGNMENT_WITH_SUBMISSIONS);
     const result = await service.findByLesson('lesson-1', ADMIN);
     expect(result).not.toHaveProperty('lesson');
   });

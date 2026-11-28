@@ -4,6 +4,7 @@ import * as request from 'supertest';
 import { Reflector } from '@nestjs/core';
 import { CoursesController } from '../../modules/courses/courses.controller';
 import { CoursesService } from '../../modules/courses/courses.service';
+import { AnnouncementsService } from '../../modules/courses/announcements.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { CourseStatus } from '@prisma/client';
 
@@ -31,6 +32,7 @@ describe('Pagination Validation Integration (Global ValidationPipe)', () => {
       controllers: [CoursesController],
       providers: [
         { provide: CoursesService, useValue: mockCoursesService },
+        { provide: AnnouncementsService, useValue: {} },
         { provide: CacheService, useValue: mockCacheService },
         Reflector,
       ],

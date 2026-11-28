@@ -70,11 +70,11 @@ export class ModerationService {
       const enrollments = await this.prisma.enrollment.findMany({
         where: {
           courseId: dto.targetId,
-          userId: { in: reporterIds },
+          studentId: { in: reporterIds },
         },
-        select: { userId: true },
+        select: { studentId: true },
       });
-      pendingCount = new Set(enrollments.map((e) => e.userId)).size;
+      pendingCount = new Set(enrollments.map((e) => e.studentId)).size;
     }
 
     let autoActionTaken = false;
@@ -160,9 +160,9 @@ export class ModerationService {
         if (course && course.status === CourseStatus.PAUSED) {
           await this.prisma.course.update({
             where: { id: flag.targetId },
-            data: { status: CourseStatus.PUBLISHED },
+            data: { status: CourseStatus.ACTIVE },
           });
-          this.logger.log(`Course ${flag.targetId} restored to PUBLISHED after all reports were dismissed`);
+          this.logger.log(`Course ${flag.targetId} restored to ACTIVE after all reports were dismissed`);
         }
       }
     }

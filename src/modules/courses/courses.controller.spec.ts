@@ -4,6 +4,7 @@ import * as request from 'supertest';
 import { CourseStatus, UserRole } from '@prisma/client';
 import { CoursesController } from './courses.controller';
 import { CoursesService } from './courses.service';
+import { AnnouncementsService } from './announcements.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
@@ -34,6 +35,7 @@ describe('CoursesController (HTTP)', () => {
       controllers: [CoursesController],
       providers: [
         { provide: CoursesService, useValue: mockCoursesService },
+        { provide: AnnouncementsService, useValue: {} },
         { provide: CacheService, useValue: { get: jest.fn(), set: jest.fn(), buildKey: jest.fn() } },
       ],
     })

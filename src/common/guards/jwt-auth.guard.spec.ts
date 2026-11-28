@@ -4,6 +4,13 @@ import { AuthGuard } from '@nestjs/passport';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 describe('JwtAuthGuard — deactivated accounts', () => {
+  const prisma = {
+    session: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+  };
+
   const ctxFor = (user: any) =>
     ({
       switchToHttp: () => ({ getRequest: () => ({ user }) }),
@@ -26,7 +33,7 @@ describe('JwtAuthGuard — deactivated accounts', () => {
 
   it('blocks a deactivated account on ordinary routes', async () => {
     const reflector = { getAllAndOverride: jest.fn().mockReturnValue(undefined) } as unknown as Reflector;
-    const guard = new JwtAuthGuard(reflector);
+    const guard = new JwtAuthGuard(prisma as any, reflector);
 
     await expect(guard.canActivate(ctxFor({ id: 'u1', jti: 'jti-1', isDeactivated: true }))).rejects.toBeInstanceOf(
       ForbiddenException,
@@ -35,14 +42,14 @@ describe('JwtAuthGuard — deactivated accounts', () => {
 
   it('lets a deactivated account through routes marked AllowDeactivated', async () => {
     const reflector = { getAllAndOverride: jest.fn().mockReturnValue(true) } as unknown as Reflector;
-    const guard = new JwtAuthGuard(reflector);
+    const guard = new JwtAuthGuard(prisma as any, reflector);
 
     await expect(guard.canActivate(ctxFor({ id: 'u1', jti: 'jti-1', isDeactivated: true }))).resolves.toBe(true);
   });
 
   it('does not affect active accounts', async () => {
     const reflector = { getAllAndOverride: jest.fn() } as unknown as Reflector;
-    const guard = new JwtAuthGuard(reflector);
+    const guard = new JwtAuthGuard(prisma as any, reflector);
 
     await expect(guard.canActivate(ctxFor({ id: 'u1', jti: 'jti-1', isDeactivated: false }))).resolves.toBe(true);
     expect(reflector.getAllAndOverride).not.toHaveBeenCalled();
@@ -50,14 +57,14 @@ describe('JwtAuthGuard — deactivated accounts', () => {
 
   it('throws on an invalid token payload (no user id)', async () => {
     const reflector = { getAllAndOverride: jest.fn() } as unknown as Reflector;
-    const guard = new JwtAuthGuard(reflector);
+    const guard = new JwtAuthGuard(prisma as any, reflector);
 
     await expect(guard.canActivate(ctxFor(null))).rejects.toThrow('Invalid token payload');
   });
 
   it('rejects tokens without a jti', async () => {
     const reflector = { getAllAndOverride: jest.fn() } as unknown as Reflector;
-    const guard = new JwtAuthGuard(reflector);
+    const guard = new JwtAuthGuard(prisma as any, reflector);
 
     await expect(guard.canActivate(ctxFor({ id: 'u1', isDeactivated: false }))).rejects.toBeInstanceOf(
       UnauthorizedException,
@@ -68,7 +75,7 @@ describe('JwtAuthGuard — deactivated accounts', () => {
   it('rejects tokens whose jti has no Session row', async () => {
     prisma.session.findUnique.mockResolvedValueOnce(null);
     const reflector = { getAllAndOverride: jest.fn() } as unknown as Reflector;
-    const guard = new JwtAuthGuard(reflector);
+    const guard = new JwtAuthGuard(prisma as any, reflector);
 
     await expect(
       guard.canActivate(ctxFor({ id: 'u1', jti: 'unknown-jti', isDeactivated: false })),

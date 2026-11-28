@@ -17,6 +17,7 @@ const mockPrisma = {
     findUnique: jest.fn(),
     update: jest.fn(),
     findMany: jest.fn(),
+    count: jest.fn(),
   },
   course: {
     findUnique: jest.fn(),
@@ -25,6 +26,9 @@ const mockPrisma = {
   discussionComment: {
     findUnique: jest.fn(),
     update: jest.fn(),
+  },
+  enrollment: {
+    findMany: jest.fn(),
   },
 };
 
@@ -46,6 +50,7 @@ describe('ModerationService', () => {
 
     service = module.get<ModerationService>(ModerationService);
     jest.clearAllMocks();
+    mockPrisma.enrollment.findMany.mockResolvedValue([]);
   });
 
   describe('createFlag()', () => {
@@ -59,6 +64,7 @@ describe('ModerationService', () => {
         status: ReportStatus.PENDING,
       });
       mockPrisma.abuseReport.groupBy.mockResolvedValue(reporterGroups(1));
+      mockPrisma.enrollment.findMany.mockResolvedValue([{ studentId: 'user-1' }]);
 
       const result = await service.createFlag('user-1', {
         targetType: ReportTargetType.COURSE,
@@ -81,6 +87,11 @@ describe('ModerationService', () => {
         status: ReportStatus.PENDING,
       });
       mockPrisma.abuseReport.groupBy.mockResolvedValue(reporterGroups(3));
+      mockPrisma.enrollment.findMany.mockResolvedValue([
+        { studentId: 'user-1' },
+        { studentId: 'user-2' },
+        { studentId: 'user-3' },
+      ]);
       mockPrisma.course.findUnique.mockResolvedValue({
         id: 'course-1',
         status: CourseStatus.ACTIVE,
@@ -104,6 +115,11 @@ describe('ModerationService', () => {
       mockPrisma.abuseReport.findFirst.mockResolvedValue(null);
       mockPrisma.abuseReport.create.mockResolvedValue({ id: 'flag-4' });
       mockPrisma.abuseReport.groupBy.mockResolvedValue(reporterGroups(3));
+      mockPrisma.enrollment.findMany.mockResolvedValue([
+        { studentId: 'user-1' },
+        { studentId: 'user-2' },
+        { studentId: 'user-3' },
+      ]);
       mockPrisma.course.findUnique.mockResolvedValue({
         id: 'course-1',
         status: CourseStatus.PAUSED,
@@ -210,7 +226,7 @@ describe('ModerationService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('restores a PAUSED course to PUBLISHED when all reports are dismissed', async () => {
+    it('restores a PAUSED course to ACTIVE when all reports are dismissed', async () => {
       mockPrisma.abuseReport.findUnique.mockResolvedValue({
         id: 'flag-1',
         targetType: ReportTargetType.COURSE,
@@ -229,7 +245,7 @@ describe('ModerationService', () => {
       });
       mockPrisma.course.update.mockResolvedValue({
         id: 'course-1',
-        status: CourseStatus.PUBLISHED,
+        status: CourseStatus.ACTIVE,
       });
 
       await service.resolveFlag('flag-1', 'admin-1', {
@@ -238,7 +254,7 @@ describe('ModerationService', () => {
 
       expect(mockPrisma.course.update).toHaveBeenCalledWith({
         where: { id: 'course-1' },
-        data: { status: CourseStatus.PUBLISHED },
+        data: { status: CourseStatus.ACTIVE },
       });
     });
   });
@@ -255,7 +271,6 @@ describe('ModerationService', () => {
         status: ReportStatus.PENDING,
       });
       mockPrisma.abuseReport.groupBy.mockResolvedValue(reporterGroups(3));
-      mockPrisma.enrollment.findMany.mockResolvedValue([]);
 
       const result = await service.createFlag('user-3', {
         targetType: ReportTargetType.COURSE,
@@ -266,6 +281,10 @@ describe('ModerationService', () => {
       expect(result.pendingCount).toBe(0);
       expect(result.autoActionTaken).toBe(false);
       expect(mockCourses.pauseCourse).not.toHaveBeenCalled();
+      expect(mockPrisma.enrollment.findMany).toHaveBeenCalledWith({
+        where: { courseId: 'course-1', studentId: { in: ['user-1', 'user-2', 'user-3'] } },
+        select: { studentId: true },
+      });
     });
   });
 });

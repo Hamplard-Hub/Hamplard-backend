@@ -12,8 +12,8 @@ describe('LessonsService (Ownership & IDOR Protection)', () => {
   const mockAnalytics = { trackEvent: jest.fn().mockResolvedValue({}) };
   const mockDripSchedule = {
     isLessonUnlocked: jest.fn(),
+    resyncCourseSchedules: jest.fn().mockResolvedValue(undefined),
   };
-  const mockDripSchedule = { resyncCourseSchedules: jest.fn().mockResolvedValue(undefined) };
   const mockCdn = { signLessonMediaUrl: jest.fn() };
 
   const mockPrisma = {

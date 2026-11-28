@@ -146,7 +146,7 @@ describe('DataExportService', () => {
       });
 
       // Payload is not echoed back in the response
-      expect(result.payload).toBeUndefined();
+      expect(result).not.toHaveProperty('payload');
     });
 
     it('marks the job FAILED when processExport throws', async () => {

@@ -56,7 +56,7 @@ export class DistributedLockService {
 
     try {
       // Redis SET NX PX: set key only if it doesn't exist, with TTL
-      const result = await this.redis.set(key, value, 'NX', 'PX', ttlMs);
+      const result = await this.redis.set(key, value, 'PX', ttlMs, 'NX');
       const acquired = result === 'OK';
 
       if (acquired) {

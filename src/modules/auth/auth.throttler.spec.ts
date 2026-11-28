@@ -6,7 +6,6 @@ import { AuthService } from './auth.service';
 import { CaptchaService } from './captcha.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ThrottlerModule } from '@nestjs/throttler';
-import { PrismaService } from '../../common/prisma/prisma.service';
 
 describe('AuthController Throttling (Integration)', () => {
   let app: INestApplication | undefined;
