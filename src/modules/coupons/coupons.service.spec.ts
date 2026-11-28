@@ -48,6 +48,9 @@ describe('CouponsService (Issue #145) — Validation of expiresAt and discount b
       findUnique: jest.fn(),
       create: jest.fn(),
     },
+    adminAuditLog: {
+      create: jest.fn(),
+    },
     enrollment: {
       findUnique: jest.fn(),
     },

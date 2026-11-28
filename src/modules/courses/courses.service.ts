@@ -351,12 +351,6 @@ export class CoursesService {
       (!!viewer?.userId && (viewer.userId === (course as any).instructorId || viewer.userId === (course as any).instructor?.id));
     const isAdmin = !!viewer?.isAdmin || viewer?.role === UserRole.ADMIN || viewer?.role === 'ADMIN';
 
-    // Owners and admins always get the full view.
-    // Hide non-ACTIVE courses from everyone except the owner and admins.
-    if (course.status !== CourseStatus.ACTIVE && !isOwner && !isAdmin) {
-      throw new NotFoundException(`Course ${id} not found`);
-    }
-
     // Owners and admins always get the full view (with signed media URLs).
     if (isOwner || isAdmin) {
       return this.withLessonMedia(course, () => true);

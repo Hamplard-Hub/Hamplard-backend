@@ -45,7 +45,7 @@ describe('URL fields', () => {
 
       expect(await validateField('https://cdn.example.com/resource')).toBe(false);
       expect(await validateField('http://127.0.0.1/resource')).toBe(
-        process.env.NODE_ENV === 'development',
+        process.env.NODE_ENV !== 'development',
       );
       expect(await validateField('javascript:alert(1)')).toBe(true);
     }

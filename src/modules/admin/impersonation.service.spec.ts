@@ -24,6 +24,9 @@ const mockPrisma = {
   user: {
     findUnique: jest.fn(),
   },
+  adminAuditLog: {
+    create: jest.fn().mockResolvedValue({}),
+  },
 };
 
 const mockJwtService = {
@@ -69,6 +72,14 @@ describe('ImpersonationService', () => {
       expect(audit.data[0].adminId).toBe('admin-1');
       expect(audit.data[0].targetUserId).toBe('user-1');
       expect(audit.data[0].reason).toBe('Debugging student payment issue');
+      expect(mockPrisma.adminAuditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            actorId: 'admin-1',
+            targetId: 'user-1',
+          }),
+        }),
+      );
     });
 
     it('throws ForbiddenException if requesting user is not admin', async () => {

@@ -99,7 +99,9 @@ describe('TwoFactorController — Recovery Codes Regeneration Integration (issue
         .send({})
         .expect(400);
 
-      expect(response.body.message).toContain('code');
+      expect(response.body.message).toEqual(
+        expect.arrayContaining([expect.stringContaining('code should not be empty')]),
+      );
       expect(mockTwoFactorService.regenerateRecoveryCodes).not.toHaveBeenCalled();
     });
 

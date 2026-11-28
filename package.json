@@ -125,25 +125,25 @@
         "lines": 40,
         "statements": 40
       },
-      "./modules/auth/**": {
+      "**/src/modules/auth/**": {
         "branches": 45,
         "functions": 50,
         "lines": 55,
         "statements": 55
       },
-      "./modules/payouts/**": {
+      "**/src/modules/payouts/**": {
         "branches": 30,
         "functions": 40,
         "lines": 45,
         "statements": 45
       },
-      "./modules/events/**": {
+      "**/src/modules/events/**": {
         "branches": 30,
         "functions": 40,
         "lines": 45,
         "statements": 45
       },
-      "./common/queue/**": {
+      "**/src/common/queue/**": {
         "branches": 30,
         "functions": 40,
         "lines": 45,

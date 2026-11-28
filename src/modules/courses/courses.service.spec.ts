@@ -7,7 +7,6 @@ import { SearchService } from '../search/search.service';
 import { CacheService } from '../../common/cache/cache.service';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CdnService } from '../uploads/cdn.service';
-import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CourseStatus, NotificationType, UserRole } from '@prisma/client';
 
@@ -23,9 +22,6 @@ const mockPrisma = {
   },
   user: {
     findUnique: jest.fn(),
-  },
-  adminAuditLog: {
-    create: jest.fn(),
   },
   wishlistItem: {
     findMany: jest.fn(),
@@ -43,7 +39,6 @@ const mockPrisma = {
     count: jest.fn(),
   },
   adminAuditLog: {
-    create: jest.fn(),
     create: jest.fn().mockResolvedValue({}),
   },
   $getTransactionClient: jest.fn(),
@@ -673,7 +668,6 @@ describe('CoursesService', () => {
       expect(meta.total).toBe(45);
     });
   });
-});
 
 // ----------------------------------------------------------
 // STATUS TRANSITIONS — search index + cache sync (issue #232)
@@ -691,6 +685,7 @@ describe('CoursesService status transitions (issue #232)', () => {
       mockSearchService as any,
       mockCache as any,
       { get: jest.fn(() => 20) } as any,
+      {} as any,
     );
   });
 
@@ -969,7 +964,7 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       it('notifies each wishlister once when the price decreases', async () => {
         mockPrisma.course.findUnique.mockResolvedValue({
-          ...fullCourse(CourseStatus.ACTIVE),
+          ...fullCourse(CourseStatus.DRAFT),
           price: 50,
         });
         mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, price: 40, status: CourseStatus.ACTIVE });
@@ -997,7 +992,7 @@ describe('CoursesService status transitions (issue #232)', () => {
 
       it('does not notify wishlisters when the price is unchanged or higher', async () => {
         mockPrisma.course.findUnique.mockResolvedValue({
-          ...fullCourse(CourseStatus.ACTIVE),
+          ...fullCourse(CourseStatus.DRAFT),
           price: 50,
         });
         mockPrisma.course.update.mockResolvedValue({ ...MOCK_COURSE, status: CourseStatus.ACTIVE });
@@ -1007,6 +1002,8 @@ describe('CoursesService status transitions (issue #232)', () => {
 
         expect(mockPrisma.wishlistItem.findMany).not.toHaveBeenCalled();
         expect(mockNotifications.notifyUser).not.toHaveBeenCalled();
+      });
+
       it('blocks content and price changes on ACTIVE courses', async () => {
         mockPrisma.course.findUnique.mockResolvedValue(fullCourse(CourseStatus.ACTIVE));
 
@@ -1134,4 +1131,5 @@ describe('CoursesService status transitions (issue #232)', () => {
       });
     });
   });
+});
 });

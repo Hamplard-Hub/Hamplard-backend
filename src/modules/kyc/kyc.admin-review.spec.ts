@@ -20,6 +20,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CdnService } from '../uploads/cdn.service';
 import { FilesController } from '../uploads/files.controller';
+import { STORAGE_DRIVER } from '../uploads/storage';
 import { UploadsService } from '../uploads/uploads.service';
 import { VideoThumbnailService } from '../uploads/video-thumbnail.service';
 import { VideoTranscodeService } from '../uploads/video-transcode.service';
@@ -100,6 +101,25 @@ describe('KYC admin review — signed document URLs (issue #442)', () => {
         { provide: VirusScanService, useValue: {} },
         { provide: VideoTranscodeService, useValue: {} },
         { provide: VideoThumbnailService, useValue: {} },
+        {
+          provide: STORAGE_DRIVER,
+          useValue: {
+            writeFile: jest.fn().mockResolvedValue(undefined),
+            readFile: jest.fn(async (relativePath: string) => {
+              const fullPath = path.join(uploadDir, relativePath);
+              return fs.existsSync(fullPath) ? fs.readFileSync(fullPath) : null;
+            }),
+            fileExists: jest.fn(async (relativePath: string) =>
+              fs.existsSync(path.join(uploadDir, relativePath)),
+            ),
+            getFileSize: jest.fn(async (relativePath: string) => {
+              const fullPath = path.join(uploadDir, relativePath);
+              return fs.existsSync(fullPath) ? fs.statSync(fullPath).size : null;
+            }),
+            getSignedUrl: jest.fn().mockResolvedValue(null),
+            getPublicUrl: jest.fn((relativePath: string) => `/uploads/${relativePath}`),
+          },
+        },
       ],
     }).compile();
 
@@ -127,11 +147,11 @@ describe('KYC admin review — signed document URLs (issue #442)', () => {
   });
 
   /** Fetch a URL path through the real FilesController (as the browser would). */
-  const fetchViaOrigin = (url: string) => {
+  const fetchViaOrigin = async (url: string) => {
     const parsed = new URL(url);
     // CDN URLs are /uploads/..., origin fallbacks are /api/v1/uploads/...
     const filePath = parsed.pathname.replace(/^.*?\/uploads\//, '');
-    const file = files.serveFile(
+    const file = await files.serveFile(
       filePath,
       parsed.searchParams.get('expires') ?? undefined,
       parsed.searchParams.get('signature') ?? undefined,
@@ -235,7 +255,7 @@ describe('KYC admin review — signed document URLs (issue #442)', () => {
       jest.useFakeTimers({ now: Date.now() + (KYC_REVIEW_URL_TTL_SECONDS + 5) * 1000 });
       try {
         expect(cdn.validateSignedUrl(result.documentUrl)).toMatchObject({ valid: false, expired: true });
-        expect(() => fetchViaOrigin(result.documentUrl)).toThrow(ForbiddenException);
+        await expect(fetchViaOrigin(result.documentUrl)).rejects.toThrow(ForbiddenException);
       } finally {
         jest.useRealTimers();
       }
@@ -246,21 +266,21 @@ describe('KYC admin review — signed document URLs (issue #442)', () => {
     it('signed URLs open the private documents through the file server', async () => {
       const result = await kyc.findOne('sub-1', 'admin-1');
 
-      expect(fetchViaOrigin(result.documentUrl)).toBeInstanceOf(StreamableFile);
-      expect(fetchViaOrigin(result.additionalUrl!)).toBeInstanceOf(StreamableFile);
+      await expect(fetchViaOrigin(result.documentUrl)).resolves.toBeInstanceOf(StreamableFile);
+      await expect(fetchViaOrigin(result.additionalUrl!)).resolves.toBeInstanceOf(StreamableFile);
       // The origin fallback URL carries the same signature.
-      expect(fetchViaOrigin(result.documentDelivery.fallbackUrl)).toBeInstanceOf(StreamableFile);
+      await expect(fetchViaOrigin(result.documentDelivery.fallbackUrl)).resolves.toBeInstanceOf(StreamableFile);
     });
 
-    it('unsigned stored paths are still rejected with 403', () => {
-      expect(() => fetchViaOrigin(`http://localhost${DOC_PATH}`)).toThrow(ForbiddenException);
+    it('unsigned stored paths are still rejected with 403', async () => {
+      await expect(fetchViaOrigin(`http://localhost${DOC_PATH}`)).rejects.toThrow(ForbiddenException);
     });
 
     it('a signature for one document cannot open another', async () => {
       const result = await kyc.findOne('sub-1', 'admin-1');
       const forged = new URL(result.documentUrl);
       forged.pathname = SELFIE_PATH;
-      expect(() => fetchViaOrigin(forged.toString())).toThrow(ForbiddenException);
+      await expect(fetchViaOrigin(forged.toString())).rejects.toThrow(ForbiddenException);
     });
   });
 

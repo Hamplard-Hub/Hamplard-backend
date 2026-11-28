@@ -7,6 +7,7 @@ import { UploadsService, isPrivateUploadPath } from './uploads.service';
 import { VirusScanService } from './virus-scan.service';
 import { VideoTranscodeService } from './video-transcode.service';
 import { VideoThumbnailService } from './video-thumbnail.service';
+import { STORAGE_DRIVER } from './storage';
 
 jest.mock('clamscan', () => {
   return jest.fn().mockImplementation(() => {
@@ -88,6 +89,17 @@ describe('UploadsService (CDN integration)', () => {
           useValue: {
             cdnInvalidationRequest: { create: jest.fn(), update: jest.fn(), findUnique: jest.fn(), findMany: jest.fn() },
             fileScanResult: { upsert: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
+          },
+        },
+        {
+          provide: STORAGE_DRIVER,
+          useValue: {
+            writeFile: jest.fn().mockResolvedValue(undefined),
+            readFile: jest.fn().mockResolvedValue(null),
+            fileExists: jest.fn().mockResolvedValue(false),
+            getFileSize: jest.fn().mockResolvedValue(null),
+            getSignedUrl: jest.fn().mockResolvedValue(null),
+            getPublicUrl: jest.fn((filePath: string) => `/uploads/${filePath}`),
           },
         },
         {

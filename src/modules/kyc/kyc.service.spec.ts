@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { KycService } from './kyc.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { StorageService } from '../storage/storage.service';
+import { UploadsService } from '../uploads/uploads.service';
 
 describe('KycService - findMySubmissions pagination', () => {
   let service: KycService;
@@ -21,40 +21,12 @@ describe('KycService - findMySubmissions pagination', () => {
         KycService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: {} },
-        { provide: StorageService, useValue: {} },
+        { provide: UploadsService, useValue: {} },
       ],
     }).compile();
 
     service = module.get<KycService>(KycService);
     jest.clearAllMocks();
-  beforeEach(() => {
-    const revokedSubmission = {
-      ...approvedSubmission,
-      status: KycStatus.REVOKED,
-    };
-    transaction = {
-      kycSubmission: {
-        update: jest.fn().mockResolvedValue(approvedSubmission),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findFirst: jest.fn().mockResolvedValue({ status: KycStatus.APPROVED }),
-        findUnique: jest.fn().mockResolvedValue(revokedSubmission),
-      },
-      user: {
-        update: jest
-          .fn()
-          .mockResolvedValue({ id: "instructor-1", isVerified: false }),
-      },
-    };
-    prisma = {
-      kycSubmission: {
-        findUnique: jest.fn().mockResolvedValue(approvedSubmission),
-        findFirst: jest.fn(),
-      },
-      adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
-      $transaction: jest.fn((callback) => callback(transaction)),
-    };
-    notifications = { notifyUser: jest.fn().mockResolvedValue(undefined) };
-    service = new KycService(prisma, notifications, {} as any);
   });
 
   it('returns paginated KYC submissions with meta', async () => {

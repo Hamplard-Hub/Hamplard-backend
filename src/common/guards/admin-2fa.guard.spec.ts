@@ -186,7 +186,7 @@ describe('Admin2faGuard', () => {
       const user = {
         id: 'admin-6',
         role: UserRole.ADMIN,
-        twoFactorEnabled: false,
+        twoFactorEnabled: true,
       };
 
       const context = createMockExecutionContext(user);

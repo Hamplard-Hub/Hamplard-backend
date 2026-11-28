@@ -38,9 +38,9 @@ describe('DistributedLockService', () => {
       expect(redisMock.set).toHaveBeenCalledWith(
         'hamplard:lock:test-lock',
         expect.stringContaining('instance:'),
-        'NX',
         'PX',
         5000,
+        'NX',
       );
     });
 
@@ -53,9 +53,9 @@ describe('DistributedLockService', () => {
       expect(redisMock.set).toHaveBeenCalledWith(
         'hamplard:lock:test-lock',
         expect.stringContaining('instance:'),
-        'NX',
         'PX',
         5000,
+        'NX',
       );
     });
 
@@ -171,13 +171,11 @@ describe('DistributedLockService', () => {
     it('should prevent concurrent execution of same lock', async () => {
       const mockFn1 = jest.fn().mockImplementation(() => new Promise(r => setTimeout(r, 100)));
       const mockFn2 = jest.fn().mockResolvedValue('second');
+      let setCalls = 0;
 
-      redisMock.set.mockImplementation((key, value, nx, px, ttl) => {
-        // First call succeeds, second call fails
-        if (!mockFn1.mock.calls.length) {
-          return Promise.resolve('OK');
-        }
-        return Promise.resolve(null);
+      redisMock.set.mockImplementation(() => {
+        setCalls += 1;
+        return Promise.resolve(setCalls === 1 ? 'OK' : null) as any;
       });
       redisMock.del.mockResolvedValue(1);
 
