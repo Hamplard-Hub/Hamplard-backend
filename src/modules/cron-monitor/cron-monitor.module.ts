@@ -1,9 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { CronMonitorService } from './cron-monitor.service';
 import { CronMonitorController } from './cron-monitor.controller';
 import { CronMonitorScheduler } from './cron-monitor.scheduler';
 
+@Global()
 @Module({
   imports: [ConfigModule],
   controllers: [CronMonitorController],

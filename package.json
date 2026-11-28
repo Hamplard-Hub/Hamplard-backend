@@ -16,10 +16,9 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage --coverageReporters=text --coverageReporters=text-summary --coverageReporters=lcov --coverageReporters=json-summary",
-    "format": "prettier --write \"src/**/*.ts\""
-    "test:cov": "jest --coverage",
+    "test:e2e": "jest --config ./test/jest-e2e.json",
     "format": "prettier --write \"src/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\""
+    "format:check": "prettier --check \"src/**/*.ts\"",
     "search:reindex": "ts-node -r tsconfig-paths/register src/scripts/reindex-search.ts"
   },
   "dependencies": {

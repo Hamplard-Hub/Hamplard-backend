@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { CertificatesController } from './certificates.controller';
 import { CertificatesService } from './certificates.service';
 import { CertificateTemplatesController } from './certificate-templates.controller';
@@ -10,9 +11,17 @@ import { CertificateShareController } from './certificate-share.controller';
 import { CertificateShareService } from './certificate-share.service';
 import { UploadsModule } from '../uploads/uploads.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { CERTIFICATE_ISSUANCE_QUEUE } from '../../common/queue/queue.constants';
+import { CertificateIssuanceProcessor } from './certificate-issuance.processor';
 
 @Module({
-  imports: [NotificationsModule, ExamsModule, UploadsModule, AnalyticsModule],
+  imports: [
+    NotificationsModule,
+    ExamsModule,
+    UploadsModule,
+    AnalyticsModule,
+    BullModule.registerQueue({ name: CERTIFICATE_ISSUANCE_QUEUE }),
+  ],
   controllers: [
     CertificateTemplatesController,
     CertificateShareController,
@@ -23,6 +32,7 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     CertificateTemplatesService,
     CertificatePdfService,
     CertificateShareService,
+    CertificateIssuanceProcessor,
   ],
   exports: [
     CertificatesService,

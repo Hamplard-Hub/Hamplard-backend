@@ -10,6 +10,8 @@ import { OverrideInstructorDripDto } from './dto/override-instructor-drip.dto';
 import { UpdateLessonThumbnailDto } from './dto/update-lesson-thumbnail.dto';
 import { CreateModuleDto } from './dto/create-module.dto';
 import { CreateLessonDto } from './dto/create-lesson.dto';
+import { CompleteLessonDto } from './dto/complete-lesson.dto';
+import { RecordLessonProgressDto } from './dto/record-lesson-progress.dto';
 import { UpdateModuleDto } from './dto/update-module.dto';
 import { UpdateLessonDto } from './dto/update-lesson.dto';
 import { ReorderCourseContentDto } from './dto/reorder-course-content.dto';
@@ -152,10 +154,10 @@ export class LessonsController {
   markComplete(
     @Param('id') lessonId: string,
     @CurrentUser('id') studentId: string,
-    @Body() body: { enrollmentId: string; watchedSecs?: number },
+    @Body() dto: CompleteLessonDto,
   ) {
     return this.lessonsService.markLessonComplete(
-      studentId, body.enrollmentId, lessonId, body.watchedSecs,
+      studentId, dto.enrollmentId, lessonId, dto.watchedSecs,
     );
   }
 
@@ -165,10 +167,10 @@ export class LessonsController {
   updateProgress(
     @Param('id') lessonId: string,
     @CurrentUser('id') studentId: string,
-    @Body() body: { enrollmentId: string; watchedSecs: number },
+    @Body() dto: RecordLessonProgressDto,
   ) {
     return this.lessonsService.updateWatchProgress(
-      studentId, body.enrollmentId, lessonId, body.watchedSecs,
+      studentId, dto.enrollmentId, lessonId, dto.watchedSecs,
     );
   }
 

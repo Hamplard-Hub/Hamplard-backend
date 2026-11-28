@@ -491,7 +491,6 @@ export class CoursesService {
             const signed = this.cdn.signLessonMediaUrl(lesson.videoUrl);
             return {
               ...base,
-              videoUrl: lesson.videoUrl,
               videoRenditions: lesson.videoRenditions,
               videoUrl: signed?.url ?? null,
               videoUrlExpiresAt: signed?.expiresAt ?? null,

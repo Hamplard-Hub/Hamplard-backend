@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Redis } from 'ioredis';
-import { InjectRedis } from '@nestjs-modules/ioredis';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 
 /**
  * Distributed Lock Service (issue #310)
@@ -32,9 +32,27 @@ export class DistributedLockService {
   private readonly lockKeyPrefix = 'hamplard:lock:';
   private readonly lockValuePrefix = 'instance:';
 
+  private readonly redis: Redis;
+
   constructor(
-    @InjectRedis() private readonly redis: Redis,
-  ) {}
+    @Optional() @Inject('default_IORedisModuleKey') injectedRedis?: Redis,
+    @Optional() config?: ConfigService,
+  ) {
+    if (injectedRedis) {
+      this.redis = injectedRedis;
+    } else {
+      const redisUrl = config?.get<string>('REDIS_URL');
+      this.redis = redisUrl
+        ? new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 2 })
+        : new Redis({
+            host: config?.get<string>('REDIS_HOST', 'localhost') ?? 'localhost',
+            port: config?.get<number>('REDIS_PORT', 6379) ?? 6379,
+            password: config?.get<string>('REDIS_PASSWORD') || undefined,
+            lazyConnect: true,
+            maxRetriesPerRequest: 2,
+          });
+    }
+  }
 
   /**
    * Acquire a distributed lock.
@@ -56,7 +74,7 @@ export class DistributedLockService {
 
     try {
       // Redis SET NX PX: set key only if it doesn't exist, with TTL
-      const result = await this.redis.set(key, value, 'PX', ttlMs, 'NX');
+      const result = await (this.redis as any).set(key, value, 'PX', ttlMs, 'NX');
       const acquired = result === 'OK';
 
       if (acquired) {

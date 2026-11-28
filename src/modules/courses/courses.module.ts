@@ -12,13 +12,10 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { FeeCalculatorModule } from '../billing/fee-calculator.module';
 import { SearchModule } from '../search/search.module';
 import { QueueModule } from '../../common/queue/queue.module';
-
-@Module({
-  imports: [NotificationsModule, FeeCalculatorModule, SearchModule, QueueModule],
 import { UploadsModule } from '../uploads/uploads.module';
 
 @Module({
-  imports: [NotificationsModule, FeeCalculatorModule, SearchModule, UploadsModule],
+  imports: [NotificationsModule, FeeCalculatorModule, SearchModule, QueueModule, UploadsModule],
   controllers: [SearchController, CourseAutosaveController, CoursesController, RecommendationsController],
   providers: [CoursesService, CourseAutosaveService, RecommendationsService, SearchService, AnnouncementsService],
   exports: [CoursesService, CourseAutosaveService, RecommendationsService, SearchService, AnnouncementsService],

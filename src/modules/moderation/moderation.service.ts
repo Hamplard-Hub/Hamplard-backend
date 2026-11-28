@@ -92,17 +92,20 @@ export class ModerationService {
   private async handleAutoUnpublish(targetType: ReportTargetType, targetId: string): Promise<boolean> {
     try {
       if (targetType === ReportTargetType.COURSE) {
-        const course = await this.prisma.course.findUnique({ where: { id: targetId } });
+        const course = await this.prisma.course.findUnique({
+          where: { id: targetId },
+          include: { instructor: true },
+        });
         if (course && course.status !== CourseStatus.PAUSED) {
           // Issue #232 — pauseCourse also drops the course from search and caches
           const paused = await this.courses.pauseCourse(targetId);
           if (paused) {
             this.logger.warn(`Course ${targetId} automatically paused due to flag threshold reach`);
-            if (course.instructorId) {
+            if (course.instructor?.id) {
               await this.prisma.notification
                 ?.create({
                   data: {
-                    userId: course.instructorId,
+                    userId: course.instructor.id,
                     type: 'COURSE_PAUSED',
                     title: 'Course paused for moderation review',
                     message: `Your course "${course.title ?? targetId}" was automatically paused after receiving multiple reports and is under review.`,
